@@ -1,0 +1,55 @@
+{
+  "expo": {
+    "name": "Peacock Notes",
+    "slug": "Note_app",
+    "version": "1.0.0",
+    "scheme": "peacocknotes",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.roy.peacocknotes"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "package": "com.roy.peacocknotes"
+    },
+    "plugins": [
+      [
+        "expo-share-intent",
+        {
+          "androidIntentFilters": [
+            "audio/*"
+          ],
+          "androidMultiIntentFilters": [
+            "audio/*"
+          ],
+          "iosActivationRules": {
+            "NSExtensionActivationSupportsFileWithMaxCount": 10
+          }
+        }
+      ]
+    ],
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "7d13650a-3749-415c-bd06-664c7d47e2e0"
+      }
+    },
+    "owner": "priyanshu22022003"
+  }
+}
