@@ -4,6 +4,8 @@ import type {
   Note,
   NoteAudio,
   NoteAudioDraft,
+  NoteFile,
+  NoteFileDraft,
   NoteDraft,
 } from '../types/models';
 
@@ -20,6 +22,7 @@ export type StorageSnapshot = {
   notesTextBytes: number;
   databaseBytes: number;
   audioUris: string[];
+  fileUris: string[];
 };
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -61,6 +64,16 @@ export const initDb = async () => {
       displayName TEXT,
       groupId TEXT,
       segmentIndex INTEGER,
+      orderIndex INTEGER NOT NULL,
+      createdAt TEXT NOT NULL,
+      FOREIGN KEY (noteId) REFERENCES Notes(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS NoteFiles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      noteId INTEGER NOT NULL,
+      uri TEXT NOT NULL,
+      displayName TEXT,
+      mimeType TEXT,
       orderIndex INTEGER NOT NULL,
       createdAt TEXT NOT NULL,
       FOREIGN KEY (noteId) REFERENCES Notes(id) ON DELETE CASCADE
@@ -136,6 +149,7 @@ export const initDb = async () => {
     CREATE INDEX IF NOT EXISTS idx_notes_folderId_sortOrder ON Notes(folderId, sortOrder ASC);
     CREATE INDEX IF NOT EXISTS idx_folders_sortOrder ON Folders(sortOrder ASC);
     CREATE INDEX IF NOT EXISTS idx_note_audios_noteId_order ON NoteAudios(noteId, orderIndex ASC);
+    CREATE INDEX IF NOT EXISTS idx_note_files_noteId_order ON NoteFiles(noteId, orderIndex ASC);
   `);
 
   await db.execAsync(`
@@ -185,6 +199,7 @@ type NoteRow = {
   title: string;
   content: string | null;
   audioCount: number | string;
+  fileCount: number | string;
   createdAt: string;
   updatedAt: string;
   sortOrder: number;
@@ -201,12 +216,23 @@ type NoteAudioRow = {
   createdAt: string;
 };
 
+type NoteFileRow = {
+  id: number;
+  noteId: number;
+  uri: string;
+  displayName: string | null;
+  mimeType: string | null;
+  orderIndex: number;
+  createdAt: string;
+};
+
 const mapNote = (row: NoteRow): Note => ({
   id: row.id,
   folderId: row.folderId,
   title: row.title,
   content: row.content ?? '',
   audioCount: Number(row.audioCount ?? 0),
+  fileCount: Number(row.fileCount ?? 0),
   createdAt: row.createdAt,
   updatedAt: row.updatedAt,
 });
@@ -218,6 +244,16 @@ const mapNoteAudio = (row: NoteAudioRow): NoteAudio => ({
   displayName: row.displayName?.trim() ? row.displayName : `Audio ${row.orderIndex}`,
   groupId: row.groupId?.trim() ? row.groupId : `legacy_${row.noteId}_${row.orderIndex}`,
   segmentIndex: Number(row.segmentIndex ?? 1),
+  orderIndex: row.orderIndex,
+  createdAt: row.createdAt,
+});
+
+const mapNoteFile = (row: NoteFileRow): NoteFile => ({
+  id: row.id,
+  noteId: row.noteId,
+  uri: row.uri,
+  displayName: row.displayName?.trim() ? row.displayName : `File ${row.orderIndex}`,
+  mimeType: row.mimeType?.trim() ?? 'application/octet-stream',
   orderIndex: row.orderIndex,
   createdAt: row.createdAt,
 });
@@ -336,12 +372,14 @@ export const listNotesByFolder = async (
       N.folderId,
       N.title,
       N.content,
-      COUNT(A.id) AS audioCount,
+      COUNT(DISTINCT A.id) AS audioCount,
+      COUNT(DISTINCT F.id) AS fileCount,
       N.createdAt,
       N.updatedAt,
       N.sortOrder
     FROM Notes N
     LEFT JOIN NoteAudios A ON A.noteId = N.id
+    LEFT JOIN NoteFiles F ON F.noteId = N.id
     WHERE folderId = ?
     GROUP BY N.id
     ORDER BY ${orderBy};
@@ -361,12 +399,14 @@ export const getNoteById = async (noteId: number): Promise<Note | null> => {
       N.folderId,
       N.title,
       N.content,
-      COUNT(A.id) AS audioCount,
+      COUNT(DISTINCT A.id) AS audioCount,
+      COUNT(DISTINCT F.id) AS fileCount,
       N.createdAt,
       N.updatedAt,
       N.sortOrder
     FROM Notes N
     LEFT JOIN NoteAudios A ON A.noteId = N.id
+    LEFT JOIN NoteFiles F ON F.noteId = N.id
     WHERE N.id = ?
     GROUP BY N.id;
     `,
@@ -379,7 +419,8 @@ export const getNoteById = async (noteId: number): Promise<Note | null> => {
 
   const note = mapNote(row);
   const audios = await listNoteAudios(noteId);
-  return { ...note, audios };
+  const files = await listNoteFiles(noteId);
+  return { ...note, audios, files };
 };
 
 export const listNoteAudios = async (noteId: number): Promise<NoteAudio[]> => {
@@ -395,6 +436,91 @@ export const listNoteAudios = async (noteId: number): Promise<NoteAudio[]> => {
   );
 
   return rows.map(mapNoteAudio);
+};
+
+export const listNoteFiles = async (noteId: number): Promise<NoteFile[]> => {
+  const db = await getDb();
+  const rows = await db.getAllAsync<NoteFileRow>(
+    `
+    SELECT id, noteId, uri, displayName, mimeType, orderIndex, createdAt
+    FROM NoteFiles
+    WHERE noteId = ?
+    ORDER BY orderIndex ASC, id ASC;
+    `,
+    [noteId]
+  );
+
+  return rows.map(mapNoteFile);
+};
+
+const saveNoteFiles = async (
+  db: SQLite.SQLiteDatabase,
+  noteId: number,
+  files: NoteFileDraft[]
+) => {
+  const normalizedFiles = files
+    .map((file, index) => {
+      const uri = file.uri.trim();
+      const displayName = file.displayName.trim() || `File ${index + 1}`;
+      const mimeType = file.mimeType.trim() || 'application/octet-stream';
+      return { uri, displayName, mimeType };
+    })
+    .filter((file) => Boolean(file.uri));
+
+  await db.runAsync('DELETE FROM NoteFiles WHERE noteId = ?;', [noteId]);
+
+  for (const [index, file] of normalizedFiles.entries()) {
+    await db.runAsync(
+      `
+      INSERT INTO NoteFiles (noteId, uri, displayName, mimeType, orderIndex, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?);
+      `,
+      [noteId, file.uri, file.displayName, file.mimeType, index + 1, nowIso()]
+    );
+  }
+};
+
+export const appendFilesToNote = async (
+  noteId: number,
+  files: NoteFileDraft[]
+): Promise<void> => {
+  const db = await getDb();
+  const normalizedFiles = files
+    .map((file) => ({
+      uri: file.uri.trim(),
+      displayName: file.displayName.trim(),
+      mimeType: file.mimeType.trim() || 'application/octet-stream',
+    }))
+    .filter((file) => Boolean(file.uri));
+
+  if (normalizedFiles.length === 0) {
+    return;
+  }
+
+  const orderRow = await db.getFirstAsync<{ maxOrder: number | null }>(
+    'SELECT MAX(orderIndex) as maxOrder FROM NoteFiles WHERE noteId = ?;',
+    [noteId]
+  );
+  const baseOrder = Number(orderRow?.maxOrder ?? 0);
+
+  for (const [index, file] of normalizedFiles.entries()) {
+    await db.runAsync(
+      `
+      INSERT INTO NoteFiles (noteId, uri, displayName, mimeType, orderIndex, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?);
+      `,
+      [
+        noteId,
+        file.uri,
+        file.displayName || `File ${baseOrder + index + 1}`,
+        file.mimeType,
+        baseOrder + index + 1,
+        nowIso(),
+      ]
+    );
+  }
+
+  await db.runAsync('UPDATE Notes SET updatedAt = ? WHERE id = ?;', [nowIso(), noteId]);
 };
 
 const saveNoteAudios = async (
@@ -449,6 +575,7 @@ export const createNote = async (
   );
   const noteId = Number(result.lastInsertRowId);
   await saveNoteAudios(db, noteId, draft.audios);
+  await saveNoteFiles(db, noteId, draft.files);
   return noteId;
 };
 
@@ -496,6 +623,7 @@ export const updateNote = async (
     [title, draft.content, nowIso(), noteId]
   );
   await saveNoteAudios(db, noteId, draft.audios);
+  await saveNoteFiles(db, noteId, draft.files);
 };
 
 export const deleteNote = async (noteId: number): Promise<void> => {
@@ -568,6 +696,14 @@ export const getStorageSnapshot = async (): Promise<StorageSnapshot> => {
     `
   );
 
+  const fileRows = await db.getAllAsync<{ uri: string | null; mimeType: string | null }>(
+    `
+    SELECT uri, mimeType
+    FROM NoteFiles
+    WHERE uri IS NOT NULL AND LENGTH(TRIM(uri)) > 0;
+    `
+  );
+
   const pageCountRow = await db.getFirstAsync<{ page_count: number | null }>('PRAGMA page_count;');
   const pageSizeRow = await db.getFirstAsync<{ page_size: number | null }>('PRAGMA page_size;');
 
@@ -579,6 +715,9 @@ export const getStorageSnapshot = async (): Promise<StorageSnapshot> => {
     notesTextBytes: Number(noteStats?.notesTextBytes ?? 0),
     databaseBytes: Math.max(0, pageCount * pageSize),
     audioUris: audioRows
+      .map((row) => row.uri?.trim() ?? '')
+      .filter((uri) => Boolean(uri)),
+    fileUris: fileRows
       .map((row) => row.uri?.trim() ?? '')
       .filter((uri) => Boolean(uri)),
   };

@@ -3,6 +3,7 @@ import { Audio } from 'expo-av';
 import * as Clipboard from 'expo-clipboard';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as IntentLauncher from 'expo-intent-launcher';
 import * as Sharing from 'expo-sharing';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
@@ -10,7 +11,9 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
-  Animated,
+  Animated as RNAnimated,
+  Image,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -18,6 +21,7 @@ import {
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PrimaryButton } from '../components/PrimaryButton';
@@ -28,7 +32,7 @@ import { useLanguage } from '../i18n/LanguageContext';
 import { getContrastColor } from '../theme/contrast';
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
-import type { NoteAudioDraft, NoteDraft } from '../types/models';
+import type { NoteAudioDraft, NoteDraft, NoteFileDraft } from '../types/models';
 import type { RootStackParamList } from '../types/navigation';
 import {
   getBestAudioExtension,
@@ -36,6 +40,7 @@ import {
   getPreferredShareExtension,
   isShareFriendlyAudioExtension,
 } from '../utils/audioFormat';
+import { getFileExtension, getFileMimeType, isImageFile, isPdfFile, getFileIcon } from '../utils/fileFormat';
 
 type Route = RouteProp<RootStackParamList, 'NoteEditor'>;
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'NoteEditor'>;
@@ -54,6 +59,19 @@ const ensureAudioFolder = async () => {
 };
 
 const getAudioFileExtension = (fileName: string) => getBestAudioExtension(null, fileName, fileName);
+
+const ensureFileFolder = async () => {
+  const documentDirectory = FileSystem.documentDirectory;
+  if (!documentDirectory) {
+    throw new Error('Document directory is unavailable');
+  }
+  const path = `${documentDirectory}files`;
+  const info = await FileSystem.getInfoAsync(path);
+  if (!info.exists) {
+    await FileSystem.makeDirectoryAsync(path, { intermediates: true });
+  }
+  return path;
+};
 
 const formatDuration = (seconds: number) => {
   const safeSeconds = Math.max(0, Math.floor(seconds));
@@ -79,11 +97,14 @@ export const NoteEditorScreen = () => {
   const navigation = useNavigation<Navigation>();
   const { colors } = useAppColors();
   const insets = useSafeAreaInsets();
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const { t, language } = useLanguage();
 
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [audios, setAudios] = useState<NoteAudioDraft[]>([]);
+  const [files, setFiles] = useState<NoteFileDraft[]>([]);
+  const [viewingFileUri, setViewingFileUri] = useState<string | null>(null);
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [isRecordingPaused, setIsRecordingPaused] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
@@ -105,11 +126,11 @@ export const NoteEditorScreen = () => {
     null
   );
   const isPlaybackStoppingRef = useRef(false);
-  const pulseAnim = useRef(new Animated.Value(1)).current;
-  const equalizerA = useRef(new Animated.Value(0.35)).current;
-  const equalizerB = useRef(new Animated.Value(0.65)).current;
-  const equalizerC = useRef(new Animated.Value(0.45)).current;
-  const initialDraftRef = useRef<NoteDraft>({ title: '', content: '', audios: [] });
+  const pulseAnim = useRef(new RNAnimated.Value(1)).current;
+  const equalizerA = useRef(new RNAnimated.Value(0.35)).current;
+  const equalizerB = useRef(new RNAnimated.Value(0.65)).current;
+  const equalizerC = useRef(new RNAnimated.Value(0.45)).current;
+  const initialDraftRef = useRef<NoteDraft>({ title: '', content: '', audios: [], files: [] });
   const skipUnsavedWarningRef = useRef(false);
   const isAutoSavingRef = useRef(false);
 
@@ -145,13 +166,21 @@ export const NoteEditorScreen = () => {
           segmentIndex: audio.segmentIndex,
         }));
 
+        const loadedFiles = (note.files ?? []).map((file) => ({
+          uri: file.uri,
+          displayName: file.displayName,
+          mimeType: file.mimeType,
+        }));
+
         setTitle(note.title);
         setContent(note.content);
         setAudios(loadedAudios);
+        setFiles(loadedFiles);
         initialDraftRef.current = {
           title: note.title,
           content: note.content,
           audios: loadedAudios.map((audio) => ({ ...audio })),
+          files: loadedFiles.map((file) => ({ ...file })),
         };
       } catch (error) {
         console.warn('Failed to load note:', error);
@@ -166,7 +195,7 @@ export const NoteEditorScreen = () => {
 
   useEffect(() => {
     if (!noteId) {
-      initialDraftRef.current = { title: '', content: '', audios: [] };
+      initialDraftRef.current = { title: '', content: '', audios: [], files: [] };
     }
   }, [noteId]);
 
@@ -183,14 +212,14 @@ export const NoteEditorScreen = () => {
       return;
     }
 
-    const pulseLoop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, {
+    const pulseLoop = RNAnimated.loop(
+      RNAnimated.sequence([
+        RNAnimated.timing(pulseAnim, {
           toValue: 1.45,
           duration: 650,
           useNativeDriver: true,
         }),
-        Animated.timing(pulseAnim, {
+        RNAnimated.timing(pulseAnim, {
           toValue: 1,
           duration: 650,
           useNativeDriver: true,
@@ -220,26 +249,26 @@ export const NoteEditorScreen = () => {
       return;
     }
 
-    const animateBar = (value: Animated.Value, firstPeak: number, secondPeak: number, delay: number) =>
-      Animated.loop(
-        Animated.sequence([
-          Animated.delay(delay),
-          Animated.timing(value, {
+    const animateBar = (value: RNAnimated.Value, firstPeak: number, secondPeak: number, delay: number) =>
+      RNAnimated.loop(
+        RNAnimated.sequence([
+          RNAnimated.delay(delay),
+          RNAnimated.timing(value, {
             toValue: firstPeak,
             duration: 220,
             useNativeDriver: false,
           }),
-          Animated.timing(value, {
+          RNAnimated.timing(value, {
             toValue: 0.25,
             duration: 180,
             useNativeDriver: false,
           }),
-          Animated.timing(value, {
+          RNAnimated.timing(value, {
             toValue: secondPeak,
             duration: 250,
             useNativeDriver: false,
           }),
-          Animated.timing(value, {
+          RNAnimated.timing(value, {
             toValue: 0.38,
             duration: 180,
             useNativeDriver: false,
@@ -339,6 +368,21 @@ export const NoteEditorScreen = () => {
       return true;
     }
 
+    if (files.length !== initial.files.length) {
+      return true;
+    }
+
+    if (
+      files.some(
+        (file, index) =>
+          file.uri !== initial.files[index]?.uri ||
+          file.displayName !== initial.files[index]?.displayName ||
+          file.mimeType !== initial.files[index]?.mimeType
+      )
+    ) {
+      return true;
+    }
+
     return audios.some(
       (audio, index) =>
         audio.uri !== initial.audios[index]?.uri ||
@@ -346,7 +390,7 @@ export const NoteEditorScreen = () => {
         audio.groupId !== initial.audios[index]?.groupId ||
         Number(audio.segmentIndex ?? 1) !== Number(initial.audios[index]?.segmentIndex ?? 1)
     );
-  }, [audios, content, title]);
+  }, [audios, content, files, title]);
 
   const saveNote = async () => {
     const audiosForSave = await flushActiveRecordingForSave();
@@ -363,6 +407,7 @@ export const NoteEditorScreen = () => {
       title: title.trim(),
       content,
       audios: audiosForSave,
+      files,
     };
 
     try {
@@ -377,6 +422,7 @@ export const NoteEditorScreen = () => {
         title: draft.title,
         content: draft.content,
         audios: draft.audios.map((audio) => ({ ...audio })),
+        files: draft.files.map((file) => ({ ...file })),
       };
 
       skipUnsavedWarningRef.current = true;
@@ -398,7 +444,7 @@ export const NoteEditorScreen = () => {
     const trimmedTitle = title.trim();
     const trimmedContent = content.trim();
 
-    if (!trimmedTitle && !trimmedContent && audiosForSave.length === 0) {
+    if (!trimmedTitle && !trimmedContent && audiosForSave.length === 0 && files.length === 0) {
       return true;
     }
 
@@ -407,6 +453,7 @@ export const NoteEditorScreen = () => {
       title: autoTitle,
       content,
       audios: audiosForSave,
+      files,
     };
 
     try {
@@ -421,6 +468,7 @@ export const NoteEditorScreen = () => {
         title: draft.title,
         content: draft.content,
         audios: draft.audios.map((audio) => ({ ...audio })),
+        files: draft.files.map((file) => ({ ...file })),
       };
       return true;
     } catch (error) {
@@ -472,6 +520,76 @@ export const NoteEditorScreen = () => {
         },
       ];
     });
+  };
+
+  const importFile = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['image/*', 'application/pdf'],
+      });
+      if (result.canceled) {
+        return;
+      }
+
+      const asset = result.assets[0];
+      const directory = await ensureFileFolder();
+      const extension = getFileExtension(null, asset.name, asset.uri);
+      const targetPath = `${directory}/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${extension}`;
+      await FileSystem.copyAsync({ from: asset.uri, to: targetPath });
+
+      const mimeType = getFileMimeType(extension);
+      setFiles((prev) => [
+        ...prev,
+        {
+          uri: targetPath,
+          displayName: asset.name?.trim() || `File ${prev.length + 1}`,
+          mimeType,
+        },
+      ]);
+    } catch (error) {
+      console.warn('Failed to import file:', error);
+      Alert.alert(t('common.error'), t('editor.fileImportError'));
+    }
+  };
+
+  const removeFile = (index: number) => {
+    setFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const shareSpecificFile = async (file: NoteFileDraft) => {
+    try {
+      if (!(await Sharing.isAvailableAsync())) {
+        Alert.alert(t('editor.shareUnavailableTitle'), t('editor.shareUnavailableBody'));
+        return;
+      }
+
+      await Sharing.shareAsync(file.uri, {
+        dialogTitle: file.displayName,
+        mimeType: file.mimeType,
+      });
+    } catch (error) {
+      console.warn('Failed to share file:', error);
+      Alert.alert(t('common.error'), t('editor.shareFileError'));
+    }
+  };
+
+  const openFile = async (file: NoteFileDraft) => {
+    const isImage = isImageFile(file.mimeType, file.displayName, file.uri);
+    if (isImage) {
+      setViewingFileUri(file.uri);
+      return;
+    }
+    try {
+      const contentUri = await FileSystem.getContentUriAsync(file.uri);
+      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+        data: contentUri,
+        type: 'application/pdf',
+        flags: 1,
+      });
+    } catch (error) {
+      console.warn('Failed to open PDF:', error);
+      Alert.alert(t('common.error'), t('editor.shareFileError'));
+    }
   };
 
   const importAudio = async () => {
@@ -1048,7 +1166,7 @@ export const NoteEditorScreen = () => {
           {recording ? (
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 }}>
               <View style={{ width: 18, height: 18, alignItems: 'center', justifyContent: 'center' }}>
-                <Animated.View
+                <RNAnimated.View
                   style={{
                     position: 'absolute',
                     width: 16,
@@ -1219,7 +1337,7 @@ export const NoteEditorScreen = () => {
                     {isCurrent ? (
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                         <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 3, height: 16 }}>
-                          <Animated.View
+                          <RNAnimated.View
                             style={{
                               width: 4,
                               height: equalizerA.interpolate({ inputRange: [0, 1], outputRange: [4, 16] }),
@@ -1227,7 +1345,7 @@ export const NoteEditorScreen = () => {
                               backgroundColor: colors.primary,
                             }}
                           />
-                          <Animated.View
+                          <RNAnimated.View
                             style={{
                               width: 4,
                               height: equalizerB.interpolate({ inputRange: [0, 1], outputRange: [4, 16] }),
@@ -1235,7 +1353,7 @@ export const NoteEditorScreen = () => {
                               backgroundColor: colors.primary,
                             }}
                           />
-                          <Animated.View
+                          <RNAnimated.View
                             style={{
                               width: 4,
                               height: equalizerC.interpolate({ inputRange: [0, 1], outputRange: [4, 16] }),
@@ -1352,6 +1470,139 @@ export const NoteEditorScreen = () => {
                         <MaterialCommunityIcons name="information-outline" size={18} color={iconOnCard} />
                         <Text style={{ color: iconOnCard, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
                           {t('editor.audioDetails')}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          ) : null}
+        </View>
+
+        <View
+          style={{
+            marginTop: ui.space.md,
+            borderRadius: ui.radius.md,
+            borderWidth: 1,
+            borderColor: colors.border,
+            backgroundColor: colors.card,
+            padding: ui.space.sm,
+            gap: ui.space.sm,
+          }}
+        >
+          <Text style={{ color: colors.text, fontFamily: 'NotoSansBengali', fontSize: ui.font.lg }}>
+            {t('editor.fileSection')}
+          </Text>
+
+          <Pressable
+            onPress={importFile}
+            style={{
+              paddingHorizontal: 12,
+              paddingVertical: 8,
+              borderRadius: ui.radius.sm,
+              backgroundColor: colors.accent,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 6,
+              alignSelf: 'flex-start',
+            }}
+          >
+            <MaterialCommunityIcons name="paperclip" size={18} color={actionTextOnAccent} />
+            <Text style={{ color: actionTextOnAccent, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
+              {t('editor.addFile')}
+            </Text>
+          </Pressable>
+
+          {files.length > 0 ? (
+            <View style={{ gap: 8 }}>
+              {files.map((file, index) => {
+                const isImage = isImageFile(file.mimeType, file.displayName, file.uri);
+                const iconName = getFileIcon(file.mimeType) as keyof typeof MaterialCommunityIcons.glyphMap;
+                return (
+                  <View
+                    key={`${file.uri}-${index}`}
+                    style={{
+                      borderRadius: ui.radius.sm,
+                      borderWidth: 1,
+                      borderColor: colors.border,
+                      padding: 10,
+                      gap: 10,
+                    }}
+                  >
+                    <Pressable
+                      onPress={() => openFile(file)}
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}
+                    >
+                      {isImage ? (
+                        <Image
+                          source={{ uri: file.uri }}
+                          style={{ width: 48, height: 48, borderRadius: 6 }}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <View
+                          style={{
+                            width: 48,
+                            height: 48,
+                            borderRadius: 6,
+                            backgroundColor: colors.secondary,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          <MaterialCommunityIcons name={iconName} size={26} color={textOnSecondary} />
+                        </View>
+                      )}
+                      <Text
+                        style={{
+                          flex: 1,
+                          color: colors.text,
+                          fontFamily: 'NotoSansBengali',
+                          fontSize: ui.font.md,
+                        }}
+                        numberOfLines={2}
+                      >
+                        {file.displayName}
+                      </Text>
+                    </Pressable>
+
+                    <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap' }}>
+                      <Pressable
+                        onPress={() => shareSpecificFile(file)}
+                        style={{
+                          paddingHorizontal: 12,
+                          paddingVertical: 8,
+                          borderRadius: ui.radius.sm,
+                          borderWidth: 1,
+                          borderColor: colors.primary,
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 6,
+                        }}
+                      >
+                        <MaterialCommunityIcons name="share-variant" size={18} color={iconOnCard} />
+                        <Text style={{ color: iconOnCard, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
+                          {t('editor.shareFile')}
+                        </Text>
+                      </Pressable>
+
+                      <Pressable
+                        onPress={() => removeFile(index)}
+                        style={{
+                          paddingHorizontal: 12,
+                          paddingVertical: 8,
+                          borderRadius: ui.radius.sm,
+                          borderWidth: 1,
+                          borderColor: colors.error,
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 6,
+                        }}
+                      >
+                        <MaterialCommunityIcons name="trash-can-outline" size={18} color={iconOnCard} />
+                        <Text style={{ color: iconOnCard, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
+                          {t('editor.remove')}
                         </Text>
                       </Pressable>
                     </View>
@@ -1676,6 +1927,47 @@ export const NoteEditorScreen = () => {
               </Pressable>
             </View>
           </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType="fade"
+        transparent
+        visible={viewingFileUri !== null}
+        onRequestClose={() => setViewingFileUri(null)}
+        statusBarTranslucent
+      >
+        <View style={{ flex: 1, backgroundColor: '#000' }}>
+          <Pressable
+            style={{
+              position: 'absolute',
+              top: Math.max(insets.top, 12),
+              right: 16,
+              zIndex: 10,
+              width: 36,
+              height: 36,
+              borderRadius: 18,
+              backgroundColor: 'rgba(255,255,255,0.2)',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+            onPress={() => setViewingFileUri(null)}
+          >
+            <MaterialCommunityIcons name="close" size={22} color="#FFF" />
+          </Pressable>
+
+          {viewingFileUri ? (
+            <Pressable
+              style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}
+              onPress={() => setViewingFileUri(null)}
+            >
+              <Image
+                source={{ uri: viewingFileUri }}
+                style={{ width: screenWidth, height: screenHeight }}
+                resizeMode="contain"
+              />
+            </Pressable>
+          ) : null}
         </View>
       </Modal>
     </ScreenContainer>

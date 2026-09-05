@@ -31,10 +31,16 @@
         "expo-share-intent",
         {
           "androidIntentFilters": [
-            "audio/*"
+            "audio/*",
+            "image/*",
+            "application/pdf",
+            "application/*"
           ],
           "androidMultiIntentFilters": [
-            "audio/*"
+            "audio/*",
+            "image/*",
+            "application/pdf",
+            "application/*"
           ],
           "iosActivationRules": {
             "NSExtensionActivationSupportsFileWithMaxCount": 10

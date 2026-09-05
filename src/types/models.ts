@@ -14,7 +14,9 @@ export type Note = {
   title: string;
   content: string;
   audioCount: number;
+  fileCount: number;
   audios?: NoteAudio[];
+  files?: NoteFile[];
   createdAt: string;
   updatedAt: string;
 };
@@ -37,8 +39,25 @@ export type NoteAudioDraft = {
   segmentIndex?: number;
 };
 
+export type NoteFile = {
+  id: number;
+  noteId: number;
+  uri: string;
+  displayName: string;
+  mimeType: string;
+  orderIndex: number;
+  createdAt: string;
+};
+
+export type NoteFileDraft = {
+  uri: string;
+  displayName: string;
+  mimeType: string;
+};
+
 export type NoteDraft = {
   title: string;
   content: string;
   audios: NoteAudioDraft[];
+  files: NoteFileDraft[];
 };

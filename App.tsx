@@ -1,3 +1,4 @@
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useEffect, useState } from 'react';
 import { View, Text, useColorScheme } from 'react-native';
 import {
@@ -182,10 +183,12 @@ const AppNavigator = () => {
 
 export default function App() {
   return (
-    <ShareIntentProvider>
-      <LanguageProvider>
-        <AppNavigator />
-      </LanguageProvider>
-    </ShareIntentProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ShareIntentProvider>
+        <LanguageProvider>
+          <AppNavigator />
+        </LanguageProvider>
+      </ShareIntentProvider>
+    </GestureHandlerRootView>
   );
 }

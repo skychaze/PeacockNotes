@@ -18,6 +18,7 @@ type StorageViewModel = {
   noteCount: number;
   notesBytes: number;
   audioBytes: number;
+  fileBytes: number;
   databaseBytes: number;
   otherBytes: number;
   totalBytes: number;
@@ -74,9 +75,9 @@ const getDirectorySize = async (directoryUri: string, visited: Set<string>): Pro
   return total;
 };
 
-const getAudioFilesSize = async (audioUris: string[]) => {
+const getUrisSize = async (uris: string[]) => {
   let total = 0;
-  for (const uri of new Set(audioUris)) {
+  for (const uri of new Set(uris)) {
     try {
       const info = await FileSystem.getInfoAsync(uri);
       if (!info.exists || info.isDirectory) {
@@ -91,7 +92,8 @@ const getAudioFilesSize = async (audioUris: string[]) => {
 };
 
 const buildStorageViewModel = async (snapshot: StorageSnapshot): Promise<StorageViewModel> => {
-  const audioBytes = await getAudioFilesSize(snapshot.audioUris);
+  const audioBytes = await getUrisSize(snapshot.audioUris);
+  const fileBytes = await getUrisSize(snapshot.fileUris);
   const visited = new Set<string>();
   const documentBytes = FileSystem.documentDirectory
     ? await getDirectorySize(FileSystem.documentDirectory, visited)
@@ -100,13 +102,14 @@ const buildStorageViewModel = async (snapshot: StorageSnapshot): Promise<Storage
     ? await getDirectorySize(FileSystem.cacheDirectory, visited)
     : 0;
   const appDataBytes = documentBytes + cacheBytes;
-  const otherBytes = Math.max(0, appDataBytes - audioBytes - snapshot.databaseBytes);
-  const totalBytes = audioBytes + snapshot.databaseBytes + otherBytes;
+  const otherBytes = Math.max(0, appDataBytes - audioBytes - fileBytes - snapshot.databaseBytes);
+  const totalBytes = snapshot.notesTextBytes + audioBytes + fileBytes + snapshot.databaseBytes + otherBytes;
 
   return {
     noteCount: snapshot.noteCount,
     notesBytes: snapshot.notesTextBytes,
     audioBytes,
+    fileBytes,
     databaseBytes: snapshot.databaseBytes,
     otherBytes,
     totalBytes,
@@ -123,6 +126,7 @@ export const StorageUsageScreen = () => {
     noteCount: 0,
     notesBytes: 0,
     audioBytes: 0,
+    fileBytes: 0,
     databaseBytes: 0,
     otherBytes: 0,
     totalBytes: 0,
@@ -160,10 +164,11 @@ export const StorageUsageScreen = () => {
     () => [
       { key: 'notes', label: t('storage.notesText'), value: storage.notesBytes, color: '#6CD4C8' },
       { key: 'audio', label: t('storage.audioFiles'), value: storage.audioBytes, color: '#FFD57E' },
+      { key: 'files', label: t('storage.imageFiles'), value: storage.fileBytes, color: '#B8A9FF' },
       { key: 'db', label: t('storage.database'), value: storage.databaseBytes, color: '#9FD1FF' },
       { key: 'other', label: t('storage.otherFiles'), value: storage.otherBytes, color: '#FFBEA8' },
     ],
-    [storage.audioBytes, storage.databaseBytes, storage.notesBytes, storage.otherBytes, t]
+    [storage.audioBytes, storage.databaseBytes, storage.fileBytes, storage.notesBytes, storage.otherBytes, t]
   );
 
   const actionTextColor = getContrastColor(colors.primary, colors.text, '#FFFFFF');
