@@ -3,7 +3,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RouteProp } from '@react-navigation/native';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { Alert, FlatList, Pressable, Text, View } from 'react-native';
-import { useShareIntent, type ShareIntentFile } from 'expo-share-intent';
+import { useShareIntentContext, type ShareIntentFile } from 'expo-share-intent';
 import * as FileSystem from 'expo-file-system/legacy';
 import { appendAudiosToNote, appendFilesToNote, listFolders, listNotesByFolder } from '../database/schema';
 import { ScreenContainer } from '../components/ScreenContainer';
@@ -20,6 +20,7 @@ import {
   isProbablyAudioSource,
 } from '../utils/audioFormat';
 import { getFileExtension, isProbablyFileSource } from '../utils/fileFormat';
+import { deleteMediaFiles } from '../utils/mediaFiles';
 
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'ShareImport'>;
 type Route = RouteProp<RootStackParamList, 'ShareImport'>;
@@ -31,7 +32,7 @@ export const ShareImportScreen = () => {
   const navigation = useNavigation<Navigation>();
   const { colors } = useAppColors();
   const { t, language } = useLanguage();
-  const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntent();
+  const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntentContext();
   const selectedFolderTextColor = getContrastColor(colors.primary, '#0B1320', '#FFFFFF');
 
   const [folders, setFolders] = useState<FolderListItem[]>([]);
@@ -64,13 +65,13 @@ export const ShareImportScreen = () => {
   const fileCount = useMemo(() => pendingSharedFiles.filter(isFile).length, [pendingSharedFiles]);
 
   useEffect(() => {
-    if (routeSharedFiles.length > 0) {
-      setPendingSharedFiles(routeSharedFiles);
+    if (sharedIntentFiles.length > 0) {
+      setPendingSharedFiles(sharedIntentFiles);
       return;
     }
 
-    if (sharedIntentFiles.length > 0) {
-      setPendingSharedFiles(sharedIntentFiles);
+    if (routeSharedFiles.length > 0) {
+      setPendingSharedFiles(routeSharedFiles);
     }
   }, [routeSharedFiles, sharedIntentFiles]);
 
@@ -159,47 +160,60 @@ export const ShareImportScreen = () => {
   const buildAudioDrafts = async (audioFiles: PendingFile[]): Promise<NoteAudioDraft[]> => {
     const audioDir = await ensureDirectory('audio');
     const drafts: NoteAudioDraft[] = [];
-    for (const [index, file] of audioFiles.entries()) {
-      const extension = getBestAudioExtension(file.mimeType, file.fileName, file.path);
-      const fileName = file.fileName?.trim() || t('shareImport.sharedAudioDefault', { index: index + 1 });
-      const targetPath = `${audioDir}/${Date.now()}_${index + 1}_shared.${extension}`;
-      try {
-        await FileSystem.copyAsync({ from: file.path, to: targetPath });
-      } catch (copyError) {
-        const detailed = copyError instanceof Error ? copyError.message : String(copyError);
-        throw new Error(`Audio copy failed for ${fileName}: ${detailed}`);
+    try {
+      for (const [index, file] of audioFiles.entries()) {
+        const extension = getBestAudioExtension(file.mimeType, file.fileName, file.path);
+        const fileName = file.fileName?.trim() || t('shareImport.sharedAudioDefault', { index: index + 1 });
+        const targetPath = `${audioDir}/${Date.now()}_${index + 1}_shared.${extension}`;
+        try {
+          await FileSystem.copyAsync({ from: file.path, to: targetPath });
+        } catch (copyError) {
+          const detailed = copyError instanceof Error ? copyError.message : String(copyError);
+          throw new Error(`Audio copy failed for ${fileName}: ${detailed}`);
+        }
+        drafts.push({ uri: targetPath, displayName: fileName });
       }
-      drafts.push({ uri: targetPath, displayName: fileName });
+      return drafts;
+    } catch (error) {
+      await deleteMediaFiles(drafts.map((draft) => draft.uri));
+      throw error;
     }
-    return drafts;
   };
 
   const buildFileDrafts = async (fileItems: PendingFile[]): Promise<NoteFileDraft[]> => {
     const filesDir = await ensureDirectory('files');
     const drafts: NoteFileDraft[] = [];
-    for (const [index, file] of fileItems.entries()) {
-      const extension = getFileExtension(file.mimeType, file.fileName, file.path);
-      const fileName = file.fileName?.trim() || t('shareImport.sharedFileDefault', { index: index + 1 });
-      const targetPath = `${filesDir}/${Date.now()}_${index + 1}_shared.${extension}`;
-      try {
-        await FileSystem.copyAsync({ from: file.path, to: targetPath });
-      } catch (copyError) {
-        const detailed = copyError instanceof Error ? copyError.message : String(copyError);
-        throw new Error(`File copy failed for ${fileName}: ${detailed}`);
+    try {
+      for (const [index, file] of fileItems.entries()) {
+        const extension = getFileExtension(file.mimeType, file.fileName, file.path);
+        const fileName = file.fileName?.trim() || t('shareImport.sharedFileDefault', { index: index + 1 });
+        const targetPath = `${filesDir}/${Date.now()}_${index + 1}_shared.${extension}`;
+        try {
+          await FileSystem.copyAsync({ from: file.path, to: targetPath });
+        } catch (copyError) {
+          const detailed = copyError instanceof Error ? copyError.message : String(copyError);
+          throw new Error(`File copy failed for ${fileName}: ${detailed}`);
+        }
+        drafts.push({
+          uri: targetPath,
+          displayName: fileName,
+          mimeType: file.mimeType?.trim() || 'application/octet-stream',
+        });
       }
-      drafts.push({
-        uri: targetPath,
-        displayName: fileName,
-        mimeType: file.mimeType?.trim() || 'application/octet-stream',
-      });
+      return drafts;
+    } catch (error) {
+      await deleteMediaFiles(drafts.map((draft) => draft.uri));
+      throw error;
     }
-    return drafts;
   };
 
   const onAppendToNote = async (note: Note) => {
     if (isImporting) {
       return;
     }
+
+    const copiedUris: string[] = [];
+    const committedUris = new Set<string>();
 
     try {
       setIsImporting(true);
@@ -209,12 +223,16 @@ export const ShareImportScreen = () => {
 
       if (audioFiles.length > 0) {
         const audioDrafts = await buildAudioDrafts(audioFiles);
+        copiedUris.push(...audioDrafts.map((draft) => draft.uri));
         await appendAudiosToNote(note.id, audioDrafts);
+        audioDrafts.forEach((draft) => committedUris.add(draft.uri));
       }
 
       if (fileItems.length > 0) {
         const fileDrafts = await buildFileDrafts(fileItems);
+        copiedUris.push(...fileDrafts.map((draft) => draft.uri));
         await appendFilesToNote(note.id, fileDrafts);
+        fileDrafts.forEach((draft) => committedUris.add(draft.uri));
       }
 
       resetShareIntent();
@@ -228,6 +246,7 @@ export const ShareImportScreen = () => {
         folderName: folders.find((folder) => folder.id === note.folderId)?.name ?? t('header.notes'),
       });
     } catch (error) {
+      await deleteMediaFiles(copiedUris.filter((uri) => !committedUris.has(uri)));
       console.warn('Failed to append shared files:', error);
       const detailed = error instanceof Error ? error.message : String(error);
       Alert.alert(t('common.error'), `${t('shareImport.appendError')}\n${detailed}`);

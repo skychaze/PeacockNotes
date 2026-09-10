@@ -9,9 +9,27 @@ Use this skill to build the release Android APK for Peacock Notes and archive re
 
 ## Version Update
 
-When making major changes:
-1. Update version in `app.json` (`expo.version`).
-2. Update `versionCode` and `versionName` in `android/app/build.gradle`.
+Bump the version in `app.json` only:
+1. `expo.version` (becomes `versionName`).
+2. `expo.android.versionCode`.
+
+`expo prebuild` writes both into `android/app/build.gradle`, so do not edit Gradle versions by hand.
+
+## Sync Native Project
+
+`android/` is generated from `app.json` and is gitignored. Config plugin changes (share intent filters, permissions, icons) only reach the APK after a prebuild:
+
+```bash
+npx expo prebuild --platform android --no-install
+```
+
+Run this before every release build. It keeps manual Gradle customizations (signing, archive tasks) but rewrites generated files such as `AndroidManifest.xml` and the version fields.
+
+Verify the manifest carries the configured share filters before building:
+
+```bash
+grep -c 'android.intent.action.SEND' android/app/src/main/AndroidManifest.xml
+```
 
 ## Prerequisites
 Syncing messages...
@@ -23,8 +41,9 @@ Syncing messages...
 ## Compile Steps
 
 1. Open a terminal in the project root directory.
-2. Change directory to android.
-3. Run the assemble release command:
+2. Sync the native project (see above).
+3. Change directory to android.
+4. Run the assemble release command:
 
 ```bash
 cd android
@@ -45,3 +64,8 @@ For each release:
 
 1. Check that the build finishes without errors.
 2. Verify that the APK and patch notes exist in the release folder.
+3. Verify the share filters shipped inside the APK (not just in the source manifest):
+
+```bash
+$ANDROID_HOME/build-tools/<version>/aapt2 dump xmltree --file AndroidManifest.xml releases/v<version>-<code>/peacocknotes-v<version>-<code>.apk | grep -B2 -A4 'android.intent.action.SEND'
+```

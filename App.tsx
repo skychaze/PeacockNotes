@@ -1,5 +1,5 @@
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { View, Text, useColorScheme } from 'react-native';
 import {
   NavigationContainer,
@@ -20,31 +20,23 @@ import { NoteEditorScreen } from './src/screens/NoteEditorScreen';
 import {
   ShareIntentProvider,
   useShareIntentContext,
-  type ShareIntentFile,
 } from 'expo-share-intent';
 import { ShareImportScreen } from './src/screens/ShareImportScreen';
 import { StorageUsageScreen } from './src/screens/StorageUsageScreen';
 import { LanguageProvider, useLanguage } from './src/i18n/LanguageContext';
-import { isProbablyAudioSource } from './src/utils/audioFormat';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
-const isProbablyAudioFile = (file: ShareIntentFile) => {
-  return isProbablyAudioSource(file.mimeType, file.fileName ?? '', file.path ?? '');
-};
-
 const AppNavigator = () => {
   const [isReady, setIsReady] = useState(false);
+  const [isNavReady, setIsNavReady] = useState(false);
   const [hasSetupError, setHasSetupError] = useState(false);
   const isDark = useColorScheme() === 'dark';
   const colors = getThemeColors(isDark);
   const { hasShareIntent, shareIntent, isReady: isShareReady } = useShareIntentContext();
   const { t, isLanguageReady } = useLanguage();
-  const sharedAudioFiles = (shareIntent.files ?? []).filter((file: ShareIntentFile) =>
-    isProbablyAudioFile(file)
-  );
-  const hasSharedAudio = hasShareIntent && sharedAudioFiles.length > 0;
+  const sharedFiles = useMemo(() => shareIntent.files ?? [], [shareIntent.files]);
 
   useEffect(() => {
     async function setup() {
@@ -65,20 +57,22 @@ const AppNavigator = () => {
   }, []);
 
   useEffect(() => {
-    if (!isShareReady || !hasSharedAudio) {
+    if (!isNavReady || !isShareReady || !hasShareIntent || sharedFiles.length === 0) {
       return;
     }
 
-    if (navigationRef.isReady()) {
-      navigationRef.navigate('ShareImport', {
-        sharedFiles: sharedAudioFiles.map((file) => ({
-          path: file.path,
-          fileName: file.fileName,
-          mimeType: file.mimeType,
-        })),
-      });
+    if (navigationRef.getCurrentRoute()?.name === 'ShareImport') {
+      return;
     }
-  }, [hasSharedAudio, isShareReady, sharedAudioFiles]);
+
+    navigationRef.navigate('ShareImport', {
+      sharedFiles: sharedFiles.map((file) => ({
+        path: file.path,
+        fileName: file.fileName,
+        mimeType: file.mimeType,
+      })),
+    });
+  }, [hasShareIntent, isNavReady, isShareReady, sharedFiles]);
 
   if (!isReady || !isLanguageReady) {
     return (
@@ -139,7 +133,7 @@ const AppNavigator = () => {
 
   return (
     <SafeAreaProvider>
-      <NavigationContainer ref={navigationRef} theme={navTheme}>
+      <NavigationContainer ref={navigationRef} theme={navTheme} onReady={() => setIsNavReady(true)}>
         <StatusBar style={isDark ? 'light' : 'dark'} />
         <Stack.Navigator
           initialRouteName="Folders"

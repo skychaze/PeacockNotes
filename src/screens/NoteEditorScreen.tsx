@@ -41,6 +41,7 @@ import {
   isShareFriendlyAudioExtension,
 } from '../utils/audioFormat';
 import { getFileExtension, getFileMimeType, isImageFile, isPdfFile, getFileIcon } from '../utils/fileFormat';
+import { deleteMediaFiles } from '../utils/mediaFiles';
 
 type Route = RouteProp<RootStackParamList, 'NoteEditor'>;
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'NoteEditor'>;
@@ -84,6 +85,8 @@ const formatDuration = (seconds: number) => {
 
 const createAudioGroupId = () => `audio_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
+const FLAG_GRANT_READ_URI_PERMISSION = 1;
+
 const formatDurationMillis = (millis: number) => formatDuration(Math.floor(Math.max(0, millis) / 1000));
 
 type AudioGroup = {
@@ -122,6 +125,8 @@ export const NoteEditorScreen = () => {
   const [detailsTargetGroupId, setDetailsTargetGroupId] = useState<string | null>(null);
 
   const soundRef = useRef<Audio.Sound | null>(null);
+  const recordingRef = useRef<Audio.Recording | null>(null);
+  const isFinalizingRecordingRef = useRef(false);
   const playbackQueueRef = useRef<{ segments: NoteAudioDraft[]; nextIndex: number; startedAtMillis: number } | null>(
     null
   );
@@ -292,15 +297,24 @@ export const NoteEditorScreen = () => {
   }, [equalizerA, equalizerB, equalizerC, isPlaying]);
 
   useEffect(() => {
+    recordingRef.current = recording;
+  }, [recording]);
+
+  useEffect(() => {
     return () => {
-      if (recording) {
-        recording.stopAndUnloadAsync().catch(() => undefined);
+      const activeRecording = recordingRef.current;
+      if (activeRecording) {
+        activeRecording.stopAndUnloadAsync().catch(() => undefined);
       }
       if (soundRef.current) {
         soundRef.current.unloadAsync().catch(() => undefined);
       }
+      void Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+      }).catch(() => undefined);
     };
-  }, [recording]);
+  }, []);
 
   const saveDisabled = useMemo(() => !title.trim() || isSaving, [title, isSaving]);
 
@@ -553,6 +567,11 @@ export const NoteEditorScreen = () => {
   };
 
   const removeFile = (index: number) => {
+    const file = files[index];
+    const wasPersisted = initialDraftRef.current.files.some((item) => item.uri === file?.uri);
+    if (file && !wasPersisted) {
+      void deleteMediaFiles([file.uri]);
+    }
     setFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
@@ -579,16 +598,19 @@ export const NoteEditorScreen = () => {
       setViewingFileUri(file.uri);
       return;
     }
+
     try {
+      const mimeType =
+        file.mimeType?.trim() || getFileMimeType(getFileExtension(null, file.displayName, file.uri));
       const contentUri = await FileSystem.getContentUriAsync(file.uri);
       await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
         data: contentUri,
-        type: 'application/pdf',
-        flags: 1,
+        type: mimeType,
+        flags: FLAG_GRANT_READ_URI_PERMISSION,
       });
     } catch (error) {
-      console.warn('Failed to open PDF:', error);
-      Alert.alert(t('common.error'), t('editor.shareFileError'));
+      console.warn('No app could open the file directly, falling back to share:', error);
+      await shareSpecificFile(file);
     }
   };
 
@@ -615,7 +637,60 @@ export const NoteEditorScreen = () => {
     }
   };
 
+  const resetAudioModeForPlayback = async () => {
+    try {
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+      });
+    } catch {
+      // ignore
+    }
+  };
+
+  const nextSegmentIndexForGroup = (groupId: string) => {
+    const group = audioGroups.find((item) => item.groupId === groupId);
+    return (group?.segments ?? []).reduce((max, audio) => Math.max(max, Number(audio.segmentIndex ?? 1)), 0) + 1;
+  };
+
+  const persistRecordingFile = async (uri: string, suffix: 'record' | 'append') => {
+    const directory = await ensureAudioFolder();
+    const serial = audios.length + 1;
+    const targetPath = `${directory}/${Date.now()}_${serial}_${suffix}.m4a`;
+    try {
+      await FileSystem.copyAsync({ from: uri, to: targetPath });
+    } catch (firstCopyError) {
+      console.warn('First recording copy failed, retrying:', firstCopyError);
+      await FileSystem.copyAsync({ from: uri, to: targetPath });
+    }
+    return targetPath;
+  };
+
+  const stopActiveRecording = async (): Promise<{ uri: string; appendGroupId: string | null } | null> => {
+    if (!recording || isFinalizingRecordingRef.current) {
+      return null;
+    }
+    isFinalizingRecordingRef.current = true;
+    try {
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI();
+      const appendGroupId = appendTargetGroupId;
+      setRecording(null);
+      setIsRecordingPaused(false);
+      setRecordSeconds(0);
+      setAppendTargetGroupId(null);
+      return uri ? { uri, appendGroupId } : null;
+    } finally {
+      isFinalizingRecordingRef.current = false;
+      void resetAudioModeForPlayback();
+    }
+  };
+
   const startRecording = async () => {
+    if (recording || isFinalizingRecordingRef.current) {
+      return;
+    }
+
     try {
       if (soundRef.current) {
         await stopCurrentPlayback();
@@ -641,30 +716,23 @@ export const NoteEditorScreen = () => {
       setRecording(newRecording);
     } catch (error) {
       console.warn('Failed to start recording:', error);
+      void resetAudioModeForPlayback();
       Alert.alert(t('common.error'), t('editor.recordStartError'));
     }
   };
 
   const stopRecording = async () => {
-    if (!recording) {
+    if (!recording || appendTargetGroupId) {
       return;
     }
 
     try {
-      await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
-      setRecording(null);
-      setIsRecordingPaused(false);
-      setRecordSeconds(0);
-
-      if (!uri) {
+      const finalized = await stopActiveRecording();
+      if (!finalized) {
         return;
       }
 
-      const directory = await ensureAudioFolder();
-      const serial = audios.length + 1;
-      const targetPath = `${directory}/${Date.now()}_${serial}_record.m4a`;
-      await FileSystem.copyAsync({ from: uri, to: targetPath });
+      const targetPath = await persistRecordingFile(finalized.uri, 'record');
       appendAudio(targetPath, createDefaultAudioName(audioGroups.length + 1), {
         groupId: createAudioGroupId(),
         segmentIndex: 1,
@@ -676,7 +744,7 @@ export const NoteEditorScreen = () => {
   };
 
   const startAppendRecording = async (groupId: string) => {
-    if (recording) {
+    if (recording || isFinalizingRecordingRef.current) {
       return;
     }
 
@@ -710,6 +778,7 @@ export const NoteEditorScreen = () => {
       setRecording(newRecording);
     } catch (error) {
       console.warn('Failed to start append recording:', error);
+      void resetAudioModeForPlayback();
       Alert.alert(t('common.error'), t('editor.recordStartError'));
     }
   };
@@ -720,29 +789,16 @@ export const NoteEditorScreen = () => {
     }
 
     try {
-      await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
-      setRecording(null);
-      setIsRecordingPaused(false);
-      setRecordSeconds(0);
-      setAppendTargetGroupId(null);
-
-      if (!uri) {
+      const finalized = await stopActiveRecording();
+      if (!finalized) {
         return;
       }
 
       const targetGroup = audioGroups.find((group) => group.groupId === groupId);
-      if (!targetGroup) {
-        return;
-      }
-
-      const directory = await ensureAudioFolder();
-      const serial = audios.length + 1;
-      const targetPath = `${directory}/${Date.now()}_${serial}_append.m4a`;
-      await FileSystem.copyAsync({ from: uri, to: targetPath });
-      appendAudio(targetPath, targetGroup.displayName, {
+      const targetPath = await persistRecordingFile(finalized.uri, 'append');
+      appendAudio(targetPath, targetGroup?.displayName || createDefaultAudioName(audioGroups.length + 1), {
         groupId,
-        segmentIndex: targetGroup.segments.length + 1,
+        segmentIndex: nextSegmentIndexForGroup(groupId),
       });
     } catch (error) {
       console.warn('Failed to stop append recording:', error);
@@ -755,34 +811,29 @@ export const NoteEditorScreen = () => {
       return audios;
     }
 
+    if (isFinalizingRecordingRef.current) {
+      Alert.alert(t('common.error'), t('editor.recordStopError'));
+      return null;
+    }
+
     try {
-      await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
-      const activeAppendGroupId = appendTargetGroupId;
-
-      setRecording(null);
-      setIsRecordingPaused(false);
-      setRecordSeconds(0);
-      setAppendTargetGroupId(null);
-
-      if (!uri) {
+      const finalized = await stopActiveRecording();
+      if (!finalized) {
         return audios;
       }
 
-      const directory = await ensureAudioFolder();
-      const serial = audios.length + 1;
-      const targetPath = `${directory}/${Date.now()}_${serial}_${activeAppendGroupId ? 'append' : 'record'}.m4a`;
-      await FileSystem.copyAsync({ from: uri, to: targetPath });
-
-      let nextAudios: NoteAudioDraft[] = audios;
+      const targetPath = await persistRecordingFile(
+        finalized.uri,
+        finalized.appendGroupId ? 'append' : 'record'
+      );
+      const activeAppendGroupId = finalized.appendGroupId;
 
       if (activeAppendGroupId) {
         const targetSegments = audios.filter((audio) => audio.groupId === activeAppendGroupId);
         const nextSegmentIndex =
           targetSegments.reduce((max, audio) => Math.max(max, Number(audio.segmentIndex ?? 1)), 0) + 1;
         const displayName = targetSegments[0]?.displayName || createDefaultAudioName(audioGroups.length + 1);
-
-        nextAudios = [
+        const nextAudios: NoteAudioDraft[] = [
           ...audios,
           {
             uri: targetPath,
@@ -791,19 +842,20 @@ export const NoteEditorScreen = () => {
             segmentIndex: nextSegmentIndex,
           },
         ];
-      } else {
-        const uniqueGroupCount = new Set(audios.map((audio) => audio.groupId).filter(Boolean)).size;
-        nextAudios = [
-          ...audios,
-          {
-            uri: targetPath,
-            displayName: createDefaultAudioName(uniqueGroupCount + 1),
-            groupId: createAudioGroupId(),
-            segmentIndex: 1,
-          },
-        ];
+        setAudios(nextAudios);
+        return nextAudios;
       }
 
+      const uniqueGroupCount = new Set(audios.map((audio) => audio.groupId).filter(Boolean)).size;
+      const nextAudios: NoteAudioDraft[] = [
+        ...audios,
+        {
+          uri: targetPath,
+          displayName: createDefaultAudioName(uniqueGroupCount + 1),
+          groupId: createAudioGroupId(),
+          segmentIndex: 1,
+        },
+      ];
       setAudios(nextAudios);
       return nextAudios;
     } catch (error) {
@@ -814,7 +866,7 @@ export const NoteEditorScreen = () => {
   };
 
   const toggleRecordingPause = async () => {
-    if (!recording) {
+    if (!recording || isFinalizingRecordingRef.current) {
       return;
     }
 
@@ -937,6 +989,18 @@ export const NoteEditorScreen = () => {
   };
 
   const removeAudioGroup = (groupId: string) => {
+    if (recording && appendTargetGroupId === groupId) {
+      return;
+    }
+
+    const persistedUris = new Set(initialDraftRef.current.audios.map((audio) => audio.uri));
+    const sessionUris = audios
+      .filter((audio) => audio.groupId === groupId && !persistedUris.has(audio.uri))
+      .map((audio) => audio.uri);
+    if (sessionUris.length > 0) {
+      void deleteMediaFiles(sessionUris);
+    }
+
     setAudios((prev) => prev.filter((audio) => audio.groupId !== groupId));
 
     if (playingGroupId === groupId) {
@@ -986,7 +1050,7 @@ export const NoteEditorScreen = () => {
         return;
       }
 
-      await Clipboard.setStringAsync(content);
+      await Clipboard.setStringAsync(textForSharing);
 
       if (!(await Sharing.isAvailableAsync())) {
         Alert.alert(t('editor.shareUnavailableTitle'), t('editor.shareUnavailableBody'));
@@ -1048,8 +1112,7 @@ export const NoteEditorScreen = () => {
 
   const onContentSizeChange = (height: number) => {
     const minHeight = 230;
-    const maxHeight = 1600;
-    setContentInputHeight(Math.min(maxHeight, Math.max(minHeight, Math.ceil(height))));
+    setContentInputHeight(Math.max(minHeight, Math.ceil(height)));
   };
 
   const actionTextOnPrimary = getContrastColor(colors.primary, colors.text, '#FFFFFF');
@@ -1436,6 +1499,7 @@ export const NoteEditorScreen = () => {
 
                       <Pressable
                         onPress={() => removeAudioGroup(group.groupId)}
+                        disabled={Boolean(isAppendRecording)}
                         style={{
                           paddingHorizontal: 12,
                           paddingVertical: 8,
@@ -1445,6 +1509,7 @@ export const NoteEditorScreen = () => {
                           flexDirection: 'row',
                           alignItems: 'center',
                           gap: 6,
+                          opacity: isAppendRecording ? 0.5 : 1,
                         }}
                       >
                         <MaterialCommunityIcons name="trash-can-outline" size={18} color={iconOnCard} />
@@ -1510,7 +1575,7 @@ export const NoteEditorScreen = () => {
           >
             <MaterialCommunityIcons name="paperclip" size={18} color={actionTextOnAccent} />
             <Text style={{ color: actionTextOnAccent, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-              {t('editor.addFile')}
+              {t('editor.fileImport')}
             </Text>
           </Pressable>
 
@@ -1822,24 +1887,28 @@ export const NoteEditorScreen = () => {
 
             <ScrollView>
               <View style={{ gap: 8 }}>
-                {audioGroups.map((group, index) => (
-                  <Pressable
-                    key={`${group.groupId}-${index}`}
-                    onPress={() => group.segments[0] && shareSpecificAudio(group.segments[0])}
-                    style={{
-                      borderWidth: 1,
-                      borderColor: colors.border,
-                      borderRadius: ui.radius.sm,
-                      paddingVertical: 9,
-                      paddingHorizontal: 11,
-                      backgroundColor: colors.background,
-                    }}
-                  >
-                    <Text style={{ color: colors.text, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                      {`${index + 1}. ${group.displayName}`}
-                    </Text>
-                  </Pressable>
-                ))}
+                {audioGroups.flatMap((group, groupIndex) =>
+                  group.segments.map((segment, segmentIndex) => (
+                    <Pressable
+                      key={`${group.groupId}-${segmentIndex}`}
+                      onPress={() => void shareSpecificAudio(segment)}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: colors.border,
+                        borderRadius: ui.radius.sm,
+                        paddingVertical: 9,
+                        paddingHorizontal: 11,
+                        backgroundColor: colors.background,
+                      }}
+                    >
+                      <Text style={{ color: colors.text, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
+                        {group.segments.length > 1
+                          ? `${groupIndex + 1}. ${group.displayName} (${segmentIndex + 1}/${group.segments.length})`
+                          : `${groupIndex + 1}. ${group.displayName}`}
+                      </Text>
+                    </Pressable>
+                  ))
+                )}
               </View>
             </ScrollView>
 

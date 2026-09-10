@@ -103,7 +103,7 @@ const buildStorageViewModel = async (snapshot: StorageSnapshot): Promise<Storage
     : 0;
   const appDataBytes = documentBytes + cacheBytes;
   const otherBytes = Math.max(0, appDataBytes - audioBytes - fileBytes - snapshot.databaseBytes);
-  const totalBytes = snapshot.notesTextBytes + audioBytes + fileBytes + snapshot.databaseBytes + otherBytes;
+  const totalBytes = audioBytes + fileBytes + snapshot.databaseBytes + otherBytes;
 
   return {
     noteCount: snapshot.noteCount,

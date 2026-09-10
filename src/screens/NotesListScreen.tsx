@@ -101,6 +101,9 @@ export const NotesListScreen = () => {
     });
   }, [notes, searchQuery]);
 
+  const isSearchActive = searchQuery.trim().length > 0;
+  const canReorder = sortField === 'custom' && isReorderMode && !isSearchActive;
+
   const onChangeSortField = (field: SortField) => {
     setSortField(field);
     if (field === 'custom') {
@@ -234,7 +237,7 @@ export const NotesListScreen = () => {
                       fontSize: ui.font.xs,
                     }}
                   >
-                    {t('sort.reorderHint')}
+                    {isSearchActive ? t('sort.reorderSearchHint') : t('sort.reorderHint')}
                   </Text>
                 ) : null}
               </View>
@@ -333,23 +336,23 @@ export const NotesListScreen = () => {
                     <>
                       <Pressable
                         hitSlop={8}
-                        disabled={index === 0}
+                        disabled={!canReorder || index === 0}
                         onPress={(event) => {
                           event.stopPropagation();
                           void onMoveNote(item.id, 'up');
                         }}
-                        style={{ opacity: index === 0 ? 0.4 : 1 }}
+                        style={{ opacity: !canReorder || index === 0 ? 0.4 : 1 }}
                       >
                         <MaterialCommunityIcons name="arrow-up-bold" size={19} color={cardIconColor} />
                       </Pressable>
                       <Pressable
                         hitSlop={8}
-                        disabled={index === filteredNotes.length - 1}
+                        disabled={!canReorder || index === filteredNotes.length - 1}
                         onPress={(event) => {
                           event.stopPropagation();
                           void onMoveNote(item.id, 'down');
                         }}
-                        style={{ opacity: index === filteredNotes.length - 1 ? 0.4 : 1 }}
+                        style={{ opacity: !canReorder || index === filteredNotes.length - 1 ? 0.4 : 1 }}
                       >
                         <MaterialCommunityIcons name="arrow-down-bold" size={19} color={cardIconColor} />
                       </Pressable>

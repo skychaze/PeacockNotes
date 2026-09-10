@@ -8,6 +8,7 @@ import type {
   NoteFileDraft,
   NoteDraft,
 } from '../types/models';
+import { deleteMediaFiles } from '../utils/mediaFiles';
 
 export type SortField = 'custom' | 'name' | 'createdAt';
 export type SortDirection = 'asc' | 'desc';
@@ -185,6 +186,26 @@ export const initDb = async () => {
 const nowIso = () => new Date().toISOString();
 const createAudioGroupId = () => `audio_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
+const listNoteMediaUris = async (db: SQLite.SQLiteDatabase, noteIds: number[]): Promise<string[]> => {
+  if (noteIds.length === 0) {
+    return [];
+  }
+
+  const placeholders = noteIds.map(() => '?').join(', ');
+  const rows = await db.getAllAsync<{ uri: string | null }>(
+    `
+    SELECT uri FROM NoteAudios WHERE noteId IN (${placeholders})
+    UNION ALL
+    SELECT uri FROM NoteFiles WHERE noteId IN (${placeholders});
+    `,
+    [...noteIds, ...noteIds]
+  );
+
+  return rows
+    .map((row) => row.uri?.trim() ?? '')
+    .filter((uri) => Boolean(uri));
+};
+
 type FolderRow = {
   id: number;
   name: string;
@@ -349,14 +370,24 @@ export const moveFolderPosition = async (
 
   const current = rows[index];
   const target = rows[targetIndex];
-  await db.runAsync('UPDATE Folders SET sortOrder = ? WHERE id = ?;', [target.sortOrder, current.id]);
-  await db.runAsync('UPDATE Folders SET sortOrder = ? WHERE id = ?;', [current.sortOrder, target.id]);
+  await db.withTransactionAsync(async () => {
+    await db.runAsync('UPDATE Folders SET sortOrder = ? WHERE id = ?;', [target.sortOrder, current.id]);
+    await db.runAsync('UPDATE Folders SET sortOrder = ? WHERE id = ?;', [current.sortOrder, target.id]);
+  });
   return true;
 };
 
 export const deleteFolder = async (folderId: number): Promise<void> => {
   const db = await getDb();
+  const noteRows = await db.getAllAsync<{ id: number }>('SELECT id FROM Notes WHERE folderId = ?;', [folderId]);
+  const mediaUris = await listNoteMediaUris(
+    db,
+    noteRows.map((row) => row.id)
+  );
+
   await db.runAsync('DELETE FROM Folders WHERE id = ?;', [folderId]);
+
+  await deleteMediaFiles(mediaUris);
 };
 
 export const listNotesByFolder = async (
@@ -497,30 +528,32 @@ export const appendFilesToNote = async (
     return;
   }
 
-  const orderRow = await db.getFirstAsync<{ maxOrder: number | null }>(
-    'SELECT MAX(orderIndex) as maxOrder FROM NoteFiles WHERE noteId = ?;',
-    [noteId]
-  );
-  const baseOrder = Number(orderRow?.maxOrder ?? 0);
-
-  for (const [index, file] of normalizedFiles.entries()) {
-    await db.runAsync(
-      `
-      INSERT INTO NoteFiles (noteId, uri, displayName, mimeType, orderIndex, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?);
-      `,
-      [
-        noteId,
-        file.uri,
-        file.displayName || `File ${baseOrder + index + 1}`,
-        file.mimeType,
-        baseOrder + index + 1,
-        nowIso(),
-      ]
+  await db.withTransactionAsync(async () => {
+    const orderRow = await db.getFirstAsync<{ maxOrder: number | null }>(
+      'SELECT MAX(orderIndex) as maxOrder FROM NoteFiles WHERE noteId = ?;',
+      [noteId]
     );
-  }
+    const baseOrder = Number(orderRow?.maxOrder ?? 0);
 
-  await db.runAsync('UPDATE Notes SET updatedAt = ? WHERE id = ?;', [nowIso(), noteId]);
+    for (const [index, file] of normalizedFiles.entries()) {
+      await db.runAsync(
+        `
+        INSERT INTO NoteFiles (noteId, uri, displayName, mimeType, orderIndex, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?);
+        `,
+        [
+          noteId,
+          file.uri,
+          file.displayName || `File ${baseOrder + index + 1}`,
+          file.mimeType,
+          baseOrder + index + 1,
+          nowIso(),
+        ]
+      );
+    }
+
+    await db.runAsync('UPDATE Notes SET updatedAt = ? WHERE id = ?;', [nowIso(), noteId]);
+  });
 };
 
 const saveNoteAudios = async (
@@ -566,16 +599,20 @@ export const createNote = async (
     [folderId]
   );
   const nextSortOrder = Number(orderRow?.maxSortOrder ?? 0) + 1;
-  const result = await db.runAsync(
-    `
-    INSERT INTO Notes (folderId, title, content, audioUri, createdAt, updatedAt, sortOrder)
-    VALUES (?, ?, ?, ?, ?, ?, ?);
-    `,
-    [folderId, title, draft.content, null, timestamp, timestamp, nextSortOrder]
-  );
-  const noteId = Number(result.lastInsertRowId);
-  await saveNoteAudios(db, noteId, draft.audios);
-  await saveNoteFiles(db, noteId, draft.files);
+
+  let noteId = 0;
+  await db.withTransactionAsync(async () => {
+    const result = await db.runAsync(
+      `
+      INSERT INTO Notes (folderId, title, content, audioUri, createdAt, updatedAt, sortOrder)
+      VALUES (?, ?, ?, ?, ?, ?, ?);
+      `,
+      [folderId, title, draft.content, null, timestamp, timestamp, nextSortOrder]
+    );
+    noteId = Number(result.lastInsertRowId);
+    await saveNoteAudios(db, noteId, draft.audios);
+    await saveNoteFiles(db, noteId, draft.files);
+  });
   return noteId;
 };
 
@@ -600,8 +637,10 @@ export const moveNotePosition = async (
 
   const current = rows[index];
   const target = rows[targetIndex];
-  await db.runAsync('UPDATE Notes SET sortOrder = ? WHERE id = ?;', [target.sortOrder, current.id]);
-  await db.runAsync('UPDATE Notes SET sortOrder = ? WHERE id = ?;', [current.sortOrder, target.id]);
+  await db.withTransactionAsync(async () => {
+    await db.runAsync('UPDATE Notes SET sortOrder = ? WHERE id = ?;', [target.sortOrder, current.id]);
+    await db.runAsync('UPDATE Notes SET sortOrder = ? WHERE id = ?;', [current.sortOrder, target.id]);
+  });
   return true;
 };
 
@@ -614,21 +653,34 @@ export const updateNote = async (
   if (!title) {
     throw new Error('Note title is required');
   }
-  await db.runAsync(
-    `
-    UPDATE Notes
-    SET title = ?, content = ?, audioUri = NULL, updatedAt = ?
-    WHERE id = ?;
-    `,
-    [title, draft.content, nowIso(), noteId]
-  );
-  await saveNoteAudios(db, noteId, draft.audios);
-  await saveNoteFiles(db, noteId, draft.files);
+
+  const previousUris = await listNoteMediaUris(db, [noteId]);
+
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      `
+      UPDATE Notes
+      SET title = ?, content = ?, audioUri = NULL, updatedAt = ?
+      WHERE id = ?;
+      `,
+      [title, draft.content, nowIso(), noteId]
+    );
+    await saveNoteAudios(db, noteId, draft.audios);
+    await saveNoteFiles(db, noteId, draft.files);
+  });
+
+  const keptUris = new Set([
+    ...draft.audios.map((audio) => audio.uri.trim()),
+    ...draft.files.map((file) => file.uri.trim()),
+  ]);
+  await deleteMediaFiles(previousUris.filter((uri) => !keptUris.has(uri)));
 };
 
 export const deleteNote = async (noteId: number): Promise<void> => {
   const db = await getDb();
+  const mediaUris = await listNoteMediaUris(db, [noteId]);
   await db.runAsync('DELETE FROM Notes WHERE id = ?;', [noteId]);
+  await deleteMediaFiles(mediaUris);
 };
 
 export const appendAudiosToNote = async (
@@ -649,31 +701,33 @@ export const appendAudiosToNote = async (
     return;
   }
 
-  const orderRow = await db.getFirstAsync<{ maxOrder: number | null }>(
-    'SELECT MAX(orderIndex) as maxOrder FROM NoteAudios WHERE noteId = ?;',
-    [noteId]
-  );
-  const baseOrder = Number(orderRow?.maxOrder ?? 0);
-
-  for (const [index, audio] of normalizedAudios.entries()) {
-    await db.runAsync(
-      `
-      INSERT INTO NoteAudios (noteId, uri, displayName, groupId, segmentIndex, orderIndex, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?);
-      `,
-      [
-        noteId,
-        audio.uri,
-        audio.displayName || `Audio ${baseOrder + index + 1}`,
-        audio.groupId,
-        audio.segmentIndex > 0 ? audio.segmentIndex : 1,
-        baseOrder + index + 1,
-        nowIso(),
-      ]
+  await db.withTransactionAsync(async () => {
+    const orderRow = await db.getFirstAsync<{ maxOrder: number | null }>(
+      'SELECT MAX(orderIndex) as maxOrder FROM NoteAudios WHERE noteId = ?;',
+      [noteId]
     );
-  }
+    const baseOrder = Number(orderRow?.maxOrder ?? 0);
 
-  await db.runAsync('UPDATE Notes SET updatedAt = ? WHERE id = ?;', [nowIso(), noteId]);
+    for (const [index, audio] of normalizedAudios.entries()) {
+      await db.runAsync(
+        `
+        INSERT INTO NoteAudios (noteId, uri, displayName, groupId, segmentIndex, orderIndex, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?);
+        `,
+        [
+          noteId,
+          audio.uri,
+          audio.displayName || `Audio ${baseOrder + index + 1}`,
+          audio.groupId,
+          audio.segmentIndex > 0 ? audio.segmentIndex : 1,
+          baseOrder + index + 1,
+          nowIso(),
+        ]
+      );
+    }
+
+    await db.runAsync('UPDATE Notes SET updatedAt = ? WHERE id = ?;', [nowIso(), noteId]);
+  });
 };
 
 export const getStorageSnapshot = async (): Promise<StorageSnapshot> => {
@@ -696,9 +750,9 @@ export const getStorageSnapshot = async (): Promise<StorageSnapshot> => {
     `
   );
 
-  const fileRows = await db.getAllAsync<{ uri: string | null; mimeType: string | null }>(
+  const fileRows = await db.getAllAsync<{ uri: string | null }>(
     `
-    SELECT uri, mimeType
+    SELECT uri
     FROM NoteFiles
     WHERE uri IS NOT NULL AND LENGTH(TRIM(uri)) > 0;
     `

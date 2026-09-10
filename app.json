@@ -2,7 +2,7 @@
   "expo": {
     "name": "Peacock Notes",
     "slug": "Note_app",
-    "version": "1.0.0",
+    "version": "1.0.5",
     "scheme": "peacocknotes",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -24,6 +24,7 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
+      "versionCode": 6,
       "package": "com.roy.peacocknotes"
     },
     "plugins": [
@@ -46,7 +47,8 @@
             "NSExtensionActivationSupportsFileWithMaxCount": 10
           }
         }
-      ]
+      ],
+      "./plugins/withShareIntentFilterCleanup"
     ],
     "web": {
       "favicon": "./assets/favicon.png"
