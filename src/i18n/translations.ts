@@ -22,6 +22,11 @@ export const translations: Record<Language, Translations> = {
     'common.save': 'সেভ',
     'common.loading': 'লোড হচ্ছে...',
     'common.noText': 'কোনো লেখা নেই',
+    'common.back': 'ফিরে যান',
+    'action.rename': 'নাম পরিবর্তন',
+    'date.today': 'আজ',
+    'date.yesterday': 'গতকাল',
+    'sort.title': 'সাজানোর নিয়ম',
 
     'folder.loadingSubtitle': 'আপনার ফোল্ডারগুলো প্রস্তুত করা হচ্ছে',
     'folder.emptyTitle': 'এখনও কোনো ফোল্ডার নেই',
@@ -149,6 +154,8 @@ export const translations: Record<Language, Translations> = {
     'shareImport.folderLoadError': 'ফোল্ডার লোড করা যায়নি।',
     'shareImport.noteLoadError': 'এই ফোল্ডারের নোট লোড করা যায়নি।',
     'shareImport.appendError': 'এই নোটে শেয়ার করা ফাইল যোগ করা যায়নি।',
+    'shareImport.audioCount': '{count}টি অডিও ফাইল',
+    'shareImport.fileCount': '{count}টি ছবি/PDF ফাইল',
 
     'storage.totalLabel': 'অ্যাপের মোট স্টোরেজ ব্যবহার',
     'storage.noteCount': '{count} টি নোট',
@@ -191,6 +198,11 @@ export const translations: Record<Language, Translations> = {
     'common.save': 'Save',
     'common.loading': 'Loading...',
     'common.noText': 'No text yet',
+    'common.back': 'Back',
+    'action.rename': 'Rename',
+    'date.today': 'Today',
+    'date.yesterday': 'Yesterday',
+    'sort.title': 'Sort by',
 
     'folder.loadingSubtitle': 'Preparing your folders',
     'folder.emptyTitle': 'No folders yet',
@@ -318,6 +330,8 @@ export const translations: Record<Language, Translations> = {
     'shareImport.folderLoadError': 'Could not load folders.',
     'shareImport.noteLoadError': 'Could not load notes for this folder.',
     'shareImport.appendError': 'Could not import shared files to this note.',
+    'shareImport.audioCount': '{count} audio file(s)',
+    'shareImport.fileCount': '{count} image/PDF file(s)',
 
     'storage.totalLabel': 'Total app storage usage',
     'storage.noteCount': '{count} notes',

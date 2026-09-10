@@ -1,25 +1,34 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { ComponentProps } from 'react';
+import { useCallback, useMemo, useState } from 'react';
+import type { GestureResponderEvent } from 'react-native';
 import {
   Alert,
-  Animated,
-  Easing,
   FlatList,
-  Modal,
-  Pressable,
-  Text,
-  useWindowDimensions,
+  StyleSheet,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
+import Animated from 'react-native-reanimated';
+import { ActionSheet } from '../components/ActionSheet';
+import type { ActionSheetRow } from '../components/ActionSheet';
+import { AppText, getFontFamily } from '../components/AppText';
+import { BottomSheet } from '../components/BottomSheet';
+import { Chip } from '../components/Chip';
 import { EmptyState } from '../components/EmptyState';
+import { FAB } from '../components/FAB';
+import { GlassSurface } from '../components/GlassSurface';
+import { IconButton } from '../components/IconButton';
 import { LanguageToggleButton } from '../components/LanguageToggleButton';
+import { PressableScale } from '../components/PressableScale';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { ScreenContainer } from '../components/ScreenContainer';
+import { TOP_BAR_HEIGHT, TopBar } from '../components/TopBar';
+import { useEntrance } from '../components/entrance';
 import {
   createFolder,
   deleteFolder,
@@ -30,7 +39,7 @@ import {
   type SortField,
 } from '../database/schema';
 import { useLanguage } from '../i18n/LanguageContext';
-import { getContrastColor } from '../theme/contrast';
+import { FOLDER_ACCENTS } from '../theme/colors';
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
 import type { FolderListItem } from '../types/models';
@@ -38,133 +47,62 @@ import type { RootStackParamList } from '../types/navigation';
 
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'Folders'>;
 
+type ActiveSheet = 'none' | 'sort' | 'menu' | 'create' | 'rename' | 'folderActions';
+
+const SORT_FIELDS: SortField[] = ['custom', 'name', 'createdAt'];
+
 export const FoldersScreen = () => {
   const navigation = useNavigation<Navigation>();
-  const { colors } = useAppColors();
+  const { colors, isDark } = useAppColors();
   const { t, language } = useLanguage();
-  const { width } = useWindowDimensions();
+  const { width: windowWidth } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const cardIconColor = getContrastColor(colors.card, colors.text, '#FFFFFF');
-  const fabIconColor = getContrastColor(colors.primary, colors.text, '#FFFFFF');
-  const menuIconColor = getContrastColor(colors.card, colors.text, '#FFFFFF');
+  const entrance = useEntrance();
+  const cardWidth = (windowWidth - ui.space.lg * 2 - ui.space.md) / 2;
+
   const [folders, setFolders] = useState<FolderListItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [activeSheet, setActiveSheet] = useState<ActiveSheet>('none');
+  const [actionsFolder, setActionsFolder] = useState<FolderListItem | null>(null);
   const [newFolderName, setNewFolderName] = useState('');
   const [isCreating, setIsCreating] = useState(false);
-  const [isRenameOpen, setIsRenameOpen] = useState(false);
   const [renameFolderName, setRenameFolderName] = useState('');
   const [renameFolderId, setRenameFolderId] = useState<number | null>(null);
   const [isRenaming, setIsRenaming] = useState(false);
   const [sortField, setSortField] = useState<SortField>('custom');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [isReorderMode, setIsReorderMode] = useState(false);
-  const [isSideMenuVisible, setIsSideMenuVisible] = useState(false);
-  const sideMenuProgress = useRef(new Animated.Value(0)).current;
 
-  const sideMenuWidth = Math.max(1, Math.floor(width * 0.4));
   const fabBottom = Math.max(insets.bottom + 12, 22);
   const listBottomPadding = Math.max(insets.bottom + 104, 126);
 
-  const openSideMenu = useCallback(() => {
-    setIsSideMenuVisible(true);
-    Animated.timing(sideMenuProgress, {
-      toValue: 1,
-      duration: 260,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start();
-  }, [sideMenuProgress]);
+  const closeSheet = useCallback(() => setActiveSheet('none'), []);
 
-  const closeSideMenu = useCallback(
-    (onDone?: () => void) => {
-      Animated.timing(sideMenuProgress, {
-        toValue: 0,
-        duration: 220,
-        easing: Easing.in(Easing.cubic),
-        useNativeDriver: true,
-      }).start(({ finished }) => {
-        if (finished) {
-          setIsSideMenuVisible(false);
-          onDone?.();
-        }
-      });
-    },
-    [sideMenuProgress]
-  );
-
-  const drawerMenus = useMemo(
+  const menuRows: ActionSheetRow[] = useMemo(
     () => [
       {
-        id: 'storage',
-        title: t('drawer.storage'),
-        subtitle: t('drawer.storageSubtitle'),
         icon: 'harddisk',
-        cardColor: '#FFF7D8',
-        onPress: () => {
-          closeSideMenu(() => navigation.navigate('StorageUsage'));
-        },
+        label: t('drawer.storage'),
+        onPress: () => navigation.navigate('StorageUsage'),
       },
       {
-        id: 'sync',
-        title: t('drawer.cloudSync'),
-        subtitle: t('drawer.comingSoon'),
         icon: 'cloud-outline',
-        cardColor: '#E6F8FF',
-        onPress: () => {
-          closeSideMenu(() => Alert.alert(t('drawer.comingSoonTitle'), t('drawer.futureMessage')));
-        },
+        label: t('drawer.cloudSync'),
+        onPress: () => Alert.alert(t('drawer.comingSoonTitle'), t('drawer.futureMessage')),
       },
       {
-        id: 'tags',
-        title: t('drawer.tagsFilters'),
-        subtitle: t('drawer.comingSoon'),
         icon: 'tag-multiple-outline',
-        cardColor: '#FFE9F7',
-        onPress: () => {
-          closeSideMenu(() => Alert.alert(t('drawer.comingSoonTitle'), t('drawer.futureMessage')));
-        },
+        label: t('drawer.tagsFilters'),
+        onPress: () => Alert.alert(t('drawer.comingSoonTitle'), t('drawer.futureMessage')),
       },
       {
-        id: 'backup',
-        title: t('drawer.backupRestore'),
-        subtitle: t('drawer.comingSoon'),
         icon: 'backup-restore',
-        cardColor: '#E9FDE7',
-        onPress: () => {
-          closeSideMenu(() => Alert.alert(t('drawer.comingSoonTitle'), t('drawer.futureMessage')));
-        },
+        label: t('drawer.backupRestore'),
+        onPress: () => Alert.alert(t('drawer.comingSoonTitle'), t('drawer.futureMessage')),
       },
     ],
-    [closeSideMenu, navigation, t]
+    [navigation, t]
   );
-
-  useLayoutEffect(() => {
-    navigation.setOptions({
-      title: t('header.folders'),
-      headerRight: () => (
-        <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 4 }}>
-          <LanguageToggleButton />
-          <Pressable
-            onPress={openSideMenu}
-            hitSlop={8}
-            style={{
-              marginLeft: 2,
-              marginRight: 8,
-              borderRadius: ui.radius.pill,
-              borderWidth: 1,
-              borderColor: colors.border,
-              backgroundColor: colors.card,
-              paddingHorizontal: 8,
-              paddingVertical: 6,
-            }}
-          >
-            <MaterialCommunityIcons name="menu" size={18} color={menuIconColor} />
-          </Pressable>
-        </View>
-      ),
-    });
-  }, [colors.border, colors.card, language, menuIconColor, navigation, openSideMenu, t]);
 
   const refreshFolders = useCallback(async () => {
     try {
@@ -195,7 +133,7 @@ export const FoldersScreen = () => {
       setIsCreating(true);
       await createFolder(name);
       setNewFolderName('');
-      setIsCreateOpen(false);
+      closeSheet();
       await refreshFolders();
     } catch (error) {
       console.warn('Failed to create folder:', error);
@@ -231,7 +169,7 @@ export const FoldersScreen = () => {
   const onOpenRenameFolder = (folder: FolderListItem) => {
     setRenameFolderId(folder.id);
     setRenameFolderName(folder.name);
-    setIsRenameOpen(true);
+    setActiveSheet('rename');
   };
 
   const onRenameFolder = async () => {
@@ -249,7 +187,7 @@ export const FoldersScreen = () => {
       await updateFolderName(renameFolderId, name);
       setRenameFolderId(null);
       setRenameFolderName('');
-      setIsRenameOpen(false);
+      closeSheet();
       await refreshFolders();
     } catch (error) {
       console.warn('Failed to rename folder:', error);
@@ -284,572 +222,320 @@ export const FoldersScreen = () => {
     }
   };
 
+  const stopAnd =
+    (action: () => void) =>
+    (event: GestureResponderEvent) => {
+      event.stopPropagation();
+      action();
+    };
+
+  const actionRows: ActionSheetRow[] = actionsFolder
+    ? [
+        {
+          icon: 'pencil-outline',
+          label: t('action.rename'),
+          onPress: () => onOpenRenameFolder(actionsFolder),
+        },
+        {
+          icon: 'trash-can-outline',
+          label: t('common.delete'),
+          destructive: true,
+          onPress: () => onDeleteFolder(actionsFolder),
+        },
+      ]
+    : [];
+
   return (
     <ScreenContainer>
-      <View style={{ flex: 1, paddingHorizontal: ui.space.md, paddingTop: ui.space.sm }}>
-        <View
-          style={{
-            marginBottom: ui.space.sm,
-            backgroundColor: colors.card,
-            borderWidth: 1,
-            borderColor: colors.border,
-            borderRadius: ui.radius.lg,
-            padding: ui.space.sm,
+      <View style={{ flex: 1, paddingHorizontal: ui.space.lg }}>
+        <FlatList
+          data={folders}
+          keyExtractor={(item) => String(item.id)}
+          numColumns={2}
+          columnWrapperStyle={{ gap: ui.space.md }}
+          contentContainerStyle={{
+            paddingTop: insets.top + ui.space.sm + TOP_BAR_HEIGHT + ui.space.md,
+            paddingBottom: listBottomPadding,
+            gap: ui.space.md,
+            flexGrow: 1,
           }}
-        >
-          <Text
-            style={{
-              color: colors.text,
-              fontFamily: 'NotoSansBengali',
-              fontSize: ui.font.md,
-              marginBottom: ui.space.xs,
-            }}
-          >
-            {t('folder.sortLabel')}
-          </Text>
-          <FlatList
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            data={['custom', 'name', 'createdAt'] as SortField[]}
-            keyExtractor={(item) => item}
-            contentContainerStyle={{ gap: 8, paddingBottom: 4 }}
-            renderItem={({ item: field }) => {
-              const isActive = sortField === field;
-              return (
-                <Pressable
-                  onPress={() => onChangeSortField(field)}
-                  style={{
-                    paddingHorizontal: 11,
-                    paddingVertical: 7,
-                    borderRadius: ui.radius.pill,
-                    borderWidth: 1,
-                    borderColor: isActive ? colors.primary : colors.border,
-                    backgroundColor: isActive ? colors.primary : colors.background,
-                  }}
-                >
-                  <Text
-                    style={{
-                      color: isActive ? getContrastColor(colors.primary, colors.text, '#FFFFFF') : colors.text,
-                      fontFamily: 'NotoSansBengali',
-                      fontSize: ui.font.sm,
-                    }}
-                  >
-                    {t(`sort.${field}`)}
-                  </Text>
-                </Pressable>
-              );
-            }}
-          />
-
-          <View style={{ marginTop: ui.space.xs }}>
-            {sortField !== 'custom' ? (
-              <Pressable
-                onPress={() => setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'))}
-                style={{
-                  alignSelf: 'flex-start',
-                  paddingHorizontal: 11,
-                  paddingVertical: 7,
-                  borderRadius: ui.radius.pill,
-                  borderWidth: 1,
-                  borderColor: colors.border,
-                  backgroundColor: colors.background,
-                }}
-              >
-                <Text style={{ color: colors.textSecondary, fontFamily: 'NotoSansBengali', fontSize: ui.font.sm }}>
-                  {t(`sort.${sortDirection}`)}
-                </Text>
-              </Pressable>
+          ListHeaderComponent={
+            <AppText variant="display" style={{ marginBottom: ui.space.sm }}>
+              {t('header.folders')}
+            </AppText>
+          }
+          ListEmptyComponent={
+            isLoading ? (
+              <EmptyState
+                iconName="folder-clock-outline"
+                title={t('common.loading')}
+                subtitle={t('folder.loadingSubtitle')}
+              />
             ) : (
-              <View>
-                <Pressable
-                  onPress={() => setIsReorderMode((prev) => !prev)}
-                  style={{
-                    alignSelf: 'flex-start',
-                    paddingHorizontal: 11,
-                    paddingVertical: 7,
-                    borderRadius: ui.radius.pill,
-                    borderWidth: 1,
-                    borderColor: isReorderMode ? colors.primary : colors.border,
-                    backgroundColor: isReorderMode ? colors.primary : colors.background,
-                  }}
-                >
-                  <Text
-                    style={{
-                      color: isReorderMode ? getContrastColor(colors.primary, colors.text, '#FFFFFF') : colors.text,
-                      fontFamily: 'NotoSansBengali',
-                      fontSize: ui.font.sm,
-                    }}
-                  >
-                    {t('sort.reorder')}
-                  </Text>
-                </Pressable>
-                {isReorderMode ? (
-                  <Text
-                    style={{
-                      marginTop: ui.space.xs,
-                      color: colors.textSecondary,
-                      fontFamily: 'NotoSansBengali',
-                      fontSize: ui.font.xs,
-                    }}
-                  >
-                    {t('sort.reorderHint')}
-                  </Text>
-                ) : null}
-              </View>
-            )}
-          </View>
-        </View>
+              <EmptyState
+                iconName="folder-outline"
+                title={t('folder.emptyTitle')}
+                subtitle={t('folder.emptySubtitle')}
+              />
+            )
+          }
+          renderItem={({ item, index }) => {
+            const accent = FOLDER_ACCENTS[Math.abs(Number(item.id)) % FOLDER_ACCENTS.length];
+            const tint = isDark ? accent.dark : accent.light;
+            const ink = isDark ? accent.inkDark : accent.inkLight;
+            const isReorderModeActive = sortField === 'custom' && isReorderMode;
 
-        {isLoading ? (
-          <EmptyState
-            iconName="folder-clock-outline"
-            title={t('common.loading')}
-            subtitle={t('folder.loadingSubtitle')}
-          />
-        ) : folders.length === 0 ? (
-          <EmptyState
-            iconName="folder-outline"
-            title={t('folder.emptyTitle')}
-            subtitle={t('folder.emptySubtitle')}
-          />
-        ) : (
-          <FlatList
-            data={folders}
-            keyExtractor={(item) => String(item.id)}
-            contentContainerStyle={{ paddingBottom: listBottomPadding, gap: 9 }}
-            renderItem={({ item, index }) => (
-              <Pressable
-                onPress={() =>
-                  navigation.navigate('NotesList', {
-                    folderId: item.id,
-                    folderName: item.name,
-                  })
-                }
-                style={{
-                  backgroundColor: colors.card,
-                  borderColor: colors.border,
-                  borderWidth: 1,
-                  borderRadius: ui.radius.md,
-                  paddingHorizontal: ui.space.sm,
-                  paddingVertical: 12,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                }}
+            return (
+              <Animated.View
+                entering={entrance(index)}
+                style={{ width: cardWidth }}
               >
-                <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                  <MaterialCommunityIcons
-                    name="folder"
-                    size={26}
-                    color={cardIconColor}
-                  />
-                  <View style={{ marginLeft: 10, flex: 1 }}>
-                    <Text
-                      numberOfLines={2}
+                <PressableScale
+                  onPress={() =>
+                    navigation.navigate('NotesList', {
+                      folderId: item.id,
+                      folderName: item.name,
+                    })
+                  }
+                  onLongPress={() => {
+                    setActionsFolder(item);
+                    setActiveSheet('folderActions');
+                  }}
+                  style={{ flex: 1 }}
+                >
+                  <GlassSurface
+                    radius={ui.radius.lg}
+                    fallbackColor={tint}
+                    style={{ flex: 1 }}
+                    contentStyle={{ padding: ui.space.lg, gap: ui.space.sm, flex: 1 }}
+                  >
+                    <View
+                      pointerEvents="none"
+                      style={[
+                        StyleSheet.absoluteFillObject,
+                        { backgroundColor: tint, opacity: 0.28 },
+                      ]}
+                    />
+                    <LinearGradient
+                      pointerEvents="none"
+                      colors={['rgba(255,255,255,0.12)', 'rgba(255,255,255,0)']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 0, y: 1 }}
+                      style={StyleSheet.absoluteFillObject}
+                    />
+                    <View
                       style={{
-                        color: colors.text,
-                        fontFamily: 'NotoSansBengali',
-                        fontSize: ui.font.lg,
-                        lineHeight: 21,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
                       }}
                     >
-                      {item.name}
-                    </Text>
-                    <Text
-                      style={{
-                        color: colors.textSecondary,
-                        fontFamily: 'NotoSansBengali',
-                        marginTop: 2,
-                        fontSize: ui.font.sm,
-                      }}
-                    >
-                      {t('folder.notesCount', { count: item.noteCount })}
-                    </Text>
-                  </View>
-                </View>
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  {sortField === 'custom' && isReorderMode ? (
-                    <View style={{ marginRight: 4 }}>
-                      <Pressable
-                        disabled={index === 0}
-                        hitSlop={8}
-                        onPress={(event) => {
-                          event.stopPropagation();
-                          void onMoveFolder(item.id, 'up');
-                        }}
-                        style={{ padding: 5, opacity: index === 0 ? 0.4 : 1 }}
-                      >
-                        <MaterialCommunityIcons
-                          name="arrow-up-bold"
-                          size={19}
-                          color={getContrastColor(colors.card, colors.textSecondary, '#FFFFFF')}
-                        />
-                      </Pressable>
-                      <Pressable
-                        disabled={index === folders.length - 1}
-                        hitSlop={8}
-                        onPress={(event) => {
-                          event.stopPropagation();
-                          void onMoveFolder(item.id, 'down');
-                        }}
-                        style={{ padding: 5, opacity: index === folders.length - 1 ? 0.4 : 1 }}
-                      >
-                        <MaterialCommunityIcons
-                          name="arrow-down-bold"
-                          size={19}
-                          color={getContrastColor(colors.card, colors.textSecondary, '#FFFFFF')}
-                        />
-                      </Pressable>
+                      <MaterialCommunityIcons name="folder" size={24} color={ink} />
+                      {isReorderModeActive ? (
+                        <View style={{ flexDirection: 'row', gap: ui.space.xs }}>
+                          <IconButton
+                            icon="arrow-up-bold"
+                            size={18}
+                            disabled={index === 0}
+                            onPress={stopAnd(() => void onMoveFolder(item.id, 'up'))}
+                          />
+                          <IconButton
+                            icon="arrow-down-bold"
+                            size={18}
+                            disabled={index === folders.length - 1}
+                            onPress={stopAnd(() => void onMoveFolder(item.id, 'down'))}
+                          />
+                        </View>
+                      ) : null}
                     </View>
-                  ) : null}
-
-                  <Pressable
-                    hitSlop={10}
-                    onPress={(event) => {
-                      event.stopPropagation();
-                      onOpenRenameFolder(item);
-                    }}
-                    style={{ padding: 7 }}
-                  >
-                    <MaterialCommunityIcons
-                      name="pencil-outline"
-                      size={21}
-                      color={getContrastColor(colors.card, colors.textSecondary, '#FFFFFF')}
-                    />
-                  </Pressable>
-
-                  <Pressable
-                    hitSlop={10}
-                    onPress={(event) => {
-                      event.stopPropagation();
-                      onDeleteFolder(item);
-                    }}
-                    style={{ padding: 7 }}
-                  >
-                    <MaterialCommunityIcons
-                      name="trash-can-outline"
-                      size={23}
-                      color={getContrastColor(colors.card, colors.textSecondary, '#FFFFFF')}
-                    />
-                  </Pressable>
-                </View>
-              </Pressable>
-            )}
-          />
-        )}
+                    <AppText variant="headline" numberOfLines={2}>
+                      {item.name}
+                    </AppText>
+                    <AppText variant="caption" color={ink} style={{ opacity: 0.8 }}>
+                      {t('folder.notesCount', { count: item.noteCount })}
+                    </AppText>
+                  </GlassSurface>
+                </PressableScale>
+              </Animated.View>
+            );
+          }}
+        />
       </View>
 
-      <Pressable
-        onPress={() => setIsCreateOpen(true)}
-        style={{
-          position: 'absolute',
-          right: 18,
-          bottom: fabBottom,
-          backgroundColor: colors.primary,
-          width: 56,
-          height: 56,
-          borderRadius: 28,
-          alignItems: 'center',
-          justifyContent: 'center',
-          shadowColor: '#000000',
-          shadowOpacity: 0.18,
-          shadowRadius: 9,
-          shadowOffset: { width: 0, height: 4 },
-          elevation: 8,
-        }}
-      >
-        <MaterialCommunityIcons name="folder-plus" size={26} color={fabIconColor} />
-      </Pressable>
+      <TopBar>
+        <LanguageToggleButton />
+        <IconButton
+          icon="sort-variant"
+          accessibilityLabel={t('sort.title')}
+          onPress={() => setActiveSheet('sort')}
+        />
+        <View style={{ width: ui.space.sm }} />
+        <IconButton
+          icon="dots-vertical"
+          accessibilityLabel={t('drawer.quickMenu')}
+          onPress={() => setActiveSheet('menu')}
+        />
+      </TopBar>
 
-      <Modal
-        animationType="fade"
-        transparent
-        visible={isCreateOpen}
-        onRequestClose={() => setIsCreateOpen(false)}
+      <FAB icon="folder-plus" bottom={fabBottom} onPress={() => setActiveSheet('create')} />
+
+      <BottomSheet
+        visible={activeSheet === 'sort'}
+        onClose={closeSheet}
+        title={t('sort.title')}
       >
-        <View
-          style={{
-            flex: 1,
-            backgroundColor: 'rgba(0,0,0,0.35)',
-            justifyContent: 'center',
-            padding: ui.space.md,
-          }}
-        >
+        <View style={{ paddingHorizontal: ui.space.lg, gap: ui.space.md }}>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: ui.space.sm }}>
+            {SORT_FIELDS.map((field) => (
+              <Chip
+                key={field}
+                label={t(`sort.${field}`)}
+                selected={sortField === field}
+                onPress={() => onChangeSortField(field)}
+              />
+            ))}
+          </View>
+
+          {sortField !== 'custom' ? (
+            <View style={{ flexDirection: 'row', gap: ui.space.sm }}>
+              <Chip
+                label={t('sort.asc')}
+                selected={sortDirection === 'asc'}
+                onPress={() => setSortDirection('asc')}
+              />
+              <Chip
+                label={t('sort.desc')}
+                selected={sortDirection === 'desc'}
+                onPress={() => setSortDirection('desc')}
+              />
+            </View>
+          ) : (
+            <View style={{ gap: ui.space.sm }}>
+              <Chip
+                label={t('sort.reorder')}
+                selected={isReorderMode}
+                onPress={() => setIsReorderMode((prev) => !prev)}
+              />
+              {isReorderMode ? (
+                <AppText variant="caption" color={colors.textSecondary}>
+                  {t('sort.reorderHint')}
+                </AppText>
+              ) : null}
+            </View>
+          )}
+        </View>
+      </BottomSheet>
+
+      <ActionSheet
+        visible={activeSheet === 'menu'}
+        onClose={closeSheet}
+        title={t('drawer.quickMenu')}
+        rows={menuRows}
+      />
+
+      <ActionSheet
+        visible={activeSheet === 'folderActions'}
+        onClose={closeSheet}
+        title={actionsFolder?.name}
+        rows={actionRows}
+      />
+
+      <BottomSheet
+        visible={activeSheet === 'create'}
+        onClose={closeSheet}
+        title={t('folder.newTitle')}
+      >
+        <View style={{ paddingHorizontal: ui.space.lg, gap: ui.space.md }}>
+          <TextInput
+            value={newFolderName}
+            onChangeText={setNewFolderName}
+            placeholder={t('folder.placeholder')}
+            placeholderTextColor={colors.textSecondary}
+            style={{
+              backgroundColor: colors.surfaceVariant,
+              borderRadius: ui.radius.md,
+              padding: 14,
+              color: colors.text,
+              fontFamily: getFontFamily(language, '400'),
+              fontSize: ui.type.body.size,
+            }}
+          />
           <View
             style={{
-              backgroundColor: colors.card,
-              borderRadius: ui.radius.lg,
-              borderWidth: 1,
-              borderColor: colors.border,
-              padding: ui.space.md,
+              flexDirection: 'row',
+              justifyContent: 'flex-end',
+              alignItems: 'center',
+              gap: ui.space.sm,
             }}
           >
-            <Text
-              style={{
-                color: colors.text,
-                fontSize: ui.font.xl,
-                fontFamily: 'NotoSansBengali',
-                marginBottom: ui.space.xs,
+            <PressableScale
+              onPress={() => {
+                setNewFolderName('');
+                closeSheet();
               }}
+              style={{ paddingHorizontal: ui.space.md, paddingVertical: ui.space.md }}
             >
-              {t('folder.newTitle')}
-            </Text>
-            <TextInput
-              value={newFolderName}
-              onChangeText={setNewFolderName}
-              placeholder={t('folder.placeholder')}
-              placeholderTextColor={colors.textSecondary}
-              style={{
-                borderWidth: 1,
-                borderColor: colors.border,
-                backgroundColor: colors.background,
-                borderRadius: ui.radius.sm,
-                color: colors.text,
-                paddingHorizontal: 11,
-                paddingVertical: 9,
-                fontFamily: 'NotoSansBengali',
-                fontSize: ui.font.md,
-              }}
-            />
-            <View
-              style={{
-                marginTop: ui.space.sm,
-                flexDirection: 'row',
-                justifyContent: 'flex-end',
-                gap: ui.space.sm,
-              }}
-            >
-              <Pressable
-                onPress={() => {
-                  setIsCreateOpen(false);
-                  setNewFolderName('');
-                }}
-                style={{ paddingHorizontal: 10, justifyContent: 'center' }}
-              >
-                <Text style={{ color: colors.textSecondary, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                  {t('common.cancel')}
-                </Text>
-              </Pressable>
-              <View style={{ width: 120 }}>
-                <PrimaryButton onPress={onCreateFolder} disabled={isCreating}>
-                  {isCreating ? t('folder.creating') : t('folder.create')}
-                </PrimaryButton>
-              </View>
+              <AppText variant="headline" color={colors.textSecondary}>
+                {t('common.cancel')}
+              </AppText>
+            </PressableScale>
+            <View style={{ width: 132 }}>
+              <PrimaryButton onPress={onCreateFolder} disabled={isCreating}>
+                {isCreating ? t('folder.creating') : t('folder.create')}
+              </PrimaryButton>
             </View>
           </View>
         </View>
-      </Modal>
+      </BottomSheet>
 
-      <Modal
-        animationType="fade"
-        transparent
-        visible={isRenameOpen}
-        onRequestClose={() => setIsRenameOpen(false)}
+      <BottomSheet
+        visible={activeSheet === 'rename'}
+        onClose={closeSheet}
+        title={t('folder.renameTitle')}
       >
-        <View
-          style={{
-            flex: 1,
-            backgroundColor: 'rgba(0,0,0,0.35)',
-            justifyContent: 'center',
-            padding: ui.space.md,
-          }}
-        >
+        <View style={{ paddingHorizontal: ui.space.lg, gap: ui.space.md }}>
+          <TextInput
+            value={renameFolderName}
+            onChangeText={setRenameFolderName}
+            placeholder={t('folder.renamePlaceholder')}
+            placeholderTextColor={colors.textSecondary}
+            style={{
+              backgroundColor: colors.surfaceVariant,
+              borderRadius: ui.radius.md,
+              padding: 14,
+              color: colors.text,
+              fontFamily: getFontFamily(language, '400'),
+              fontSize: ui.type.body.size,
+            }}
+          />
           <View
             style={{
-              backgroundColor: colors.card,
-              borderRadius: ui.radius.lg,
-              borderWidth: 1,
-              borderColor: colors.border,
-              padding: ui.space.md,
+              flexDirection: 'row',
+              justifyContent: 'flex-end',
+              alignItems: 'center',
+              gap: ui.space.sm,
             }}
           >
-            <Text
-              style={{
-                color: colors.text,
-                fontSize: ui.font.xl,
-                fontFamily: 'NotoSansBengali',
-                marginBottom: ui.space.xs,
+            <PressableScale
+              onPress={() => {
+                setRenameFolderName('');
+                setRenameFolderId(null);
+                closeSheet();
               }}
+              style={{ paddingHorizontal: ui.space.md, paddingVertical: ui.space.md }}
             >
-              {t('folder.renameTitle')}
-            </Text>
-            <TextInput
-              value={renameFolderName}
-              onChangeText={setRenameFolderName}
-              placeholder={t('folder.renamePlaceholder')}
-              placeholderTextColor={colors.textSecondary}
-              style={{
-                borderWidth: 1,
-                borderColor: colors.border,
-                backgroundColor: colors.background,
-                borderRadius: ui.radius.sm,
-                color: colors.text,
-                paddingHorizontal: 11,
-                paddingVertical: 9,
-                fontFamily: 'NotoSansBengali',
-                fontSize: ui.font.md,
-              }}
-            />
-            <View
-              style={{
-                marginTop: ui.space.sm,
-                flexDirection: 'row',
-                justifyContent: 'flex-end',
-                gap: ui.space.sm,
-              }}
-            >
-              <Pressable
-                onPress={() => {
-                  setIsRenameOpen(false);
-                  setRenameFolderName('');
-                  setRenameFolderId(null);
-                }}
-                style={{ paddingHorizontal: 10, justifyContent: 'center' }}
-              >
-                <Text style={{ color: colors.textSecondary, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                  {t('common.cancel')}
-                </Text>
-              </Pressable>
-              <View style={{ width: 120 }}>
-                <PrimaryButton onPress={onRenameFolder} disabled={isRenaming}>
-                  {isRenaming ? t('folder.renaming') : t('common.save')}
-                </PrimaryButton>
-              </View>
+              <AppText variant="headline" color={colors.textSecondary}>
+                {t('common.cancel')}
+              </AppText>
+            </PressableScale>
+            <View style={{ width: 132 }}>
+              <PrimaryButton onPress={onRenameFolder} disabled={isRenaming}>
+                {isRenaming ? t('folder.renaming') : t('common.save')}
+              </PrimaryButton>
             </View>
           </View>
         </View>
-      </Modal>
-
-      <Modal
-        animationType="none"
-        transparent
-        visible={isSideMenuVisible}
-        onRequestClose={() => closeSideMenu()}
-      >
-        <View style={{ flex: 1 }}>
-          <Pressable onPress={() => closeSideMenu()} style={{ flex: 1 }}>
-            <Animated.View
-              style={{
-                flex: 1,
-                backgroundColor: '#000000',
-                opacity: sideMenuProgress.interpolate({ inputRange: [0, 1], outputRange: [0, 0.3] }),
-              }}
-            />
-          </Pressable>
-
-          <Animated.View
-            style={{
-              position: 'absolute',
-              top: 0,
-              right: 0,
-              bottom: 0,
-              width: sideMenuWidth,
-              transform: [
-                {
-                  translateX: sideMenuProgress.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [sideMenuWidth, 0],
-                  }),
-                },
-              ],
-            }}
-          >
-            <View
-              style={{
-                flex: 1,
-                backgroundColor: '#FF7A59',
-                paddingTop: 68,
-                paddingHorizontal: 12,
-                borderTopLeftRadius: 18,
-                borderBottomLeftRadius: 18,
-                overflow: 'hidden',
-              }}
-            >
-              <View
-                style={{
-                  position: 'absolute',
-                  top: -40,
-                  right: -35,
-                  width: 148,
-                  height: 148,
-                  borderRadius: 74,
-                  backgroundColor: '#FFD54F',
-                  opacity: 0.65,
-                }}
-              />
-              <View
-                style={{
-                  position: 'absolute',
-                  bottom: 110,
-                  left: -34,
-                  width: 120,
-                  height: 120,
-                  borderRadius: 60,
-                  backgroundColor: '#5EEAD4',
-                  opacity: 0.5,
-                }}
-              />
-              <Text
-                style={{
-                  color: '#FFFFFF',
-                  fontFamily: 'NotoSansBengali',
-                  fontSize: ui.font.xl,
-                  marginBottom: 12,
-                }}
-              >
-                {t('drawer.quickMenu')}
-              </Text>
-
-              <View style={{ gap: 9 }}>
-                {drawerMenus.map((menu) => (
-                  <Pressable
-                    key={menu.id}
-                    onPress={menu.onPress}
-                    style={{
-                      borderRadius: ui.radius.md,
-                      borderWidth: 1,
-                      borderColor: 'rgba(255,255,255,0.35)',
-                      backgroundColor: menu.cardColor,
-                      paddingVertical: 10,
-                      paddingHorizontal: 10,
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 8,
-                    }}
-                  >
-                    <MaterialCommunityIcons
-                      name={menu.icon as ComponentProps<typeof MaterialCommunityIcons>['name']}
-                      size={20}
-                      color={'#1C3144'}
-                    />
-                    <View style={{ flex: 1 }}>
-                      <Text style={{ color: '#1C3144', fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                        {menu.title}
-                      </Text>
-                      <Text style={{ color: '#355164', fontFamily: 'NotoSansBengali', fontSize: ui.font.xs }}>
-                        {menu.subtitle}
-                      </Text>
-                    </View>
-                  </Pressable>
-                ))}
-              </View>
-
-              <View style={{ marginTop: 'auto', paddingBottom: 20 }}>
-                <Text
-                  style={{
-                    textAlign: 'center',
-                    color: '#FFFFFF',
-                    fontFamily: 'NotoSansBengali',
-                    fontSize: ui.font.sm,
-                  }}
-                >
-                  {t('drawer.madeWithLove')}
-                </Text>
-              </View>
-            </View>
-          </Animated.View>
-        </View>
-      </Modal>
+      </BottomSheet>
     </ScreenContainer>
   );
 };

@@ -1,7 +1,8 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Text, View } from 'react-native';
+import { View } from 'react-native';
+import { AppText } from './AppText';
+import { EmptyArt, type EmptyArtName } from './EmptyArt';
 import { useAppColors } from '../theme/useAppColors';
-import { getContrastColor } from '../theme/contrast';
 import { ui } from '../theme/ui';
 
 type EmptyStateProps = {
@@ -10,61 +11,51 @@ type EmptyStateProps = {
   subtitle: string;
 };
 
+const ART_BY_ICON: Partial<Record<keyof typeof MaterialCommunityIcons.glyphMap, EmptyArtName>> = {
+  'folder-outline': 'folders',
+  'folder-clock-outline': 'folders',
+  'file-document-outline': 'notes',
+  'file-document-plus-outline': 'notes',
+  'magnify': 'search',
+  'share-variant-outline': 'generic',
+};
+
 export const EmptyState = ({ iconName, title, subtitle }: EmptyStateProps) => {
   const { colors } = useAppColors();
-  const iconColor = getContrastColor(colors.card, colors.text, '#FFFFFF');
+  const artName = ART_BY_ICON[iconName] ?? 'generic';
 
   return (
     <View
-        style={{
-          flex: 1,
-          alignItems: 'center',
-          justifyContent: 'center',
-          paddingHorizontal: ui.space.xl,
-        }}
-      >
+      style={{
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: ui.space.xl,
+      }}
+    >
       <View
         style={{
-          width: 66,
-          height: 66,
-          borderRadius: 33,
+          width: 96,
+          height: 96,
+          borderRadius: 48,
           alignItems: 'center',
           justifyContent: 'center',
-          backgroundColor: colors.card,
-          borderWidth: 1,
-          borderColor: colors.border,
+          backgroundColor: colors.surfaceVariant,
           marginBottom: ui.space.md,
         }}
       >
-        <MaterialCommunityIcons
-          name={iconName}
-          size={30}
-          color={iconColor}
-        />
+        <EmptyArt name={artName} size={56} />
       </View>
-      <Text
-        style={{
-          color: colors.text,
-          fontFamily: 'NotoSansBengali',
-          fontSize: ui.font.xl,
-          textAlign: 'center',
-          lineHeight: 24,
-        }}
-      >
+      <AppText variant="title" style={{ textAlign: 'center' }}>
         {title}
-      </Text>
-      <Text
-        style={{
-          marginTop: ui.space.xs,
-          color: colors.textSecondary,
-          fontFamily: 'NotoSansBengali',
-          fontSize: ui.font.md,
-          lineHeight: 22,
-          textAlign: 'center',
-        }}
+      </AppText>
+      <AppText
+        variant="bodySmall"
+        color={colors.textSecondary}
+        style={{ marginTop: ui.space.xs, textAlign: 'center' }}
       >
         {subtitle}
-      </Text>
+      </AppText>
     </View>
   );
 };

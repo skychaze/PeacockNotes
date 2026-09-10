@@ -1,16 +1,23 @@
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RouteProp } from '@react-navigation/native';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
-import { Alert, FlatList, Pressable, Text, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Alert, FlatList, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Animated from 'react-native-reanimated';
 import { useShareIntentContext, type ShareIntentFile } from 'expo-share-intent';
 import * as FileSystem from 'expo-file-system/legacy';
 import { appendAudiosToNote, appendFilesToNote, listFolders, listNotesByFolder } from '../database/schema';
-import { ScreenContainer } from '../components/ScreenContainer';
+import { AppText } from '../components/AppText';
+import { Card } from '../components/Card';
 import { EmptyState } from '../components/EmptyState';
 import { LanguageToggleButton } from '../components/LanguageToggleButton';
+import { PrimaryButton } from '../components/PrimaryButton';
+import { ScreenContainer } from '../components/ScreenContainer';
+import { TOP_BAR_HEIGHT, TopBar } from '../components/TopBar';
+import { useEntrance } from '../components/entrance';
 import { useLanguage } from '../i18n/LanguageContext';
-import { getContrastColor } from '../theme/contrast';
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
 import type { FolderListItem, Note, NoteAudioDraft, NoteFileDraft } from '../types/models';
@@ -19,7 +26,7 @@ import {
   getBestAudioExtension,
   isProbablyAudioSource,
 } from '../utils/audioFormat';
-import { getFileExtension, isProbablyFileSource } from '../utils/fileFormat';
+import { getFileExtension, getFileIcon, isProbablyFileSource } from '../utils/fileFormat';
 import { deleteMediaFiles } from '../utils/mediaFiles';
 
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'ShareImport'>;
@@ -27,21 +34,40 @@ type Route = RouteProp<RootStackParamList, 'ShareImport'>;
 
 type PendingFile = { path: string; fileName: string; mimeType: string };
 
+const formatBytes = (bytes: number) => {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return '';
+  }
+
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const decimals = unitIndex === 0 ? 0 : value < 10 ? 1 : 0;
+  return `${value.toFixed(decimals)} ${units[unitIndex]}`;
+};
+
 export const ShareImportScreen = () => {
   const route = useRoute<Route>();
   const navigation = useNavigation<Navigation>();
   const { colors } = useAppColors();
   const { t, language } = useLanguage();
+  const insets = useSafeAreaInsets();
+  const entrance = useEntrance();
   const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntentContext();
-  const selectedFolderTextColor = getContrastColor(colors.primary, '#0B1320', '#FFFFFF');
 
   const [folders, setFolders] = useState<FolderListItem[]>([]);
   const [selectedFolderId, setSelectedFolderId] = useState<number | null>(null);
+  const [selectedNoteId, setSelectedNoteId] = useState<number | null>(null);
   const [notes, setNotes] = useState<Note[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isImporting, setIsImporting] = useState(false);
   const [hasAutoRedirected, setHasAutoRedirected] = useState(false);
   const [pendingSharedFiles, setPendingSharedFiles] = useState<PendingFile[]>([]);
+  const [fileSizes, setFileSizes] = useState<Record<string, number>>({});
 
   const allRouteFiles = useMemo(() => route.params?.sharedFiles ?? [], [route.params?.sharedFiles]);
 
@@ -74,6 +100,31 @@ export const ShareImportScreen = () => {
       setPendingSharedFiles(routeSharedFiles);
     }
   }, [routeSharedFiles, sharedIntentFiles]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadSizes = async () => {
+      const entries = await Promise.all(
+        pendingSharedFiles.map(async (file) => {
+          try {
+            const info = await FileSystem.getInfoAsync(file.path);
+            const size = info.exists && !info.isDirectory ? Number(info.size ?? 0) : 0;
+            return [file.path, size] as const;
+          } catch {
+            return [file.path, 0] as const;
+          }
+        })
+      );
+      if (!cancelled) {
+        setFileSizes(Object.fromEntries(entries));
+      }
+    };
+
+    void loadSizes();
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingSharedFiles]);
 
   const refreshFolders = useCallback(async () => {
     try {
@@ -111,13 +162,6 @@ export const ShareImportScreen = () => {
 
     void loadNotes();
   }, [selectedFolderId]);
-
-  useLayoutEffect(() => {
-    navigation.setOptions({
-      title: t('header.shareImportFiles'),
-      headerRight: () => <LanguageToggleButton />,
-    });
-  }, [navigation, t, language]);
 
   useEffect(() => {
     if (hasAutoRedirected) {
@@ -255,6 +299,15 @@ export const ShareImportScreen = () => {
     }
   };
 
+  const getFileRowIcon = (file: PendingFile): keyof typeof MaterialCommunityIcons.glyphMap => {
+    if (isAudio(file)) {
+      return 'music-note';
+    }
+    return getFileIcon(file.mimeType) as keyof typeof MaterialCommunityIcons.glyphMap;
+  };
+
+  const selectedNote = notes.find((note) => note.id === selectedNoteId) ?? null;
+
   if (pendingSharedFiles.length === 0) {
     return (
       <ScreenContainer>
@@ -263,112 +316,155 @@ export const ShareImportScreen = () => {
           title={t('shareImport.noShareTitle')}
           subtitle={t('shareImport.noShareBody')}
         />
+        <TopBar onBack={() => navigation.goBack()}>
+          <LanguageToggleButton />
+        </TopBar>
       </ScreenContainer>
     );
   }
 
   return (
     <ScreenContainer>
-      <View style={{ flex: 1, paddingHorizontal: ui.space.md, paddingTop: ui.space.sm, gap: 10 }}>
-        <Text style={{ color: colors.text, fontFamily: 'NotoSansBengali', fontSize: ui.font.lg }}>
-          {t('shareImport.selectFolder')}
-        </Text>
-
+      <View style={{ flex: 1, paddingHorizontal: ui.space.lg }}>
         <FlatList
-          horizontal
-          data={folders}
+          data={notes}
           keyExtractor={(item) => String(item.id)}
-          contentContainerStyle={{ gap: 8, paddingBottom: 3 }}
-          showsHorizontalScrollIndicator={false}
-          renderItem={({ item }) => {
-            const isSelected = selectedFolderId === item.id;
+          contentContainerStyle={{
+            paddingTop: insets.top + ui.space.sm + TOP_BAR_HEIGHT + ui.space.md,
+            paddingBottom: ui.space.md,
+            gap: ui.space.md,
+          }}
+          keyboardShouldPersistTaps="handled"
+          ListHeaderComponent={
+            <View style={{ gap: ui.space.md }}>
+              <AppText variant="display" numberOfLines={2}>
+                {t('header.shareImportFiles')}
+              </AppText>
+
+              <View style={{ gap: ui.space.sm }}>
+                {pendingSharedFiles.map((file) => {
+                  const size = formatBytes(fileSizes[file.path] ?? 0);
+                  return (
+                    <Card key={file.path} style={{ flexDirection: 'row', alignItems: 'center', gap: ui.space.md }}>
+                      <MaterialCommunityIcons
+                        name={getFileRowIcon(file)}
+                        size={24}
+                        color={colors.textSecondary}
+                      />
+                      <View style={{ flex: 1 }}>
+                        <AppText variant="bodySmall" numberOfLines={2}>
+                          {file.fileName || t('shareImport.sharedFileDefault', { index: 1 })}
+                        </AppText>
+                        {size ? (
+                          <AppText variant="caption" color={colors.textSecondary}>
+                            {size}
+                          </AppText>
+                        ) : null}
+                      </View>
+                    </Card>
+                  );
+                })}
+                {audioCount > 0 ? (
+                  <AppText variant="bodySmall" color={colors.textSecondary}>
+                    {t('shareImport.audioCount', { count: audioCount })}
+                  </AppText>
+                ) : null}
+                {fileCount > 0 ? (
+                  <AppText variant="bodySmall" color={colors.textSecondary}>
+                    {t('shareImport.fileCount', { count: fileCount })}
+                  </AppText>
+                ) : null}
+              </View>
+
+              <AppText variant="headline">{t('shareImport.selectFolder')}</AppText>
+
+              <View style={{ gap: ui.space.sm }}>
+                {folders.map((folder) => {
+                  const isSelected = selectedFolderId === folder.id;
+                  return (
+                    <Card
+                      key={folder.id}
+                      onPress={() => {
+                        setSelectedFolderId(folder.id);
+                        setSelectedNoteId(null);
+                      }}
+                      tint={isSelected ? colors.surfaceVariant : colors.surface}
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: ui.space.md }}
+                    >
+                      <MaterialCommunityIcons
+                        name="folder-outline"
+                        size={22}
+                        color={isSelected ? colors.primary : colors.textSecondary}
+                      />
+                      <AppText variant="headline" style={{ flex: 1 }} numberOfLines={1}>
+                        {folder.name}
+                      </AppText>
+                      {isSelected ? (
+                        <MaterialCommunityIcons name="check-circle" size={22} color={colors.primary} />
+                      ) : null}
+                    </Card>
+                  );
+                })}
+              </View>
+
+              <AppText variant="headline">{t('shareImport.selectNote')}</AppText>
+            </View>
+          }
+          ListEmptyComponent={
+            isLoading ? (
+              <EmptyState
+                iconName="folder-clock-outline"
+                title={t('common.loading')}
+                subtitle={t('shareImport.loadingSubtitle')}
+              />
+            ) : (
+              <EmptyState
+                iconName="file-document-outline"
+                title={t('shareImport.noNotesTitle')}
+                subtitle={t('shareImport.noNotesBody')}
+              />
+            )
+          }
+          renderItem={({ item, index }) => {
+            const isSelected = selectedNoteId === item.id;
             return (
-              <Pressable
-                onPress={() => setSelectedFolderId(item.id)}
-                style={{
-                  paddingHorizontal: 12,
-                  paddingVertical: 7,
-                  borderRadius: ui.radius.pill,
-                  borderWidth: 1,
-                  borderColor: isSelected ? colors.primary : colors.border,
-                  backgroundColor: isSelected ? colors.primary : colors.background,
-                }}
-              >
-                <Text
-                  style={{
-                    color: isSelected ? selectedFolderTextColor : colors.text,
-                    fontFamily: 'NotoSansBengali',
-                    fontSize: ui.font.sm,
-                  }}
+              <Animated.View entering={entrance(index)}>
+                <Card
+                  onPress={() => setSelectedNoteId(item.id)}
+                  tint={isSelected ? colors.surfaceVariant : colors.surface}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: ui.space.md }}
                 >
-                  {item.name}
-                </Text>
-              </Pressable>
+                  <AppText variant="headline" numberOfLines={2} style={{ flex: 1 }}>
+                    {item.title}
+                  </AppText>
+                  {isSelected ? (
+                    <MaterialCommunityIcons name="check-circle" size={22} color={colors.primary} />
+                  ) : null}
+                </Card>
+              </Animated.View>
             );
           }}
         />
 
-        <Text style={{ color: colors.text, fontFamily: 'NotoSansBengali', fontSize: ui.font.lg, marginTop: 6 }}>
-          {t('shareImport.selectNote')}
-        </Text>
-
-        {audioCount > 0 ? (
-          <Text style={{ color: colors.textSecondary, fontFamily: 'NotoSansBengali', fontSize: ui.font.sm }}>
-            {audioCount} audio file(s)
-          </Text>
-        ) : null}
-        {fileCount > 0 ? (
-          <Text style={{ color: colors.textSecondary, fontFamily: 'NotoSansBengali', fontSize: ui.font.sm }}>
-            {fileCount} image/PDF file(s)
-          </Text>
-        ) : null}
-
-        {isLoading ? (
-          <EmptyState
-            iconName="folder-clock-outline"
-            title={t('common.loading')}
-            subtitle={t('shareImport.loadingSubtitle')}
-          />
-        ) : notes.length === 0 ? (
-          <EmptyState
-            iconName="file-document-outline"
-            title={t('shareImport.noNotesTitle')}
-            subtitle={t('shareImport.noNotesBody')}
-          />
-        ) : (
-          <FlatList
-            data={notes}
-            keyExtractor={(item) => String(item.id)}
-            contentContainerStyle={{ gap: 9, paddingBottom: 20 }}
-            renderItem={({ item }) => (
-              <Pressable
-                onPress={() => void onAppendToNote(item)}
-                style={{
-                  borderRadius: ui.radius.md,
-                  borderWidth: 1,
-                  borderColor: colors.border,
-                  backgroundColor: colors.card,
-                  paddingHorizontal: ui.space.sm,
-                  paddingVertical: 11,
-                }}
-              >
-                <Text style={{ color: colors.text, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                  {item.title}
-                </Text>
-                <Text style={{ color: colors.textSecondary, fontFamily: 'NotoSansBengali', marginTop: 4, fontSize: ui.font.sm }}>
-                  {t('shareImport.tapToAppend', { count: pendingSharedFiles.length })}
-                </Text>
-              </Pressable>
-            )}
-          />
-        )}
-
-        {isImporting ? (
-          <Text style={{ color: colors.textSecondary, fontFamily: 'NotoSansBengali', fontSize: ui.font.sm }}>
-            {t('shareImport.importing')}
-          </Text>
-        ) : null}
+        <View style={{ paddingBottom: ui.space.sm }}>
+          <PrimaryButton
+            onPress={() => {
+              if (selectedNote) {
+                void onAppendToNote(selectedNote);
+              }
+            }}
+            disabled={!selectedNote || isImporting}
+          >
+            {isImporting
+              ? t('shareImport.importing')
+              : t('shareImport.tapToAppend', { count: pendingSharedFiles.length })}
+          </PrimaryButton>
+        </View>
       </View>
+
+      <TopBar onBack={() => navigation.goBack()}>
+        <LanguageToggleButton />
+      </TopBar>
     </ScreenContainer>
   );
 };

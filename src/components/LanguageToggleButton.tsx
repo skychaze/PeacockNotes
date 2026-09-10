@@ -1,33 +1,30 @@
-import { Pressable, Text, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useAppColors } from '../theme/useAppColors';
-import { getContrastColor } from '../theme/contrast';
+import { AppText } from './AppText';
+import { PressableScale } from './PressableScale';
 import { useLanguage } from '../i18n/LanguageContext';
+import { useAppColors } from '../theme/useAppColors';
 
 export const LanguageToggleButton = () => {
   const { colors } = useAppColors();
   const { t, toggleLanguage } = useLanguage();
-  const bg = colors.primary;
-  const textColor = getContrastColor(bg, '#0B1320', '#FFFFFF');
 
   return (
-    <Pressable onPress={toggleLanguage} style={{ marginRight: 12 }}>
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 4,
-          backgroundColor: bg,
-          borderRadius: 16,
-          paddingHorizontal: 8,
-          paddingVertical: 6,
-        }}
-      >
-        <MaterialCommunityIcons name="translate" size={15} color={textColor} />
-        <Text style={{ color: textColor, fontFamily: 'NotoSansBengali', fontSize: 13 }}>
-          {t('lang.toggleShort')}
-        </Text>
-      </View>
-    </Pressable>
+    <PressableScale
+      onPress={toggleLanguage}
+      accessibilityRole="button"
+      accessibilityLabel={t('lang.toggleShort')}
+      style={{
+        height: 36,
+        borderRadius: 999,
+        paddingHorizontal: 12,
+        backgroundColor: colors.surfaceVariant,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+      }}
+    >
+      <MaterialCommunityIcons name="translate" size={18} color={colors.text} />
+      <AppText variant="caption">{t('lang.toggleShort')}</AppText>
+    </PressableScale>
   );
 };

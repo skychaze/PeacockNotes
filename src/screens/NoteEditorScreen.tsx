@@ -8,28 +8,38 @@ import * as Sharing from 'expo-sharing';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Animated as RNAnimated,
   Image,
-  Linking,
   Modal,
   Platform,
-  Pressable,
   ScrollView,
-  Text,
   TextInput,
   View,
   useWindowDimensions,
 } from 'react-native';
+import Animated from 'react-native-reanimated';
+import type { ViewStyle } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { PrimaryButton } from '../components/PrimaryButton';
-import { ScreenContainer } from '../components/ScreenContainer';
-import { createNote, getNoteById, updateNote } from '../database/schema';
+import { ActionSheet } from '../components/ActionSheet';
+import type { ActionSheetRow } from '../components/ActionSheet';
+import { AnimatedBars } from '../components/AnimatedBars';
+import { AnimatedRing } from '../components/AnimatedRing';
+import { AppText, getFontFamily } from '../components/AppText';
+import { BottomSheet } from '../components/BottomSheet';
+import { GlassSurface } from '../components/GlassSurface';
+import { IconButton } from '../components/IconButton';
 import { LanguageToggleButton } from '../components/LanguageToggleButton';
+import { PressableScale } from '../components/PressableScale';
+import { PrimaryButton } from '../components/PrimaryButton';
+import { ProgressFill } from '../components/ProgressFill';
+import { ScreenContainer } from '../components/ScreenContainer';
+import { TOP_BAR_HEIGHT, TopBar } from '../components/TopBar';
+import { useEntrance } from '../components/entrance';
+import { createNote, getNoteById, updateNote } from '../database/schema';
 import { useLanguage } from '../i18n/LanguageContext';
-import { getContrastColor } from '../theme/contrast';
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
 import type { NoteAudioDraft, NoteDraft, NoteFileDraft } from '../types/models';
@@ -40,11 +50,20 @@ import {
   getPreferredShareExtension,
   isShareFriendlyAudioExtension,
 } from '../utils/audioFormat';
-import { getFileExtension, getFileMimeType, isImageFile, isPdfFile, getFileIcon } from '../utils/fileFormat';
+import { getFileExtension, getFileMimeType, isImageFile, getFileIcon } from '../utils/fileFormat';
 import { deleteMediaFiles } from '../utils/mediaFiles';
 
 type Route = RouteProp<RootStackParamList, 'NoteEditor'>;
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'NoteEditor'>;
+
+type EditorSheet =
+  | 'none'
+  | 'overflow'
+  | 'groupActions'
+  | 'fileActions'
+  | 'rename'
+  | 'sharePicker'
+  | 'details';
 
 const ensureAudioFolder = async () => {
   const documentDirectory = FileSystem.documentDirectory;
@@ -87,6 +106,14 @@ const createAudioGroupId = () => `audio_${Date.now()}_${Math.random().toString(3
 
 const FLAG_GRANT_READ_URI_PERMISSION = 1;
 
+const barShadow: ViewStyle = {
+  shadowColor: '#000000',
+  shadowOpacity: 0.12,
+  shadowRadius: 12,
+  shadowOffset: { width: 0, height: 4 },
+  elevation: 6,
+};
+
 const formatDurationMillis = (millis: number) => formatDuration(Math.floor(Math.max(0, millis) / 1000));
 
 type AudioGroup = {
@@ -95,6 +122,8 @@ type AudioGroup = {
   segments: NoteAudioDraft[];
 };
 
+
+
 export const NoteEditorScreen = () => {
   const route = useRoute<Route>();
   const navigation = useNavigation<Navigation>();
@@ -102,6 +131,7 @@ export const NoteEditorScreen = () => {
   const insets = useSafeAreaInsets();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const { t, language } = useLanguage();
+  const entrance = useEntrance();
 
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
@@ -119,9 +149,11 @@ export const NoteEditorScreen = () => {
   const [playbackPositionMillis, setPlaybackPositionMillis] = useState(0);
   const [playbackDurationMillis, setPlaybackDurationMillis] = useState(0);
   const [contentInputHeight, setContentInputHeight] = useState(230);
+  const [activeSheet, setActiveSheet] = useState<EditorSheet>('none');
+  const [actionsGroupId, setActionsGroupId] = useState<string | null>(null);
+  const [actionsFileIndex, setActionsFileIndex] = useState<number | null>(null);
   const [renameTargetGroupId, setRenameTargetGroupId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
-  const [isShareAudioPickerVisible, setIsShareAudioPickerVisible] = useState(false);
   const [detailsTargetGroupId, setDetailsTargetGroupId] = useState<string | null>(null);
 
   const soundRef = useRef<Audio.Sound | null>(null);
@@ -143,12 +175,7 @@ export const NoteEditorScreen = () => {
   const isEditMode = Boolean(noteId);
   const createDefaultAudioName = (order: number) => t('editor.audioDefaultName', { index: order });
 
-  useLayoutEffect(() => {
-    navigation.setOptions({
-      title: isEditMode ? t('header.editNote') : t('header.newNote'),
-      headerRight: () => <LanguageToggleButton />,
-    });
-  }, [isEditMode, navigation, t, language]);
+  const closeSheet = () => setActiveSheet('none');
 
   useEffect(() => {
     const loadNote = async () => {
@@ -1012,6 +1039,7 @@ export const NoteEditorScreen = () => {
     const group = audioGroups.find((item) => item.groupId === groupId);
     setRenameTargetGroupId(groupId);
     setRenameValue(group?.displayName ?? '');
+    setActiveSheet('rename');
   };
 
   const saveAudioRename = () => {
@@ -1030,6 +1058,7 @@ export const NoteEditorScreen = () => {
     );
     setRenameTargetGroupId(null);
     setRenameValue('');
+    closeSheet();
   };
 
   const copyTextContent = async () => {
@@ -1103,7 +1132,7 @@ export const NoteEditorScreen = () => {
         dialogTitle: audio.displayName,
         mimeType: getMimeTypeForAudioExtension(preferredExtension),
       });
-      setIsShareAudioPickerVisible(false);
+      closeSheet();
     } catch (error) {
       console.warn('Failed to share audio:', error);
       Alert.alert(t('common.error'), t('editor.shareAudioError'));
@@ -1115,18 +1144,109 @@ export const NoteEditorScreen = () => {
     setContentInputHeight(Math.max(minHeight, Math.ceil(height)));
   };
 
-  const actionTextOnPrimary = getContrastColor(colors.primary, colors.text, '#FFFFFF');
-  const actionTextOnAccent = getContrastColor(colors.accent, colors.text, '#FFFFFF');
-  const iconOnCard = getContrastColor(colors.card, colors.text, '#FFFFFF');
-  const textOnSecondary = getContrastColor(colors.secondary, '#0B1320', '#FFFFFF');
+  const saveProgressRatio =
+    isPlaying && playbackDurationMillis > 0
+      ? Math.min(1, Math.max(0, playbackPositionMillis / playbackDurationMillis))
+      : 0;
+
+  const isAppendRecordingActive = Boolean(recording && appendTargetGroupId);
+  const stopRecordingHandler = isAppendRecordingActive
+    ? () => void stopAppendRecording(appendTargetGroupId ?? '')
+    : () => void stopRecording();
+
+  const groupActionRows: ActionSheetRow[] = actionsGroupId
+    ? [
+        {
+          icon: recording && appendTargetGroupId === actionsGroupId ? 'stop' : 'plus-circle-outline',
+          label:
+            recording && appendTargetGroupId === actionsGroupId
+              ? t('editor.appendStop')
+              : t('editor.audioAdd'),
+          onPress: () => {
+            if (recording && appendTargetGroupId === actionsGroupId) {
+              void stopAppendRecording(actionsGroupId);
+              return;
+            }
+            void startAppendRecording(actionsGroupId);
+          },
+        },
+        {
+          icon: 'pencil-outline',
+          label: t('action.rename'),
+          onPress: () => startRenameAudioGroup(actionsGroupId),
+        },
+        {
+          icon: 'information-outline',
+          label: t('editor.audioDetails'),
+          onPress: () => {
+            setDetailsTargetGroupId(actionsGroupId);
+            setActiveSheet('details');
+          },
+        },
+        {
+          icon: 'share-variant',
+          label: t('editor.shareAudio'),
+          onPress: () => setActiveSheet('sharePicker'),
+        },
+        {
+          icon: 'trash-can-outline',
+          label: t('common.delete'),
+          destructive: true,
+          onPress: () => removeAudioGroup(actionsGroupId),
+        },
+      ]
+    : [];
+
+  const actionsFile = actionsFileIndex !== null ? files[actionsFileIndex] : undefined;
+  const fileActionRows: ActionSheetRow[] = actionsFile
+    ? [
+        {
+          icon: 'share-variant',
+          label: t('editor.shareFile'),
+          onPress: () => void shareSpecificFile(actionsFile),
+        },
+        {
+          icon: 'trash-can-outline',
+          label: t('editor.remove'),
+          destructive: true,
+          onPress: () => {
+            if (actionsFileIndex !== null) {
+              removeFile(actionsFileIndex);
+            }
+          },
+        },
+      ]
+    : [];
+
+  const overflowRows: ActionSheetRow[] = [
+    {
+      icon: 'content-copy',
+      label: t('editor.copyText'),
+      onPress: () => void copyTextContent(),
+    },
+    {
+      icon: 'share-variant',
+      label: t('editor.shareText'),
+      onPress: () => void shareText(),
+    },
+    {
+      icon: 'music-note',
+      label: t('editor.shareAudio'),
+      onPress: () => {
+        if (audios.length > 0) {
+          setActiveSheet('sharePicker');
+        }
+      },
+    },
+  ];
 
   if (isLoading) {
     return (
       <ScreenContainer>
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-          <Text style={{ color: colors.textSecondary, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
+          <AppText variant="body" color={colors.textSecondary}>
             {t('common.loading')}
-          </Text>
+          </AppText>
         </View>
       </ScreenContainer>
     );
@@ -1136,9 +1256,9 @@ export const NoteEditorScreen = () => {
     <ScreenContainer>
       <ScrollView
         contentContainerStyle={{
-          paddingHorizontal: ui.space.md,
-          paddingTop: ui.space.sm,
-          paddingBottom: 120 + Math.max(insets.bottom, 12),
+          paddingHorizontal: ui.space.lg,
+          paddingTop: insets.top + ui.space.sm + TOP_BAR_HEIGHT + ui.space.md,
+          paddingBottom: 140 + Math.max(insets.bottom, 12),
         }}
         keyboardShouldPersistTaps="handled"
       >
@@ -1148,856 +1268,489 @@ export const NoteEditorScreen = () => {
           placeholder={t('editor.titlePlaceholder')}
           placeholderTextColor={colors.textSecondary}
           style={{
-            borderWidth: 1,
-            borderColor: colors.border,
-            borderRadius: ui.radius.md,
-            backgroundColor: colors.card,
             color: colors.text,
-            paddingHorizontal: 11,
-            paddingVertical: 10,
-            fontFamily: 'NotoSansBengali',
-            fontSize: ui.font.lg,
-            lineHeight: 22,
+            fontSize: 28,
+            fontWeight: language === 'bn' ? undefined : '700',
+            fontFamily: getFontFamily(language, '700'),
+            lineHeight: 36,
+            paddingVertical: ui.space.sm,
           }}
         />
 
-        <View
+        <TextInput
+          value={content}
+          onChangeText={setContent}
+          placeholder={t('editor.contentPlaceholder')}
+          placeholderTextColor={colors.textSecondary}
+          multiline
+          scrollEnabled={false}
+          textAlignVertical="top"
+          onContentSizeChange={(event) => onContentSizeChange(event.nativeEvent.contentSize.height + 24)}
           style={{
-            marginTop: ui.space.sm,
-            borderWidth: 1,
-            borderColor: colors.border,
-            borderRadius: ui.radius.md,
-            backgroundColor: colors.card,
-            paddingTop: 8,
+            minHeight: 230,
+            height: contentInputHeight,
+            color: colors.text,
+            fontFamily: getFontFamily(language, '400'),
+            fontSize: ui.type.headline.size,
+            lineHeight: 26,
+            paddingTop: ui.space.sm,
           }}
-        >
-          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 8 }}>
-            <Pressable
-              onPress={copyTextContent}
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 4,
-                paddingHorizontal: 8,
-                paddingVertical: 6,
-              }}
-            >
-              <MaterialCommunityIcons name="content-copy" size={18} color={iconOnCard} />
-              <Text style={{ color: iconOnCard, fontFamily: 'NotoSansBengali', fontSize: 14 }}>
-                {t('editor.copy')}
-              </Text>
-            </Pressable>
-          </View>
+        />
 
-          <TextInput
-            value={content}
-            onChangeText={setContent}
-            placeholder={t('editor.contentPlaceholder')}
-            placeholderTextColor={colors.textSecondary}
-            multiline
-            scrollEnabled={false}
-            textAlignVertical="top"
-            onContentSizeChange={(event) => onContentSizeChange(event.nativeEvent.contentSize.height + 24)}
-            style={{
-              minHeight: 230,
-              height: contentInputHeight,
-              color: colors.text,
-              paddingHorizontal: 11,
-              paddingBottom: 12,
-              fontFamily: 'NotoSansBengali',
-              fontSize: ui.font.lg,
-              lineHeight: 29,
-            }}
-          />
-        </View>
+        <AppText variant="headline" style={{ marginTop: ui.space.lg }}>
+          {t('editor.audioSection')}
+        </AppText>
 
-        <View
-          style={{
-            marginTop: ui.space.md,
-            borderRadius: ui.radius.md,
-            borderWidth: 1,
-            borderColor: colors.border,
-            backgroundColor: colors.card,
-            padding: ui.space.sm,
-            gap: ui.space.sm,
-          }}
-        >
-          <Text style={{ color: colors.text, fontFamily: 'NotoSansBengali', fontSize: ui.font.lg }}>
-            {t('editor.audioSection')}
-          </Text>
-
-          {recording ? (
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 }}>
-              <View style={{ width: 18, height: 18, alignItems: 'center', justifyContent: 'center' }}>
-                <RNAnimated.View
-                  style={{
-                    position: 'absolute',
-                    width: 16,
-                    height: 16,
-                    borderRadius: 8,
-                    backgroundColor: colors.error,
-                    opacity: 0.3,
-                    transform: [{ scale: pulseAnim }],
-                  }}
-                />
-                <View
-                  style={{
-                    width: 9,
-                    height: 9,
-                    borderRadius: 5,
-                    backgroundColor: colors.error,
-                  }}
-                />
-              </View>
-              <Text style={{ color: colors.error, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                {isRecordingPaused
-                  ? appendTargetGroupId
-                    ? t('editor.appendingPaused', { time: formatDuration(recordSeconds) })
-                    : t('editor.recordPaused', { time: formatDuration(recordSeconds) })
-                  : appendTargetGroupId
-                    ? t('editor.appending', { time: formatDuration(recordSeconds) })
-                    : t('editor.recording', { time: formatDuration(recordSeconds) })}
-              </Text>
-            </View>
-          ) : null}
-
-          <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap' }}>
-            <Pressable
-              onPress={
-                recording
-                  ? appendTargetGroupId
-                    ? () => stopAppendRecording(appendTargetGroupId)
-                    : stopRecording
-                  : startRecording
-              }
-              style={{
-                paddingHorizontal: 12,
-                paddingVertical: 8,
-                borderRadius: ui.radius.sm,
-                backgroundColor: recording ? colors.error : colors.primary,
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 6,
-              }}
-            >
-              <MaterialCommunityIcons
-                name={recording ? 'stop' : 'microphone'}
-                size={18}
-                color={recording ? '#FFFFFF' : actionTextOnPrimary}
-              />
-              <Text
+        <View style={{ gap: ui.space.sm, marginTop: ui.space.sm }}>
+          {audioGroups.map((group, index) => {
+            const isCurrent = isPlaying && playingGroupId === group.groupId;
+            const isAppendRecording = recording && appendTargetGroupId === group.groupId;
+            const groupProgress = isCurrent ? saveProgressRatio : 0;
+            return (
+              <Animated.View
+                key={`${group.groupId}-${index}`}
+                entering={entrance(index)}
                 style={{
-                  color: recording ? '#FFFFFF' : actionTextOnPrimary,
-                  fontFamily: 'NotoSansBengali',
-                  fontSize: ui.font.md,
+                  backgroundColor: colors.surface,
+                  borderRadius: ui.radius.lg,
+                  padding: ui.space.lg,
+                  gap: ui.space.sm,
                 }}
               >
-                {recording
-                  ? appendTargetGroupId
-                    ? t('editor.appendStop')
-                    : t('editor.recordStop')
-                  : t('editor.recordStart')}
-              </Text>
-            </Pressable>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: ui.space.md }}>
+                  <PressableScale
+                    onPress={() => void togglePlayback(group.groupId, group.segments)}
+                    accessibilityRole="button"
+                    accessibilityLabel={isCurrent ? t('editor.audioStop') : t('editor.audioPlay')}
+                    style={{
+                      width: 40,
+                      height: 40,
+                      borderRadius: 20,
+                      backgroundColor: colors.primary,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <MaterialCommunityIcons
+                      name={isCurrent ? 'stop' : 'play'}
+                      size={22}
+                      color={colors.onPrimary}
+                    />
+                  </PressableScale>
 
-            {recording ? (
-              <Pressable
-                onPress={toggleRecordingPause}
+                  <View style={{ flex: 1 }}>
+                    <AppText variant="headline" numberOfLines={1}>
+                      {group.displayName}
+                    </AppText>
+                    <AppText variant="caption" color={colors.textSecondary}>
+                      {isCurrent && playbackDurationMillis > 0
+                        ? t('editor.playingTimer', {
+                            elapsed: formatDurationMillis(playbackPositionMillis),
+                            total: formatDurationMillis(playbackDurationMillis),
+                          })
+                        : t('editor.audioSegments', { count: group.segments.length })}
+                    </AppText>
+                  </View>
+
+                  {isCurrent ? <AnimatedBars playing color={colors.primary} /> : null}
+
+                  <IconButton
+                    icon="dots-vertical"
+                    onPress={() => {
+                      setActionsGroupId(group.groupId);
+                      setActiveSheet('groupActions');
+                    }}
+                    accessibilityLabel={t('editor.audioDetails')}
+                  />
+                </View>
+
+                {isCurrent ? (
+                  <ProgressFill
+                    progress={groupProgress}
+                    trackColor={colors.surfaceVariant}
+                    fillColor={colors.primary}
+                  />
+                ) : null}
+
+                {isAppendRecording && isRecordingPaused ? (
+                  <View
+                    style={{
+                      alignSelf: 'flex-start',
+                      paddingHorizontal: ui.space.sm,
+                      paddingVertical: 3,
+                      borderRadius: ui.radius.pill,
+                      backgroundColor: colors.surfaceVariant,
+                    }}
+                  >
+                    <AppText variant="caption" color={colors.textSecondary}>
+                      {t('editor.pausedBadge')}
+                    </AppText>
+                  </View>
+                ) : null}
+
+                {isAppendRecording ? (
+                  <AppText variant="caption" color={colors.error}>
+                    {isRecordingPaused
+                      ? t('editor.appendingPaused', { time: formatDuration(recordSeconds) })
+                      : t('editor.appending', { time: formatDuration(recordSeconds) })}
+                  </AppText>
+                ) : null}
+              </Animated.View>
+            );
+          })}
+        </View>
+
+        <AppText variant="headline" style={{ marginTop: ui.space.lg }}>
+          {t('editor.fileSection')}
+        </AppText>
+
+        <View style={{ gap: ui.space.sm, marginTop: ui.space.sm }}>
+          {files.map((file, index) => {
+            const iconName = getFileIcon(file.mimeType) as keyof typeof MaterialCommunityIcons.glyphMap;
+            const isImage = isImageFile(file.mimeType, file.displayName, file.uri);
+            return (
+              <Animated.View
+                key={`${file.uri}-${index}`}
+                entering={entrance(index)}
                 style={{
-                  paddingHorizontal: 12,
-                  paddingVertical: 8,
-                  borderRadius: ui.radius.sm,
-                  backgroundColor: colors.secondary,
+                  backgroundColor: colors.surfaceVariant,
+                  borderRadius: ui.radius.md,
+                  paddingHorizontal: ui.space.md,
                   flexDirection: 'row',
                   alignItems: 'center',
-                  gap: 6,
+                  gap: ui.space.md,
                 }}
               >
-                <MaterialCommunityIcons
-                  name={isRecordingPaused ? 'play' : 'pause'}
-                  size={18}
-                  color={textOnSecondary}
+                <PressableScale
+                  onPress={() => void openFile(file)}
+                  style={{
+                    flex: 1,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: ui.space.md,
+                    paddingVertical: ui.space.md,
+                  }}
+                >
+                  {isImage ? (
+                    <Image
+                      source={{ uri: file.uri }}
+                      style={{ width: 44, height: 44, borderRadius: ui.radius.sm }}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <MaterialCommunityIcons name={iconName} size={22} color={colors.textSecondary} />
+                  )}
+                  <AppText
+                    variant="bodySmall"
+                    numberOfLines={2}
+                    style={{ flex: 1 }}
+                  >
+                    {file.displayName}
+                  </AppText>
+                </PressableScale>
+                <IconButton
+                  icon="dots-vertical"
+                  size={20}
+                  onPress={() => {
+                    setActionsFileIndex(index);
+                    setActiveSheet('fileActions');
+                  }}
                 />
-                <Text style={{ color: textOnSecondary, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                  {isRecordingPaused ? t('editor.recordResume') : t('editor.recordPause')}
-                </Text>
-              </Pressable>
-            ) : null}
-
-            <Pressable
-              onPress={importAudio}
-              disabled={Boolean(recording)}
-              style={{
-                paddingHorizontal: 12,
-                paddingVertical: 8,
-                borderRadius: ui.radius.sm,
-                backgroundColor: colors.accent,
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 6,
-                opacity: recording ? 0.5 : 1,
-              }}
-            >
-              <MaterialCommunityIcons name="file-music" size={18} color={actionTextOnAccent} />
-              <Text style={{ color: actionTextOnAccent, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                {t('editor.audioImport')}
-              </Text>
-            </Pressable>
-          </View>
-
-          {audioGroups.length > 0 ? (
-            <View style={{ gap: 8 }}>
-              {audioGroups.map((group, index) => {
-                const isCurrent = isPlaying && playingGroupId === group.groupId;
-                const isAppendRecording = recording && appendTargetGroupId === group.groupId;
-                const isAnotherRecordingActive = Boolean(recording && appendTargetGroupId !== group.groupId);
-                return (
-                  <View
-                    key={`${group.groupId}-${index}`}
-                    style={{
-                      borderRadius: ui.radius.sm,
-                      borderWidth: 1,
-                      borderColor: colors.border,
-                      padding: 10,
-                      gap: 10,
-                    }}
-                  >
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <Text style={{ color: colors.text, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                        {`${index + 1}. ${group.displayName}`}
-                      </Text>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                        {isAppendRecording && isRecordingPaused ? (
-                          <View
-                            style={{
-                              paddingHorizontal: 8,
-                              paddingVertical: 3,
-                              borderRadius: 999,
-                              backgroundColor: colors.secondary,
-                            }}
-                          >
-                            <Text style={{ color: textOnSecondary, fontFamily: 'NotoSansBengali', fontSize: 12 }}>
-                              {t('editor.pausedBadge')}
-                            </Text>
-                          </View>
-                        ) : null}
-                        <Pressable onPress={() => startRenameAudioGroup(group.groupId)} style={{ padding: 4 }}>
-                          <MaterialCommunityIcons name="pencil-outline" size={18} color={iconOnCard} />
-                        </Pressable>
-                      </View>
-                    </View>
-
-                    <Text
-                      style={{
-                        color: colors.textSecondary,
-                        fontFamily: 'NotoSansBengali',
-                        fontSize: ui.font.xs,
-                      }}
-                    >
-                      {t('editor.audioSegments', { count: group.segments.length })}
-                    </Text>
-
-                    {isCurrent ? (
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 3, height: 16 }}>
-                          <RNAnimated.View
-                            style={{
-                              width: 4,
-                              height: equalizerA.interpolate({ inputRange: [0, 1], outputRange: [4, 16] }),
-                              borderRadius: 2,
-                              backgroundColor: colors.primary,
-                            }}
-                          />
-                          <RNAnimated.View
-                            style={{
-                              width: 4,
-                              height: equalizerB.interpolate({ inputRange: [0, 1], outputRange: [4, 16] }),
-                              borderRadius: 2,
-                              backgroundColor: colors.primary,
-                            }}
-                          />
-                          <RNAnimated.View
-                            style={{
-                              width: 4,
-                              height: equalizerC.interpolate({ inputRange: [0, 1], outputRange: [4, 16] }),
-                              borderRadius: 2,
-                              backgroundColor: colors.primary,
-                            }}
-                          />
-                        </View>
-                        <Text style={{ color: colors.primary, fontFamily: 'NotoSansBengali', fontSize: ui.font.sm }}>
-                          {t('editor.playingTimer', {
-                            elapsed: formatDurationMillis(playbackPositionMillis),
-                            total: playbackDurationMillis
-                              ? formatDurationMillis(playbackDurationMillis)
-                              : '--:--',
-                          })}
-                        </Text>
-                      </View>
-                    ) : null}
-
-                    {isAppendRecording ? (
-                      <Text style={{ color: colors.error, fontFamily: 'NotoSansBengali', fontSize: ui.font.sm }}>
-                        {isRecordingPaused
-                          ? t('editor.appendingPaused', { time: formatDuration(recordSeconds) })
-                          : t('editor.appending', { time: formatDuration(recordSeconds) })}
-                      </Text>
-                    ) : null}
-
-                    <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap' }}>
-                      <Pressable
-                        onPress={() => togglePlayback(group.groupId, group.segments)}
-                        style={{
-                          paddingHorizontal: 12,
-                          paddingVertical: 8,
-                          borderRadius: ui.radius.sm,
-                          borderWidth: 1,
-                          borderColor: colors.primary,
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          gap: 6,
-                        }}
-                      >
-                        <MaterialCommunityIcons
-                          name={isCurrent ? 'stop' : 'play'}
-                          size={18}
-                          color={iconOnCard}
-                        />
-                        <Text style={{ color: iconOnCard, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                          {isCurrent ? t('editor.audioStop') : t('editor.audioPlay')}
-                        </Text>
-                      </Pressable>
-
-                      <Pressable
-                        onPress={() =>
-                          isAppendRecording
-                            ? stopAppendRecording(group.groupId)
-                            : startAppendRecording(group.groupId)
-                        }
-                        disabled={isAnotherRecordingActive}
-                        style={{
-                          paddingHorizontal: 12,
-                          paddingVertical: 8,
-                          borderRadius: ui.radius.sm,
-                          borderWidth: 1,
-                          borderColor: colors.accent,
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          gap: 6,
-                          opacity: isAnotherRecordingActive ? 0.5 : 1,
-                        }}
-                      >
-                        <MaterialCommunityIcons
-                          name={isAppendRecording ? 'stop' : 'plus-circle-outline'}
-                          size={18}
-                          color={iconOnCard}
-                        />
-                        <Text style={{ color: iconOnCard, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                          {isAppendRecording ? t('editor.appendStop') : t('editor.audioAdd')}
-                        </Text>
-                      </Pressable>
-
-                      <Pressable
-                        onPress={() => removeAudioGroup(group.groupId)}
-                        disabled={Boolean(isAppendRecording)}
-                        style={{
-                          paddingHorizontal: 12,
-                          paddingVertical: 8,
-                          borderRadius: ui.radius.sm,
-                          borderWidth: 1,
-                          borderColor: colors.error,
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          gap: 6,
-                          opacity: isAppendRecording ? 0.5 : 1,
-                        }}
-                      >
-                        <MaterialCommunityIcons name="trash-can-outline" size={18} color={iconOnCard} />
-                        <Text style={{ color: iconOnCard, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                          {t('editor.remove')}
-                        </Text>
-                      </Pressable>
-
-                      <Pressable
-                        onPress={() => setDetailsTargetGroupId(group.groupId)}
-                        style={{
-                          paddingHorizontal: 12,
-                          paddingVertical: 8,
-                          borderRadius: ui.radius.sm,
-                          borderWidth: 1,
-                          borderColor: colors.border,
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          gap: 6,
-                          backgroundColor: colors.background,
-                        }}
-                      >
-                        <MaterialCommunityIcons name="information-outline" size={18} color={iconOnCard} />
-                        <Text style={{ color: iconOnCard, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                          {t('editor.audioDetails')}
-                        </Text>
-                      </Pressable>
-                    </View>
-                  </View>
-                );
-              })}
-            </View>
-          ) : null}
-        </View>
-
-        <View
-          style={{
-            marginTop: ui.space.md,
-            borderRadius: ui.radius.md,
-            borderWidth: 1,
-            borderColor: colors.border,
-            backgroundColor: colors.card,
-            padding: ui.space.sm,
-            gap: ui.space.sm,
-          }}
-        >
-          <Text style={{ color: colors.text, fontFamily: 'NotoSansBengali', fontSize: ui.font.lg }}>
-            {t('editor.fileSection')}
-          </Text>
-
-          <Pressable
-            onPress={importFile}
-            style={{
-              paddingHorizontal: 12,
-              paddingVertical: 8,
-              borderRadius: ui.radius.sm,
-              backgroundColor: colors.accent,
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 6,
-              alignSelf: 'flex-start',
-            }}
-          >
-            <MaterialCommunityIcons name="paperclip" size={18} color={actionTextOnAccent} />
-            <Text style={{ color: actionTextOnAccent, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-              {t('editor.fileImport')}
-            </Text>
-          </Pressable>
-
-          {files.length > 0 ? (
-            <View style={{ gap: 8 }}>
-              {files.map((file, index) => {
-                const isImage = isImageFile(file.mimeType, file.displayName, file.uri);
-                const iconName = getFileIcon(file.mimeType) as keyof typeof MaterialCommunityIcons.glyphMap;
-                return (
-                  <View
-                    key={`${file.uri}-${index}`}
-                    style={{
-                      borderRadius: ui.radius.sm,
-                      borderWidth: 1,
-                      borderColor: colors.border,
-                      padding: 10,
-                      gap: 10,
-                    }}
-                  >
-                    <Pressable
-                      onPress={() => openFile(file)}
-                      style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}
-                    >
-                      {isImage ? (
-                        <Image
-                          source={{ uri: file.uri }}
-                          style={{ width: 48, height: 48, borderRadius: 6 }}
-                          resizeMode="cover"
-                        />
-                      ) : (
-                        <View
-                          style={{
-                            width: 48,
-                            height: 48,
-                            borderRadius: 6,
-                            backgroundColor: colors.secondary,
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                          }}
-                        >
-                          <MaterialCommunityIcons name={iconName} size={26} color={textOnSecondary} />
-                        </View>
-                      )}
-                      <Text
-                        style={{
-                          flex: 1,
-                          color: colors.text,
-                          fontFamily: 'NotoSansBengali',
-                          fontSize: ui.font.md,
-                        }}
-                        numberOfLines={2}
-                      >
-                        {file.displayName}
-                      </Text>
-                    </Pressable>
-
-                    <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap' }}>
-                      <Pressable
-                        onPress={() => shareSpecificFile(file)}
-                        style={{
-                          paddingHorizontal: 12,
-                          paddingVertical: 8,
-                          borderRadius: ui.radius.sm,
-                          borderWidth: 1,
-                          borderColor: colors.primary,
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          gap: 6,
-                        }}
-                      >
-                        <MaterialCommunityIcons name="share-variant" size={18} color={iconOnCard} />
-                        <Text style={{ color: iconOnCard, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                          {t('editor.shareFile')}
-                        </Text>
-                      </Pressable>
-
-                      <Pressable
-                        onPress={() => removeFile(index)}
-                        style={{
-                          paddingHorizontal: 12,
-                          paddingVertical: 8,
-                          borderRadius: ui.radius.sm,
-                          borderWidth: 1,
-                          borderColor: colors.error,
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          gap: 6,
-                        }}
-                      >
-                        <MaterialCommunityIcons name="trash-can-outline" size={18} color={iconOnCard} />
-                        <Text style={{ color: iconOnCard, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                          {t('editor.remove')}
-                        </Text>
-                      </Pressable>
-                    </View>
-                  </View>
-                );
-              })}
-            </View>
-          ) : null}
+              </Animated.View>
+            );
+          })}
         </View>
 
         {Platform.OS === 'android' ? (
-          <Text
-            style={{
-              marginTop: ui.space.sm,
-              color: colors.textSecondary,
-              fontFamily: 'NotoSansBengali',
-              fontSize: ui.font.xs,
-              lineHeight: 18,
-            }}
+          <AppText
+            variant="caption"
+            color={colors.textSecondary}
+            style={{ marginTop: ui.space.sm }}
           >
             {t('editor.shareHint')}
-          </Text>
+          </AppText>
         ) : null}
       </ScrollView>
+
+      <TopBar onBack={() => navigation.goBack()}>
+        <LanguageToggleButton />
+        <IconButton
+          icon="content-save-outline"
+          disabled={saveDisabled}
+          accessibilityLabel={t('editor.save')}
+          onPress={() => void saveNote()}
+        />
+      </TopBar>
 
       <View
         style={{
           position: 'absolute',
-          left: ui.space.md,
-          right: ui.space.md,
+          left: ui.space.lg,
+          right: ui.space.lg,
           bottom: Math.max(insets.bottom, 10),
-          backgroundColor: colors.card,
-          borderWidth: 1,
-          borderColor: colors.border,
-          borderRadius: ui.radius.lg,
-          padding: 10,
-          gap: 8,
-          shadowColor: '#000000',
-          shadowOpacity: 0.12,
-          shadowRadius: 10,
-          shadowOffset: { width: 0, height: 4 },
-          elevation: 7,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
         }}
       >
-        <PrimaryButton onPress={saveNote} disabled={saveDisabled}>
-          {isSaving ? t('editor.saving') : t('editor.save')}
-        </PrimaryButton>
+        {recording ? (
+          <View style={[barShadow, { flex: 1 }]}>
+            <GlassSurface radius={ui.radius.xl} contentStyle={{ padding: ui.space.sm }}>
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: ui.space.md,
+                  paddingHorizontal: ui.space.sm,
+                }}
+              >
+                <AnimatedRing
+                  progress={1}
+                  size={36}
+                  strokeWidth={3}
+                  color={colors.primary}
+                  trackColor={colors.surfaceVariant}
+                >
+                  <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                    <RNAnimated.View
+                      style={{
+                        width: 14,
+                        height: 14,
+                        borderRadius: 7,
+                        backgroundColor: colors.error,
+                        transform: [{ scale: pulseAnim }],
+                      }}
+                    />
+                  </View>
+                </AnimatedRing>
+                <AppText variant="caption" color={colors.textSecondary} style={{ flex: 1 }}>
+                  {isRecordingPaused
+                    ? appendTargetGroupId
+                      ? t('editor.appendingPaused', { time: formatDuration(recordSeconds) })
+                      : t('editor.recordPaused', { time: formatDuration(recordSeconds) })
+                    : appendTargetGroupId
+                      ? t('editor.appending', { time: formatDuration(recordSeconds) })
+                      : t('editor.recording', { time: formatDuration(recordSeconds) })}
+                </AppText>
+                <IconButton
+                  icon={isRecordingPaused ? 'play' : 'pause'}
+                  onPress={() => void toggleRecordingPause()}
+                  accessibilityLabel={isRecordingPaused ? t('editor.recordResume') : t('editor.recordPause')}
+                />
+                <IconButton
+                  icon="stop"
+                  danger
+                  onPress={stopRecordingHandler}
+                  accessibilityLabel={t('editor.recordStop')}
+                />
+              </View>
+            </GlassSurface>
+          </View>
+        ) : (
+          <>
+            <View style={barShadow}>
+              <GlassSurface
+                radius={ui.radius.pill}
+                contentStyle={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: ui.space.sm,
+                  padding: ui.space.sm,
+                }}
+              >
+                <IconButton
+                  icon="plus"
+                  square
+                  onPress={() => void importAudio()}
+                  accessibilityLabel={t('editor.audioImport')}
+                />
+                <PressableScale
+                  onPress={() => void startRecording()}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('editor.recordStart')}
+                  style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: 20,
+                    backgroundColor: colors.primary,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <MaterialCommunityIcons name="microphone" size={22} color={colors.onPrimary} />
+                </PressableScale>
+                <IconButton
+                  icon="paperclip"
+                  onPress={() => void importFile()}
+                  accessibilityLabel={t('editor.fileImport')}
+                />
+              </GlassSurface>
+            </View>
 
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          <Pressable
-            onPress={copyTextContent}
-            style={{
-              flex: 1,
-              borderWidth: 1,
-              borderColor: colors.primary,
-              borderRadius: ui.radius.md,
-              minHeight: 42,
-              alignItems: 'center',
-              justifyContent: 'center',
-              backgroundColor: colors.primary,
-              paddingHorizontal: 8,
-            }}
-          >
-            <Text style={{ color: actionTextOnPrimary, fontFamily: 'NotoSansBengali', fontSize: ui.font.sm }}>
-              {t('editor.copyText')}
-            </Text>
-          </Pressable>
-
-          <Pressable
-            onPress={shareText}
-            disabled={!content.trim() && !title.trim()}
-            style={{
-              flex: 1,
-              borderWidth: 1,
-              borderColor: colors.secondary,
-              borderRadius: ui.radius.md,
-              minHeight: 42,
-              alignItems: 'center',
-              justifyContent: 'center',
-              opacity: content.trim() || title.trim() ? 1 : 0.5,
-              backgroundColor: colors.secondary,
-              paddingHorizontal: 8,
-            }}
-          >
-            <Text style={{ color: textOnSecondary, fontFamily: 'NotoSansBengali', fontSize: ui.font.sm }}>
-              {t('editor.shareText')}
-            </Text>
-          </Pressable>
-
-          <Pressable
-            onPress={() => setIsShareAudioPickerVisible(true)}
-            disabled={audios.length === 0}
-            style={{
-              flex: 1,
-              borderWidth: 1,
-              borderColor: colors.accent,
-              borderRadius: ui.radius.md,
-              minHeight: 42,
-              alignItems: 'center',
-              justifyContent: 'center',
-              opacity: audios.length > 0 ? 1 : 0.5,
-              backgroundColor: colors.accent,
-              paddingHorizontal: 8,
-            }}
-          >
-            <Text style={{ color: actionTextOnAccent, fontFamily: 'NotoSansBengali', fontSize: ui.font.sm }}>
-              {t('editor.shareAudio')}
-            </Text>
-          </Pressable>
-        </View>
+            <View style={barShadow}>
+              <GlassSurface
+                radius={ui.radius.pill}
+                contentStyle={{
+                  height: TOP_BAR_HEIGHT,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  paddingHorizontal: ui.space.lg,
+                }}
+              >
+                <PressableScale
+                  onPress={() => setActiveSheet('overflow')}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('drawer.quickMenu')}
+                  style={{
+                    height: 40,
+                    borderRadius: ui.radius.pill,
+                    backgroundColor: colors.surfaceVariant,
+                    paddingHorizontal: ui.space.lg,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: ui.space.xs,
+                  }}
+                >
+                  <MaterialCommunityIcons name="dots-horizontal" size={22} color={colors.text} />
+                </PressableScale>
+              </GlassSurface>
+            </View>
+          </>
+        )}
       </View>
 
-      <Modal
-        animationType="fade"
-        transparent
-        visible={renameTargetGroupId !== null}
-        onRequestClose={() => setRenameTargetGroupId(null)}
+      <ActionSheet
+        visible={activeSheet === 'overflow'}
+        onClose={closeSheet}
+        rows={overflowRows}
+      />
+
+      <ActionSheet
+        visible={activeSheet === 'groupActions'}
+        onClose={closeSheet}
+        title={audioGroups.find((group) => group.groupId === actionsGroupId)?.displayName}
+        rows={groupActionRows}
+      />
+
+      <ActionSheet
+        visible={activeSheet === 'fileActions'}
+        onClose={closeSheet}
+        title={actionsFile?.displayName}
+        rows={fileActionRows}
+      />
+
+      <BottomSheet
+        visible={activeSheet === 'rename'}
+        onClose={closeSheet}
+        title={t('editor.renameTitle')}
       >
-        <View
-          style={{
-            flex: 1,
-            backgroundColor: 'rgba(0,0,0,0.35)',
-            justifyContent: 'center',
-            padding: 18,
-          }}
-        >
+        <View style={{ paddingHorizontal: ui.space.lg, gap: ui.space.md }}>
+          <TextInput
+            value={renameValue}
+            onChangeText={setRenameValue}
+            placeholder={t('editor.renamePlaceholder')}
+            placeholderTextColor={colors.textSecondary}
+            style={{
+              backgroundColor: colors.surfaceVariant,
+              borderRadius: ui.radius.md,
+              padding: 14,
+              color: colors.text,
+              fontFamily: getFontFamily(language, '400'),
+              fontSize: ui.type.body.size,
+            }}
+          />
           <View
             style={{
-              backgroundColor: colors.card,
-              borderRadius: ui.radius.lg,
-              borderWidth: 1,
-              borderColor: colors.border,
-              padding: ui.space.md,
+              flexDirection: 'row',
+              justifyContent: 'flex-end',
+              alignItems: 'center',
+              gap: ui.space.sm,
             }}
           >
-            <Text
-              style={{
-                color: colors.text,
-                fontFamily: 'NotoSansBengali',
-                fontSize: ui.font.lg,
-                marginBottom: ui.space.xs,
+            <PressableScale
+              onPress={() => {
+                setRenameTargetGroupId(null);
+                setRenameValue('');
+                closeSheet();
               }}
+              style={{ paddingHorizontal: ui.space.md, paddingVertical: ui.space.md }}
             >
-              {t('editor.renameTitle')}
-            </Text>
-            <TextInput
-              value={renameValue}
-              onChangeText={setRenameValue}
-              placeholder={t('editor.renamePlaceholder')}
-              placeholderTextColor={colors.textSecondary}
-              style={{
-                borderWidth: 1,
-                borderColor: colors.border,
-                borderRadius: ui.radius.sm,
-                backgroundColor: colors.background,
-                color: colors.text,
-                paddingHorizontal: 11,
-                paddingVertical: 9,
-                fontFamily: 'NotoSansBengali',
-                fontSize: ui.font.md,
-              }}
-            />
-            <View style={{ marginTop: ui.space.sm, flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}>
-              <Pressable
-                onPress={() => {
-                  setRenameTargetGroupId(null);
-                  setRenameValue('');
-                }}
-                style={{ paddingHorizontal: 10, justifyContent: 'center' }}
-              >
-                <Text style={{ color: colors.textSecondary, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                  {t('common.cancel')}
-                </Text>
-              </Pressable>
-              <View style={{ width: 120 }}>
-                <PrimaryButton onPress={saveAudioRename}>{t('editor.renameSave')}</PrimaryButton>
-              </View>
+              <AppText variant="headline" color={colors.textSecondary}>
+                {t('common.cancel')}
+              </AppText>
+            </PressableScale>
+            <View style={{ width: 132 }}>
+              <PrimaryButton onPress={saveAudioRename}>{t('editor.renameSave')}</PrimaryButton>
             </View>
           </View>
         </View>
-      </Modal>
+      </BottomSheet>
 
-      <Modal
-        animationType="fade"
-        transparent
-        visible={isShareAudioPickerVisible}
-        onRequestClose={() => setIsShareAudioPickerVisible(false)}
+      <BottomSheet
+        visible={activeSheet === 'sharePicker'}
+        onClose={closeSheet}
+        title={t('editor.shareAudioPickerTitle')}
       >
-        <View
-          style={{
-            flex: 1,
-            backgroundColor: 'rgba(0,0,0,0.35)',
-            justifyContent: 'center',
-            padding: 18,
-          }}
-        >
-          <View
-            style={{
-              backgroundColor: colors.card,
-              borderRadius: ui.radius.lg,
-              borderWidth: 1,
-              borderColor: colors.border,
-              padding: ui.space.md,
-              maxHeight: '70%',
-            }}
-          >
-            <Text
-              style={{
-                color: colors.text,
-                fontFamily: 'NotoSansBengali',
-                fontSize: ui.font.lg,
-                marginBottom: ui.space.xs,
-              }}
-            >
-              {t('editor.shareAudioPickerTitle')}
-            </Text>
-
-            <ScrollView>
-              <View style={{ gap: 8 }}>
-                {audioGroups.flatMap((group, groupIndex) =>
-                  group.segments.map((segment, segmentIndex) => (
-                    <Pressable
-                      key={`${group.groupId}-${segmentIndex}`}
-                      onPress={() => void shareSpecificAudio(segment)}
-                      style={{
-                        borderWidth: 1,
-                        borderColor: colors.border,
-                        borderRadius: ui.radius.sm,
-                        paddingVertical: 9,
-                        paddingHorizontal: 11,
-                        backgroundColor: colors.background,
-                      }}
-                    >
-                      <Text style={{ color: colors.text, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                        {group.segments.length > 1
-                          ? `${groupIndex + 1}. ${group.displayName} (${segmentIndex + 1}/${group.segments.length})`
-                          : `${groupIndex + 1}. ${group.displayName}`}
-                      </Text>
-                    </Pressable>
-                  ))
-                )}
-              </View>
-            </ScrollView>
-
-            <View style={{ marginTop: 14, alignItems: 'flex-end' }}>
-              <Pressable
-                onPress={() => setIsShareAudioPickerVisible(false)}
-                style={{ paddingHorizontal: 12, paddingVertical: 8 }}
-              >
-                <Text style={{ color: colors.textSecondary, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                  {t('editor.close')}
-                </Text>
-              </Pressable>
-            </View>
+        <ScrollView style={{ maxHeight: 360 }}>
+          <View style={{ paddingHorizontal: ui.space.lg, gap: ui.space.sm }}>
+            {audioGroups.flatMap((group, groupIndex) =>
+              group.segments.map((segment, segmentIndex) => (
+                <PressableScale
+                  key={`${group.groupId}-${segmentIndex}`}
+                  onPress={() => void shareSpecificAudio(segment)}
+                  style={{
+                    backgroundColor: colors.surfaceVariant,
+                    borderRadius: ui.radius.md,
+                    paddingVertical: ui.space.md,
+                    paddingHorizontal: ui.space.md,
+                  }}
+                >
+                  <AppText variant="headline">
+                    {group.segments.length > 1
+                      ? `${groupIndex + 1}. ${group.displayName} (${segmentIndex + 1}/${group.segments.length})`
+                      : `${groupIndex + 1}. ${group.displayName}`}
+                  </AppText>
+                </PressableScale>
+              ))
+            )}
           </View>
-        </View>
-      </Modal>
+        </ScrollView>
+      </BottomSheet>
 
-      <Modal
-        animationType="fade"
-        transparent
-        visible={detailsTargetGroupId !== null}
-        onRequestClose={() => setDetailsTargetGroupId(null)}
+      <BottomSheet
+        visible={activeSheet === 'details'}
+        onClose={closeSheet}
+        title={t('editor.audioLocationTitle')}
       >
-        <View
-          style={{
-            flex: 1,
-            backgroundColor: 'rgba(0,0,0,0.35)',
-            justifyContent: 'center',
-            padding: 18,
-          }}
-        >
-          <View
-            style={{
-              backgroundColor: colors.card,
-              borderRadius: ui.radius.lg,
-              borderWidth: 1,
-              borderColor: colors.border,
-              padding: ui.space.md,
-              maxHeight: '72%',
-            }}
-          >
-            <Text
-              style={{
-                color: colors.text,
-                fontFamily: 'NotoSansBengali',
-                fontSize: ui.font.lg,
-                marginBottom: ui.space.xs,
-              }}
-            >
-              {t('editor.audioLocationTitle')}
-            </Text>
-
-            <ScrollView>
-              <View style={{ gap: 8 }}>
-                {(audioGroups.find((group) => group.groupId === detailsTargetGroupId)?.segments ?? []).map(
-                  (segment, index) => (
-                    <View
-                      key={`${segment.uri}-${index}`}
-                      style={{
-                        borderWidth: 1,
-                        borderColor: colors.border,
-                        borderRadius: ui.radius.sm,
-                        paddingVertical: 9,
-                        paddingHorizontal: 11,
-                        backgroundColor: colors.background,
-                      }}
-                    >
-                      <Text style={{ color: colors.text, fontFamily: 'NotoSansBengali', fontSize: ui.font.sm }}>
-                        {`${index + 1}. ${segment.uri}`}
-                      </Text>
-                    </View>
-                  )
-                )}
-              </View>
-            </ScrollView>
-
-            <View style={{ marginTop: 14, alignItems: 'flex-end' }}>
-              <Pressable
-                onPress={() => setDetailsTargetGroupId(null)}
-                style={{ paddingHorizontal: 12, paddingVertical: 8 }}
-              >
-                <Text style={{ color: colors.textSecondary, fontFamily: 'NotoSansBengali', fontSize: ui.font.md }}>
-                  {t('editor.audioLocationClose')}
-                </Text>
-              </Pressable>
-            </View>
+        <ScrollView style={{ maxHeight: 360 }}>
+          <View style={{ paddingHorizontal: ui.space.lg, gap: ui.space.sm }}>
+            {(audioGroups.find((group) => group.groupId === detailsTargetGroupId)?.segments ?? []).map(
+              (segment, index) => (
+                <View
+                  key={`${segment.uri}-${index}`}
+                  style={{
+                    backgroundColor: colors.surfaceVariant,
+                    borderRadius: ui.radius.md,
+                    paddingVertical: ui.space.md,
+                    paddingHorizontal: ui.space.md,
+                  }}
+                >
+                  <AppText variant="bodySmall" color={colors.textSecondary}>
+                    {`${index + 1}. ${segment.uri}`}
+                  </AppText>
+                </View>
+              )
+            )}
           </View>
+        </ScrollView>
+        <View style={{ alignItems: 'flex-end', paddingHorizontal: ui.space.lg, paddingTop: ui.space.md }}>
+          <PressableScale onPress={closeSheet} style={{ padding: ui.space.sm }}>
+            <AppText variant="headline" color={colors.textSecondary}>
+              {t('editor.audioLocationClose')}
+            </AppText>
+          </PressableScale>
         </View>
-      </Modal>
+      </BottomSheet>
 
       <Modal
         animationType="fade"
@@ -2007,7 +1760,10 @@ export const NoteEditorScreen = () => {
         statusBarTranslucent
       >
         <View style={{ flex: 1, backgroundColor: '#000' }}>
-          <Pressable
+          <PressableScale
+            onPress={() => setViewingFileUri(null)}
+            accessibilityRole="button"
+            accessibilityLabel={t('editor.close')}
             style={{
               position: 'absolute',
               top: Math.max(insets.top, 12),
@@ -2020,22 +1776,21 @@ export const NoteEditorScreen = () => {
               alignItems: 'center',
               justifyContent: 'center',
             }}
-            onPress={() => setViewingFileUri(null)}
           >
             <MaterialCommunityIcons name="close" size={22} color="#FFF" />
-          </Pressable>
+          </PressableScale>
 
           {viewingFileUri ? (
-            <Pressable
-              style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}
+            <PressableScale
               onPress={() => setViewingFileUri(null)}
+              style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}
             >
               <Image
                 source={{ uri: viewingFileUri }}
                 style={{ width: screenWidth, height: screenHeight }}
                 resizeMode="contain"
               />
-            </Pressable>
+            </PressableScale>
           ) : null}
         </View>
       </Modal>

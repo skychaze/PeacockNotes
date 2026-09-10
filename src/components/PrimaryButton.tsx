@@ -1,7 +1,9 @@
 import type { PropsWithChildren } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { View } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { AppText } from './AppText';
+import { PressableScale } from './PressableScale';
 import { useAppColors } from '../theme/useAppColors';
-import { getContrastColor } from '../theme/contrast';
 import { ui } from '../theme/ui';
 
 type PrimaryButtonProps = PropsWithChildren<{
@@ -15,38 +17,42 @@ export const PrimaryButton = ({
   children,
 }: PrimaryButtonProps) => {
   const { colors } = useAppColors();
-  const buttonBackground = disabled ? colors.border : colors.primary;
-  const buttonTextColor = getContrastColor(buttonBackground, colors.text, '#FFFFFF');
 
   return (
-    <Pressable onPress={onPress} disabled={disabled}>
-      {({ pressed }) => (
-        <View
-          style={{
-            borderRadius: ui.radius.md,
-            minHeight: 44,
-            paddingVertical: 11,
-            paddingHorizontal: 14,
-            backgroundColor: buttonBackground,
-            opacity: pressed ? 0.85 : 1,
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
+    <PressableScale
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="button"
+      style={{
+        borderRadius: ui.radius.pill,
+        overflow: 'hidden',
+        backgroundColor: disabled ? colors.surfaceVariant : colors.primary,
+      }}
+    >
+      <LinearGradient
+        colors={
+          disabled
+            ? [colors.surfaceVariant, colors.surfaceVariant]
+            : ['rgba(255,255,255,0.10)', 'rgba(255,255,255,0)']
+        }
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 1 }}
+        style={{
+          height: 48,
+          alignItems: 'center',
+          justifyContent: 'center',
+          paddingHorizontal: ui.space.lg,
+        }}
+      >
+        <AppText
+          variant="headline"
+          color={disabled ? colors.textSecondary : colors.onPrimary}
+          numberOfLines={2}
+          style={{ textAlign: 'center' }}
         >
-          <Text
-            style={{
-              color: buttonTextColor,
-              textAlign: 'center',
-              fontFamily: 'NotoSansBengali',
-              fontSize: ui.font.md,
-              lineHeight: 20,
-            }}
-            numberOfLines={2}
-          >
-            {children}
-          </Text>
-        </View>
-      )}
-    </Pressable>
+          {children}
+        </AppText>
+      </LinearGradient>
+    </PressableScale>
   );
 };

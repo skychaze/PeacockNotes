@@ -1,6 +1,6 @@
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useEffect, useMemo, useState } from 'react';
-import { View, Text, useColorScheme } from 'react-native';
+import { View, useColorScheme } from 'react-native';
 import {
   NavigationContainer,
   DarkTheme,
@@ -13,7 +13,9 @@ import * as Font from 'expo-font';
 import { StatusBar } from 'expo-status-bar';
 import { initDb } from './src/database/schema';
 import { getThemeColors } from './src/theme/colors';
+import { QualityProvider } from './src/theme/quality';
 import type { RootStackParamList } from './src/types/navigation';
+import { AppText } from './src/components/AppText';
 import { FoldersScreen } from './src/screens/FoldersScreen';
 import { NotesListScreen } from './src/screens/NotesListScreen';
 import { NoteEditorScreen } from './src/screens/NoteEditorScreen';
@@ -43,6 +45,7 @@ const AppNavigator = () => {
       try {
         await Font.loadAsync({
           'NotoSansBengali': require('./assets/fonts/NotoSansBengali-Regular.ttf'),
+          'NotoSansBengali-SemiBold': require('./assets/fonts/NotoSansBengali-SemiBold.ttf'),
         });
         await initDb();
         setHasSetupError(false);
@@ -84,9 +87,9 @@ const AppNavigator = () => {
           backgroundColor: colors.background,
         }}
       >
-        <Text style={{ color: colors.textSecondary, fontFamily: 'NotoSansBengali' }}>
+        <AppText variant="bodySmall" color={colors.textSecondary}>
           {t('app.loading')}
-        </Text>
+        </AppText>
       </View>
     );
   }
@@ -102,17 +105,13 @@ const AppNavigator = () => {
           backgroundColor: colors.background,
         }}
       >
-        <Text
-          style={{
-            color: colors.error,
-            fontFamily: 'NotoSansBengali',
-            fontSize: 18,
-            textAlign: 'center',
-            lineHeight: 28,
-          }}
+        <AppText
+          variant="headline"
+          color={colors.error}
+          style={{ textAlign: 'center' }}
         >
           {t('app.dbSetupError')}
-        </Text>
+        </AppText>
       </View>
     );
   }
@@ -124,10 +123,10 @@ const AppNavigator = () => {
       ...baseTheme.colors,
       primary: colors.primary,
       background: colors.background,
-      card: colors.card,
+      card: colors.surface,
       text: colors.text,
       border: colors.border,
-      notification: colors.accent,
+      notification: colors.primaryBright,
     },
   };
 
@@ -138,37 +137,15 @@ const AppNavigator = () => {
         <Stack.Navigator
           initialRouteName="Folders"
           screenOptions={{
-            headerStyle: { backgroundColor: colors.card },
-            headerTintColor: colors.primary,
-            headerTitleStyle: { fontFamily: 'NotoSansBengali' },
+            headerShown: false,
             contentStyle: { backgroundColor: colors.background },
           }}
         >
-          <Stack.Screen
-            name="ShareImport"
-            component={ShareImportScreen}
-            options={{ title: t('header.shareImport') }}
-          />
-          <Stack.Screen
-            name="Folders"
-            component={FoldersScreen}
-            options={{ title: t('header.folders') }}
-          />
-          <Stack.Screen
-            name="StorageUsage"
-            component={StorageUsageScreen}
-            options={{ title: t('header.storageUsage') }}
-          />
-          <Stack.Screen
-            name="NotesList"
-            component={NotesListScreen}
-            options={{ title: t('header.notes') }}
-          />
-          <Stack.Screen
-            name="NoteEditor"
-            component={NoteEditorScreen}
-            options={{ title: t('header.noteEditor') }}
-          />
+          <Stack.Screen name="ShareImport" component={ShareImportScreen} />
+          <Stack.Screen name="Folders" component={FoldersScreen} />
+          <Stack.Screen name="StorageUsage" component={StorageUsageScreen} />
+          <Stack.Screen name="NotesList" component={NotesListScreen} />
+          <Stack.Screen name="NoteEditor" component={NoteEditorScreen} />
         </Stack.Navigator>
       </NavigationContainer>
     </SafeAreaProvider>
@@ -180,7 +157,9 @@ export default function App() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ShareIntentProvider>
         <LanguageProvider>
-          <AppNavigator />
+          <QualityProvider>
+            <AppNavigator />
+          </QualityProvider>
         </LanguageProvider>
       </ShareIntentProvider>
     </GestureHandlerRootView>

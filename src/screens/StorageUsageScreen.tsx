@@ -1,13 +1,20 @@
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useCallback, useLayoutEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, Text, View } from 'react-native';
-import { ScreenContainer } from '../components/ScreenContainer';
+import { useCallback, useMemo, useState } from 'react';
+import { Alert, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { AnimatedRing } from '../components/AnimatedRing';
+import { AppText } from '../components/AppText';
+import { IconButton } from '../components/IconButton';
 import { LanguageToggleButton } from '../components/LanguageToggleButton';
+import { ProgressFill } from '../components/ProgressFill';
+import { ScreenContainer } from '../components/ScreenContainer';
+import { TOP_BAR_HEIGHT, TopBar } from '../components/TopBar';
 import { getStorageSnapshot, type StorageSnapshot } from '../database/schema';
 import { useLanguage } from '../i18n/LanguageContext';
-import { getContrastColor } from '../theme/contrast';
+import { FOLDER_ACCENTS } from '../theme/colors';
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
 import type { RootStackParamList } from '../types/navigation';
@@ -24,9 +31,9 @@ type StorageViewModel = {
   totalBytes: number;
 };
 
-const formatBytes = (bytes: number) => {
+const splitBytes = (bytes: number) => {
   if (!Number.isFinite(bytes) || bytes <= 0) {
-    return '0 B';
+    return { value: '0', unit: 'B' };
   }
 
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -37,7 +44,12 @@ const formatBytes = (bytes: number) => {
     unitIndex += 1;
   }
   const decimals = unitIndex === 0 ? 0 : value < 10 ? 2 : 1;
-  return `${value.toFixed(decimals)} ${units[unitIndex]}`;
+  return { value: value.toFixed(decimals), unit: units[unitIndex] };
+};
+
+const formatBytes = (bytes: number) => {
+  const { value, unit } = splitBytes(bytes);
+  return `${value} ${unit}`;
 };
 
 const getDirectorySize = async (directoryUri: string, visited: Set<string>): Promise<number> => {
@@ -116,10 +128,19 @@ const buildStorageViewModel = async (snapshot: StorageSnapshot): Promise<Storage
   };
 };
 
+const ROWS = [
+  { key: 'notes', labelKey: 'storage.notesText', icon: 'text-box-outline', valueKey: 'notesBytes' },
+  { key: 'audio', labelKey: 'storage.audioFiles', icon: 'music-note', valueKey: 'audioBytes' },
+  { key: 'files', labelKey: 'storage.imageFiles', icon: 'file-image-outline', valueKey: 'fileBytes' },
+  { key: 'db', labelKey: 'storage.database', icon: 'database-outline', valueKey: 'databaseBytes' },
+  { key: 'other', labelKey: 'storage.otherFiles', icon: 'folder-outline', valueKey: 'otherBytes' },
+] as const;
+
 export const StorageUsageScreen = () => {
   const navigation = useNavigation<Navigation>();
-  const { colors } = useAppColors();
-  const { t, language } = useLanguage();
+  const { colors, isDark } = useAppColors();
+  const { t } = useLanguage();
+  const insets = useSafeAreaInsets();
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [storage, setStorage] = useState<StorageViewModel>({
@@ -131,13 +152,6 @@ export const StorageUsageScreen = () => {
     otherBytes: 0,
     totalBytes: 0,
   });
-
-  useLayoutEffect(() => {
-    navigation.setOptions({
-      title: t('header.storageUsage'),
-      headerRight: () => <LanguageToggleButton />,
-    });
-  }, [language, navigation, t]);
 
   const refreshStorage = useCallback(async () => {
     try {
@@ -161,111 +175,113 @@ export const StorageUsageScreen = () => {
   );
 
   const rows = useMemo(
-    () => [
-      { key: 'notes', label: t('storage.notesText'), value: storage.notesBytes, color: '#6CD4C8' },
-      { key: 'audio', label: t('storage.audioFiles'), value: storage.audioBytes, color: '#FFD57E' },
-      { key: 'files', label: t('storage.imageFiles'), value: storage.fileBytes, color: '#B8A9FF' },
-      { key: 'db', label: t('storage.database'), value: storage.databaseBytes, color: '#9FD1FF' },
-      { key: 'other', label: t('storage.otherFiles'), value: storage.otherBytes, color: '#FFBEA8' },
-    ],
-    [storage.audioBytes, storage.databaseBytes, storage.fileBytes, storage.notesBytes, storage.otherBytes, t]
+    () =>
+      ROWS.map((row) => ({
+        key: row.key,
+        label: t(row.labelKey),
+        icon: row.icon,
+        value: storage[row.valueKey],
+      })),
+    [storage, t]
   );
 
-  const actionTextColor = getContrastColor(colors.primary, colors.text, '#FFFFFF');
+  const total = splitBytes(storage.totalBytes);
 
   return (
     <ScreenContainer>
-      <View style={{ flex: 1, paddingHorizontal: ui.space.md, paddingTop: ui.space.sm }}>
-        <View
-          style={{
-            borderRadius: ui.radius.lg,
-            borderWidth: 1,
-            borderColor: colors.border,
-            backgroundColor: colors.card,
-            padding: ui.space.md,
-            marginBottom: ui.space.sm,
-          }}
-        >
-          <Text
-            style={{
-              color: colors.textSecondary,
-              fontFamily: 'NotoSansBengali',
-              fontSize: ui.font.sm,
-            }}
-          >
-            {t('storage.totalLabel')}
-          </Text>
-          <Text
-            style={{
-              color: colors.text,
-              fontFamily: 'NotoSansBengali',
-              fontSize: 30,
-              lineHeight: 40,
-              marginTop: 2,
-            }}
-          >
-            {formatBytes(storage.totalBytes)}
-          </Text>
-          <Text
-            style={{
-              color: colors.textSecondary,
-              fontFamily: 'NotoSansBengali',
-              fontSize: ui.font.sm,
-            }}
-          >
-            {t('storage.noteCount', { count: storage.noteCount })}
-          </Text>
-        </View>
+      <View
+        style={{
+          flex: 1,
+          paddingHorizontal: ui.space.lg,
+          paddingTop: insets.top + ui.space.sm + TOP_BAR_HEIGHT + ui.space.md,
+        }}
+      >
+        <AppText variant="display" style={{ marginBottom: ui.space.lg }}>
+          {t('header.storageUsage')}
+        </AppText>
 
-        <View style={{ gap: 10 }}>
-          {rows.map((row) => (
-            <View
-              key={row.key}
-              style={{
-                borderRadius: ui.radius.md,
-                borderWidth: 1,
-                borderColor: colors.border,
-                backgroundColor: colors.card,
-                paddingVertical: 11,
-                paddingHorizontal: 12,
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-              }}
-            >
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
-                <View style={{ width: 11, height: 11, borderRadius: 6, backgroundColor: row.color }} />
-                <Text style={{ color: colors.text, fontFamily: 'NotoSansBengali', fontSize: ui.font.md, flex: 1 }}>
-                  {row.label}
-                </Text>
-              </View>
-              <Text style={{ color: colors.textSecondary, fontFamily: 'NotoSansBengali', fontSize: ui.font.sm }}>
-                {formatBytes(row.value)}
-              </Text>
+        <View style={{ alignItems: 'center', marginBottom: ui.space.lg }}>
+          <AnimatedRing
+            progress={isLoading ? 0 : 1}
+            size={170}
+            strokeWidth={12}
+            color={colors.primary}
+            trackColor={colors.surfaceVariant}
+          >
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+              <AppText variant="display">{total.value}</AppText>
+              <AppText variant="caption" color={colors.textSecondary}>
+                {total.unit}
+              </AppText>
             </View>
-          ))}
+          </AnimatedRing>
+          <AppText variant="caption" color={colors.textSecondary} style={{ marginTop: ui.space.sm }}>
+            {t('storage.totalLabel')}
+          </AppText>
+          <AppText variant="bodySmall" color={colors.textSecondary}>
+            {t('storage.noteCount', { count: storage.noteCount })}
+          </AppText>
         </View>
 
-        <Pressable
-          onPress={() => void refreshStorage()}
-          disabled={isRefreshing}
-          style={{
-            marginTop: ui.space.md,
-            alignSelf: 'flex-start',
-            borderRadius: ui.radius.pill,
-            borderWidth: 1,
-            borderColor: colors.primary,
-            backgroundColor: colors.primary,
-            paddingHorizontal: 14,
-            paddingVertical: 8,
-            opacity: isRefreshing ? 0.65 : 1,
-          }}
-        >
-          <Text style={{ color: actionTextColor, fontFamily: 'NotoSansBengali', fontSize: ui.font.sm }}>
-            {isRefreshing || isLoading ? t('storage.refreshing') : t('storage.refresh')}
-          </Text>
-        </Pressable>
+        <View style={{ gap: ui.space.md }}>
+          {rows.map((row, index) => {
+            const accent = FOLDER_ACCENTS[index % FOLDER_ACCENTS.length];
+            const tint = isDark ? accent.dark : accent.light;
+            const ink = isDark ? accent.inkDark : accent.inkLight;
+            const ratio = storage.totalBytes > 0 ? Math.min(1, row.value / storage.totalBytes) : 0;
+
+            return (
+              <View
+                key={row.key}
+                style={{
+                  backgroundColor: colors.surface,
+                  borderRadius: ui.radius.lg,
+                  padding: ui.space.lg,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: ui.space.md,
+                }}
+              >
+                <View
+                  style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: 20,
+                    backgroundColor: tint,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <MaterialCommunityIcons name={row.icon} size={22} color={ink} />
+                </View>
+                <View style={{ flex: 1, gap: ui.space.sm }}>
+                  <AppText variant="bodySmall" numberOfLines={1}>
+                    {row.label}
+                  </AppText>
+                  <ProgressFill
+                    progress={ratio}
+                    trackColor={colors.surfaceVariant}
+                    fillColor={colors.primary}
+                  />
+                </View>
+                <AppText variant="caption" color={colors.textSecondary}>
+                  {formatBytes(row.value)}
+                </AppText>
+              </View>
+            );
+          })}
+        </View>
       </View>
+
+      <TopBar onBack={() => navigation.goBack()}>
+        <LanguageToggleButton />
+        <IconButton
+          icon="refresh"
+          disabled={isRefreshing}
+          accessibilityLabel={isRefreshing ? t('storage.refreshing') : t('storage.refresh')}
+          onPress={() => void refreshStorage()}
+        />
+      </TopBar>
     </ScreenContainer>
   );
 };

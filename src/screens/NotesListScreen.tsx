@@ -1,12 +1,25 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useCallback, useLayoutEffect, useMemo, useState } from 'react';
-import { Alert, FlatList, Pressable, Text, TextInput, View } from 'react-native';
+import { useCallback, useMemo, useState } from 'react';
+import type { GestureResponderEvent } from 'react-native';
+import { Alert, FlatList, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Animated from 'react-native-reanimated';
+import { ActionSheet } from '../components/ActionSheet';
+import type { ActionSheetRow } from '../components/ActionSheet';
+import { AppText } from '../components/AppText';
+import { BottomSheet } from '../components/BottomSheet';
+import { Chip } from '../components/Chip';
 import { EmptyState } from '../components/EmptyState';
+import { FAB } from '../components/FAB';
+import { IconButton } from '../components/IconButton';
 import { LanguageToggleButton } from '../components/LanguageToggleButton';
+import { PressableScale } from '../components/PressableScale';
 import { ScreenContainer } from '../components/ScreenContainer';
+import { SearchBar } from '../components/SearchBar';
+import { TOP_BAR_HEIGHT, TopBar } from '../components/TopBar';
+import { useEntrance } from '../components/entrance';
 import {
   deleteNote,
   listNotesByFolder,
@@ -15,15 +28,18 @@ import {
   type SortField,
 } from '../database/schema';
 import { useLanguage } from '../i18n/LanguageContext';
-import { getContrastColor } from '../theme/contrast';
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
 import type { Note } from '../types/models';
 import type { RootStackParamList } from '../types/navigation';
+import { formatMetaDate } from '../utils/dateFormat';
 import type { RouteProp } from '@react-navigation/native';
 
 type Route = RouteProp<RootStackParamList, 'NotesList'>;
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'NotesList'>;
+type ActiveSheet = 'none' | 'sort' | 'noteActions';
+
+const SORT_FIELDS: SortField[] = ['custom', 'name', 'createdAt'];
 
 export const NotesListScreen = () => {
   const route = useRoute<Route>();
@@ -31,18 +47,21 @@ export const NotesListScreen = () => {
   const { colors } = useAppColors();
   const { t, language } = useLanguage();
   const insets = useSafeAreaInsets();
+  const entrance = useEntrance();
   const [notes, setNotes] = useState<Note[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [sortField, setSortField] = useState<SortField>('custom');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [isReorderMode, setIsReorderMode] = useState(false);
-  const cardIconColor = getContrastColor(colors.card, colors.text, '#FFFFFF');
-  const fabIconColor = getContrastColor(colors.primary, colors.text, '#FFFFFF');
+  const [activeSheet, setActiveSheet] = useState<ActiveSheet>('none');
+  const [actionsNote, setActionsNote] = useState<Note | null>(null);
   const fabBottom = Math.max(insets.bottom + 12, 22);
   const listBottomPadding = Math.max(insets.bottom + 104, 126);
 
   const { folderId, folderName } = route.params;
+
+  const closeSheet = useCallback(() => setActiveSheet('none'), []);
 
   const refreshNotes = useCallback(async () => {
     try {
@@ -61,13 +80,6 @@ export const NotesListScreen = () => {
       void refreshNotes();
     }, [refreshNotes])
   );
-
-  useLayoutEffect(() => {
-    navigation.setOptions({
-      title: folderName,
-      headerRight: () => <LanguageToggleButton />,
-    });
-  }, [folderName, navigation, language]);
 
   const onDeleteNote = (note: Note) => {
     Alert.alert(t('notes.deleteTitle'), t('notes.deleteBody', { title: note.title }), [
@@ -129,164 +141,73 @@ export const NotesListScreen = () => {
     }
   };
 
+  const stopAnd =
+    (action: () => void) =>
+    (event: GestureResponderEvent) => {
+      event.stopPropagation();
+      action();
+    };
+
+  const actionRows: ActionSheetRow[] = actionsNote
+    ? [
+        {
+          icon: 'trash-can-outline',
+          label: t('common.delete'),
+          destructive: true,
+          onPress: () => onDeleteNote(actionsNote),
+        },
+      ]
+    : [];
+
   return (
     <ScreenContainer>
-      <View style={{ flex: 1, paddingHorizontal: ui.space.md, paddingTop: ui.space.sm }}>
-        <View
-          style={{
-            marginBottom: ui.space.sm,
-            backgroundColor: colors.card,
-            borderWidth: 1,
-            borderColor: colors.border,
-            borderRadius: ui.radius.lg,
-            padding: ui.space.sm,
+      <View style={{ flex: 1, paddingHorizontal: ui.space.lg }}>
+        <FlatList
+          data={filteredNotes}
+          keyExtractor={(item) => String(item.id)}
+          contentContainerStyle={{
+            paddingTop: insets.top + ui.space.sm + TOP_BAR_HEIGHT + ui.space.md,
+            paddingBottom: listBottomPadding,
+            gap: ui.space.md,
+            flexGrow: 1,
           }}
-        >
-          <Text
-            style={{
-              color: colors.text,
-              fontFamily: 'NotoSansBengali',
-              fontSize: ui.font.md,
-              marginBottom: ui.space.xs,
-            }}
-          >
-            {t('notes.sortLabel')}
-          </Text>
-          <FlatList
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            data={['custom', 'name', 'createdAt'] as SortField[]}
-            keyExtractor={(item) => item}
-            contentContainerStyle={{ gap: 8, paddingBottom: 4 }}
-            renderItem={({ item: field }) => {
-              const isActive = sortField === field;
-              return (
-                <Pressable
-                  onPress={() => onChangeSortField(field)}
-                  style={{
-                    paddingHorizontal: 11,
-                    paddingVertical: 7,
-                    borderRadius: ui.radius.pill,
-                    borderWidth: 1,
-                    borderColor: isActive ? colors.primary : colors.border,
-                    backgroundColor: isActive ? colors.primary : colors.background,
-                  }}
-                >
-                  <Text
-                    style={{
-                      color: isActive ? getContrastColor(colors.primary, colors.text, '#FFFFFF') : colors.text,
-                      fontFamily: 'NotoSansBengali',
-                      fontSize: ui.font.sm,
-                    }}
-                  >
-                    {t(`sort.${field}`)}
-                  </Text>
-                </Pressable>
-              );
-            }}
-          />
-
-          <View style={{ marginTop: ui.space.xs }}>
-            {sortField !== 'custom' ? (
-              <Pressable
-                onPress={() => setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'))}
-                style={{
-                  alignSelf: 'flex-start',
-                  paddingHorizontal: 11,
-                  paddingVertical: 7,
-                  borderRadius: ui.radius.pill,
-                  borderWidth: 1,
-                  borderColor: colors.border,
-                  backgroundColor: colors.background,
-                }}
-              >
-                <Text style={{ color: colors.textSecondary, fontFamily: 'NotoSansBengali', fontSize: ui.font.sm }}>
-                  {t(`sort.${sortDirection}`)}
-                </Text>
-              </Pressable>
+          keyboardShouldPersistTaps="handled"
+          ListHeaderComponent={
+            <View style={{ gap: ui.space.md, marginBottom: ui.space.sm }}>
+              <AppText variant="display" numberOfLines={2}>
+                {folderName}
+              </AppText>
+              <SearchBar
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                placeholder={t('notes.searchPlaceholder')}
+              />
+            </View>
+          }
+          ListEmptyComponent={
+            isLoading ? (
+              <EmptyState
+                iconName="file-document-outline"
+                title={t('common.loading')}
+                subtitle={t('notes.loadingSubtitle')}
+              />
+            ) : isSearchActive ? (
+              <EmptyState
+                iconName="magnify"
+                title={t('notes.emptySearchTitle')}
+                subtitle={t('notes.emptySearchSubtitle')}
+              />
             ) : (
-              <View>
-                <Pressable
-                  onPress={() => setIsReorderMode((prev) => !prev)}
-                  style={{
-                    alignSelf: 'flex-start',
-                    paddingHorizontal: 11,
-                    paddingVertical: 7,
-                    borderRadius: ui.radius.pill,
-                    borderWidth: 1,
-                    borderColor: isReorderMode ? colors.primary : colors.border,
-                    backgroundColor: isReorderMode ? colors.primary : colors.background,
-                  }}
-                >
-                  <Text
-                    style={{
-                      color: isReorderMode ? getContrastColor(colors.primary, colors.text, '#FFFFFF') : colors.text,
-                      fontFamily: 'NotoSansBengali',
-                      fontSize: ui.font.sm,
-                    }}
-                  >
-                    {t('sort.reorder')}
-                  </Text>
-                </Pressable>
-                {isReorderMode ? (
-                  <Text
-                    style={{
-                      marginTop: ui.space.xs,
-                      color: colors.textSecondary,
-                      fontFamily: 'NotoSansBengali',
-                      fontSize: ui.font.xs,
-                    }}
-                  >
-                    {isSearchActive ? t('sort.reorderSearchHint') : t('sort.reorderHint')}
-                  </Text>
-                ) : null}
-              </View>
-            )}
-          </View>
-        </View>
-
-        <TextInput
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          placeholder={t('notes.searchPlaceholder')}
-          placeholderTextColor={colors.textSecondary}
-          style={{
-            borderWidth: 1,
-            borderColor: colors.border,
-            borderRadius: ui.radius.md,
-            backgroundColor: colors.card,
-            color: colors.text,
-            paddingHorizontal: 11,
-            paddingVertical: 9,
-            fontFamily: 'NotoSansBengali',
-            fontSize: ui.font.md,
-            marginBottom: ui.space.sm,
-          }}
-        />
-
-        {isLoading ? (
-          <EmptyState
-            iconName="file-document-outline"
-            title={t('common.loading')}
-            subtitle={t('notes.loadingSubtitle')}
-          />
-        ) : filteredNotes.length === 0 ? (
-          <EmptyState
-            iconName="file-document-plus-outline"
-            title={searchQuery.trim() ? t('notes.emptySearchTitle') : t('notes.emptyTitle')}
-            subtitle={
-              searchQuery.trim()
-                ? t('notes.emptySearchSubtitle')
-                : t('notes.emptySubtitle')
-            }
-          />
-        ) : (
-          <FlatList
-            data={filteredNotes}
-            keyExtractor={(item) => String(item.id)}
-            contentContainerStyle={{ paddingBottom: listBottomPadding, gap: 9 }}
-            renderItem={({ item, index }) => (
-              <Pressable
+              <EmptyState
+                iconName="file-document-plus-outline"
+                title={t('notes.emptyTitle')}
+                subtitle={t('notes.emptySubtitle')}
+              />
+            )
+          }
+          renderItem={({ item, index }) => (
+            <Animated.View entering={entrance(index)}>
+              <PressableScale
                 onPress={() =>
                   navigation.navigate('NoteEditor', {
                     folderId,
@@ -294,118 +215,163 @@ export const NotesListScreen = () => {
                     noteId: item.id,
                   })
                 }
+                onLongPress={() => {
+                  setActionsNote(item);
+                  setActiveSheet('noteActions');
+                }}
                 style={{
-                  backgroundColor: colors.card,
-                  borderColor: colors.border,
-                  borderWidth: 1,
-                  borderRadius: ui.radius.md,
-                  paddingHorizontal: ui.space.sm,
-                  paddingVertical: 12,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
+                  backgroundColor: colors.surface,
+                  borderRadius: ui.radius.lg,
+                  padding: ui.space.lg,
                 }}
               >
-                <View style={{ flex: 1, paddingRight: 8 }}>
-                    <Text
-                      numberOfLines={2}
-                      style={{
-                        color: colors.text,
-                        fontFamily: 'NotoSansBengali',
-                        fontSize: ui.font.lg,
-                        lineHeight: 21,
-                      }}
-                    >
+                <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+                  <View style={{ flex: 1 }}>
+                    <AppText variant="headline" numberOfLines={2}>
                       {item.title}
-                  </Text>
-                  <Text
-                    numberOfLines={2}
-                      style={{
-                        marginTop: 4,
-                        color: colors.textSecondary,
-                        fontFamily: 'NotoSansBengali',
-                        fontSize: ui.font.sm,
-                        lineHeight: 20,
-                      }}
+                    </AppText>
+                    <AppText
+                      variant="bodySmall"
+                      color={colors.textSecondary}
+                      numberOfLines={2}
+                      style={{ marginTop: ui.space.xs }}
                     >
                       {item.content || t('common.noText')}
-                  </Text>
-                </View>
-                <View style={{ alignItems: 'center', gap: 6 }}>
-                  {sortField === 'custom' && isReorderMode ? (
-                    <>
-                      <Pressable
-                        hitSlop={8}
-                        disabled={!canReorder || index === 0}
-                        onPress={(event) => {
-                          event.stopPropagation();
-                          void onMoveNote(item.id, 'up');
-                        }}
-                        style={{ opacity: !canReorder || index === 0 ? 0.4 : 1 }}
-                      >
-                        <MaterialCommunityIcons name="arrow-up-bold" size={19} color={cardIconColor} />
-                      </Pressable>
-                      <Pressable
-                        hitSlop={8}
-                        disabled={!canReorder || index === filteredNotes.length - 1}
-                        onPress={(event) => {
-                          event.stopPropagation();
-                          void onMoveNote(item.id, 'down');
-                        }}
-                        style={{ opacity: !canReorder || index === filteredNotes.length - 1 ? 0.4 : 1 }}
-                      >
-                        <MaterialCommunityIcons name="arrow-down-bold" size={19} color={cardIconColor} />
-                      </Pressable>
-                    </>
-                  ) : null}
+                    </AppText>
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: ui.space.md,
+                        marginTop: ui.space.sm,
+                      }}
+                    >
+                      <AppText variant="caption" color={colors.textSecondary}>
+                        {formatMetaDate(item.updatedAt, language, t)}
+                      </AppText>
+                      {item.audioCount > 0 ? (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <MaterialCommunityIcons
+                            name="microphone"
+                            size={18}
+                            color={colors.textSecondary}
+                          />
+                          <AppText variant="caption" color={colors.textSecondary}>
+                            {item.audioCount}
+                          </AppText>
+                        </View>
+                      ) : null}
+                      {item.fileCount > 0 ? (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <MaterialCommunityIcons
+                            name="paperclip"
+                            size={18}
+                            color={colors.textSecondary}
+                          />
+                          <AppText variant="caption" color={colors.textSecondary}>
+                            {item.fileCount}
+                          </AppText>
+                        </View>
+                      ) : null}
+                    </View>
+                  </View>
 
-                  {item.audioCount > 0 ? (
-                    <MaterialCommunityIcons
-                      name="microphone"
-                      size={21}
-                      color={cardIconColor}
-                    />
+                  {sortField === 'custom' && isReorderMode ? (
+                    <View style={{ flexDirection: 'row', gap: ui.space.xs }}>
+                      <IconButton
+                        icon="arrow-up-bold"
+                        size={18}
+                        disabled={!canReorder || index === 0}
+                        onPress={stopAnd(() => void onMoveNote(item.id, 'up'))}
+                      />
+                      <IconButton
+                        icon="arrow-down-bold"
+                        size={18}
+                        disabled={!canReorder || index === filteredNotes.length - 1}
+                        onPress={stopAnd(() => void onMoveNote(item.id, 'down'))}
+                      />
+                    </View>
                   ) : null}
-                  <Pressable hitSlop={8} onPress={() => onDeleteNote(item)}>
-                    <MaterialCommunityIcons
-                      name="trash-can-outline"
-                      size={21}
-                      color={cardIconColor}
-                    />
-                  </Pressable>
                 </View>
-              </Pressable>
-            )}
-          />
-        )}
+              </PressableScale>
+            </Animated.View>
+          )}
+        />
       </View>
 
-      <Pressable
+      <TopBar onBack={() => navigation.goBack()}>
+        <LanguageToggleButton />
+        <IconButton
+          icon="sort-variant"
+          accessibilityLabel={t('sort.title')}
+          onPress={() => setActiveSheet('sort')}
+        />
+      </TopBar>
+
+      <FAB
+        icon="plus"
+        bottom={fabBottom}
         onPress={() =>
           navigation.navigate('NoteEditor', {
             folderId,
             folderName,
           })
         }
-        style={{
-          position: 'absolute',
-          right: 18,
-          bottom: fabBottom,
-          backgroundColor: colors.primary,
-          width: 56,
-          height: 56,
-          borderRadius: 28,
-          alignItems: 'center',
-          justifyContent: 'center',
-          shadowColor: '#000000',
-          shadowOpacity: 0.18,
-          shadowRadius: 9,
-          shadowOffset: { width: 0, height: 4 },
-          elevation: 8,
-        }}
+      />
+
+      <BottomSheet
+        visible={activeSheet === 'sort'}
+        onClose={closeSheet}
+        title={t('sort.title')}
       >
-        <MaterialCommunityIcons name="plus" size={28} color={fabIconColor} />
-      </Pressable>
+        <View style={{ paddingHorizontal: ui.space.lg, gap: ui.space.md }}>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: ui.space.sm }}>
+            {SORT_FIELDS.map((field) => (
+              <Chip
+                key={field}
+                label={t(`sort.${field}`)}
+                selected={sortField === field}
+                onPress={() => onChangeSortField(field)}
+              />
+            ))}
+          </View>
+
+          {sortField !== 'custom' ? (
+            <View style={{ flexDirection: 'row', gap: ui.space.sm }}>
+              <Chip
+                label={t('sort.asc')}
+                selected={sortDirection === 'asc'}
+                onPress={() => setSortDirection('asc')}
+              />
+              <Chip
+                label={t('sort.desc')}
+                selected={sortDirection === 'desc'}
+                onPress={() => setSortDirection('desc')}
+              />
+            </View>
+          ) : (
+            <View style={{ gap: ui.space.sm }}>
+              <Chip
+                label={t('sort.reorder')}
+                selected={isReorderMode}
+                onPress={() => setIsReorderMode((prev) => !prev)}
+              />
+              {isReorderMode ? (
+                <AppText variant="caption" color={colors.textSecondary}>
+                  {isSearchActive ? t('sort.reorderSearchHint') : t('sort.reorderHint')}
+                </AppText>
+              ) : null}
+            </View>
+          )}
+        </View>
+      </BottomSheet>
+
+      <ActionSheet
+        visible={activeSheet === 'noteActions'}
+        onClose={closeSheet}
+        title={actionsNote?.title}
+        rows={actionRows}
+      />
     </ScreenContainer>
   );
 };
