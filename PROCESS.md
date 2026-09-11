@@ -155,3 +155,10 @@
 - Automatic backup requires explicit confirmation after writable-folder connection and immediately creates the first verified archive. Folder selection for import does not enable automation. A verified manual or automatic backup resets the 24-hour clock only when recoverable content changed.
 - Automatic work defaults to Wi-Fi only with an opt-in for mobile data. Manual export uses the current connection. A Wi-Fi-blocked attempt remains due and reports that it is waiting.
 - Next: decide retry behavior, long-running attempts, and operation concurrency.
+
+## 2026-09-11 13:01 UTC
+
+- Settled retry, long-running execution, and concurrency with the product owner.
+- Waiting conditions do not consume retries. Transient failures receive up to three exponential-backoff retries; permission, storage, and configuration failures require user action. Unsuccessful work remains due and never triggers pruning.
+- Large or slow backups use foreground-capable native WorkManager with a cancellable progress notification. One durable operation lease serializes automatic export, manual export, import, folder changes, and automation changes.
+- Next: decide battery gating, app-open execution, and user notification thresholds.
