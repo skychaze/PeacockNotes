@@ -19,6 +19,11 @@ import {
   type BackupFolderState,
 } from '../services/backupFolder';
 import { exportBackup, type ExportProgress, type VerifiedBackup } from '../services/backupExport';
+import {
+  scanBackupCollection,
+  type BackupCollectionArchive,
+  type BackupCollectionScan,
+} from '../services/archive';
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
 import type { RootStackParamList } from '../types/navigation';
@@ -31,24 +36,46 @@ export const BackupScreen = () => {
   const navigation = useNavigation<Navigation>();
   const insets = useSafeAreaInsets();
   const { colors } = useAppColors();
-  const { t } = useLanguage();
+  const { language, t } = useLanguage();
   const [folder, setFolder] = useState<BackupFolderState>(EMPTY_STATE);
   const [isLoading, setIsLoading] = useState(true);
   const [isChoosing, setIsChoosing] = useState(false);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [verifiedBackup, setVerifiedBackup] = useState<VerifiedBackup | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [collection, setCollection] = useState<BackupCollectionScan | null>(null);
+  const [scanState, setScanState] = useState<'idle' | 'loading' | 'failed'>('idle');
+
+  const scanCollection = useCallback(async () => {
+    setScanState('loading');
+    try {
+      setCollection(await scanBackupCollection());
+      setScanState('idle');
+    } catch (error) {
+      console.warn('Failed to scan backup collection:', error);
+      setCollection(null);
+      setScanState('failed');
+    }
+  }, []);
 
   const loadFolder = useCallback(async () => {
     try {
-      setFolder(await getBackupFolderState());
+      const nextFolder = await getBackupFolderState();
+      setFolder(nextFolder);
+      if (nextFolder.status === 'connected') await scanCollection();
+      else {
+        setCollection(null);
+        setScanState('idle');
+      }
     } catch (error) {
       console.warn('Failed to restore backup folder authorization:', error);
       setFolder({ status: 'unavailable', uri: null, name: null });
+      setCollection(null);
+      setScanState('failed');
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [scanCollection]);
 
   useFocusEffect(
     useCallback(() => {
@@ -59,7 +86,9 @@ export const BackupScreen = () => {
   const chooseFolder = async () => {
     try {
       setIsChoosing(true);
-      setFolder(await chooseBackupFolder());
+      const nextFolder = await chooseBackupFolder();
+      setFolder(nextFolder);
+      if (nextFolder.status === 'connected') await scanCollection();
     } catch (error) {
       if ((error as { code?: string }).code === 'PICKER_CANCELLED') return;
       console.warn('Failed to choose backup folder:', error);
@@ -75,6 +104,7 @@ export const BackupScreen = () => {
     try {
       const result = await exportBackup(setExportProgress);
       setVerifiedBackup(result);
+      await scanCollection();
     } catch (error: unknown) {
       const code = typeof error === 'object' && error !== null && 'code' in error
         ? String(error.code)
@@ -99,6 +129,8 @@ export const BackupScreen = () => {
         onPress: async () => {
           try {
             setFolder(await disconnectBackupFolder());
+            setCollection(null);
+            setScanState('idle');
           } catch (error) {
             console.warn('Failed to disconnect backup folder:', error);
             Alert.alert(t('common.error'), t('backup.disconnectError'));
@@ -112,6 +144,27 @@ export const BackupScreen = () => {
   const hasStaleAuthorization = folder.status === 'revoked' || folder.status === 'unavailable';
   const statusColor = isConnected ? colors.primary : hasStaleAuthorization ? colors.error : colors.textSecondary;
   const statusIcon = isConnected ? 'folder-check-outline' : hasStaleAuthorization ? 'folder-alert-outline' : 'folder-outline';
+  const archives = [...(collection?.archives ?? [])].sort((left, right) =>
+    (Date.parse(right.createdAt ?? '') || right.providerModifiedAt || 0) -
+    (Date.parse(left.createdAt ?? '') || left.providerModifiedAt || 0)
+  );
+  const newestValid = collection?.complete
+    ? archives.find((archive) => archive.state === 'valid') ?? null
+    : null;
+  const formatDate = (archive: BackupCollectionArchive) => {
+    const value = archive.createdAt ? Date.parse(archive.createdAt) : archive.providerModifiedAt;
+    if (!value || Number.isNaN(value)) return t('backup.collection.unknownTime');
+    return new Intl.DateTimeFormat(language === 'bn' ? 'bn-BD' : 'en-US', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(new Date(value));
+  };
+  const formatBytes = (bytes: number | null) => {
+    if (bytes === null) return t('backup.collection.unknownSize');
+    const units = ['B', 'KB', 'MB', 'GB'] as const;
+    const unit = Math.min(Math.floor(Math.log(Math.max(bytes, 1)) / Math.log(1024)), units.length - 1);
+    return `${new Intl.NumberFormat(language === 'bn' ? 'bn-BD' : 'en-US', { maximumFractionDigits: 1 }).format(bytes / 1024 ** unit)} ${units[unit]}`;
+  };
 
   return (
     <ScreenContainer>
@@ -131,6 +184,16 @@ export const BackupScreen = () => {
         </View>
 
         <Card style={{ gap: ui.space.lg }}>
+          <View style={{ gap: ui.space.xs }}>
+            <AppText variant="caption" color={colors.textSecondary}>{t('backup.collection.newest')}</AppText>
+            <AppText variant="headline" color={newestValid ? colors.primary : colors.textSecondary}>
+              {newestValid
+                ? formatDate(newestValid)
+                : scanState !== 'idle' || collection?.complete === false
+                  ? t('backup.collection.recoveryUnknown')
+                  : t('backup.collection.noRecoveryPoint')}
+            </AppText>
+          </View>
           <View style={{ gap: ui.space.xs }}>
             <AppText variant="headline">{t('backup.export.title')}</AppText>
             <AppText variant="bodySmall" color={colors.textSecondary}>
@@ -156,6 +219,52 @@ export const BackupScreen = () => {
           ) : null}
           {exportError ? <AppText variant="body" color={colors.error}>{exportError}</AppText> : null}
         </Card>
+
+        {isConnected ? (
+          <Card style={{ gap: ui.space.md }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: ui.space.sm }}>
+              <AppText variant="headline">{t('backup.collection.title')}</AppText>
+              <PressableScale
+                accessibilityRole="button"
+                disabled={scanState === 'loading'}
+                onPress={() => void scanCollection()}
+                style={{ padding: ui.space.sm }}
+              >
+                <AppText variant="headline" color={colors.primary}>
+                  {scanState === 'loading' ? t('backup.collection.scanning') : t('backup.collection.refresh')}
+                </AppText>
+              </PressableScale>
+            </View>
+            {scanState === 'failed' ? (
+              <AppText variant="body" color={colors.error}>{t('backup.collection.failed')}</AppText>
+            ) : collection && !collection.complete ? (
+              <AppText variant="body" color={colors.error}>{t('backup.collection.incomplete')}</AppText>
+            ) : null}
+            {scanState !== 'loading' && collection && archives.length === 0 ? (
+              <AppText variant="body" color={colors.textSecondary}>{t('backup.collection.empty')}</AppText>
+            ) : null}
+            {archives.map((archive) => {
+              const color = archive.state === 'valid'
+                ? colors.primary
+                : archive.state === 'uncertain' ? colors.textSecondary : colors.error;
+              return (
+                <View
+                  key={archive.uri}
+                  style={{ gap: ui.space.xs, paddingTop: ui.space.sm, borderTopWidth: 1, borderTopColor: colors.border }}
+                >
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: ui.space.sm }}>
+                    <AppText variant="headline" style={{ flex: 1 }}>{formatDate(archive)}</AppText>
+                    <AppText variant="headline" color={color}>{t(`backup.collection.state.${archive.state}`)}</AppText>
+                  </View>
+                  <AppText variant="bodySmall" color={colors.textSecondary} numberOfLines={1}>{archive.name}</AppText>
+                  <AppText variant="bodySmall" color={colors.textSecondary}>
+                    {formatBytes(archive.bytes)} · {t(`backup.collection.verification.${archive.verification}`)} · {t(`backup.collection.compatibility.${archive.compatibility}`)}
+                  </AppText>
+                </View>
+              );
+            })}
+          </Card>
+        ) : null}
 
         <Card style={{ gap: ui.space.lg }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: ui.space.md }}>

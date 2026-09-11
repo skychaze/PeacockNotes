@@ -58,10 +58,31 @@ export type ValidateArchiveRequest = Readonly<{
   limits?: ArchiveLimits;
 }>;
 
+export type ArchiveHealth = 'valid' | 'incompatible' | 'damaged' | 'uncertain';
+export type ArchiveVerification = 'verified' | 'failed' | 'not_verified';
+export type ArchiveCompatibility = 'compatible' | 'incompatible' | 'unknown';
+
+export type BackupCollectionArchive = Readonly<{
+  uri: string;
+  name: string;
+  bytes: number | null;
+  createdAt: string | null;
+  providerModifiedAt: number | null;
+  state: ArchiveHealth;
+  verification: ArchiveVerification;
+  compatibility: ArchiveCompatibility;
+}>;
+
+export type BackupCollectionScan = Readonly<{
+  complete: boolean;
+  archives: readonly BackupCollectionArchive[];
+}>;
+
 type NativeArchiveModule = {
   pinMedia(request: PinMediaRequest): Promise<readonly ArchiveMediaSource[]>;
   createArchive(request: CreateArchiveRequest): Promise<ArchiveSummary>;
   validateArchive(request: ValidateArchiveRequest): Promise<ArchiveSummary>;
+  scanConnectedFolder(): Promise<BackupCollectionScan>;
 };
 
 const nativeArchive = NativeModules.Archive as NativeArchiveModule | undefined;
@@ -81,3 +102,6 @@ export const createArchive = (request: CreateArchiveRequest): Promise<ArchiveSum
 
 export const validateArchive = (request: ValidateArchiveRequest): Promise<ArchiveSummary> =>
   moduleOrThrow().validateArchive(request);
+
+export const scanBackupCollection = (): Promise<BackupCollectionScan> =>
+  moduleOrThrow().scanConnectedFolder();

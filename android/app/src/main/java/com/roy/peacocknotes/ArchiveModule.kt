@@ -4,6 +4,7 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
 import android.os.StatFs
+import android.provider.DocumentsContract
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -38,6 +39,11 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     private const val DATABASE_PATH = "database/content.sqlite"
     private const val BUFFER_SIZE = 64 * 1024
     private const val MAX_MANIFEST_BYTES = 2L * 1024 * 1024
+    private const val FOLDER_PREFERENCES = "peacock_notes_backup_folder"
+    private const val FOLDER_URI = "folder_uri"
+    private val ARCHIVE_NAME = Regex("^peacock-notes-\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z\\.pnbak$")
+    private val INCOMPATIBLE_CODES = setOf("UNSUPPORTED_FORMAT_VERSION", "UNSUPPORTED_DATABASE_VERSION")
+    private val UNCERTAIN_CODES = setOf("SOURCE_UNAVAILABLE", "STAGING_UNAVAILABLE", "INSUFFICIENT_STORAGE", "ARCHIVE_OPERATION_FAILED")
   }
 
   private val executor = Executors.newSingleThreadExecutor()
@@ -62,6 +68,94 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     runCatching { validate(request) }
       .onSuccess(promise::resolve)
       .onFailure { promise.reject(errorCode(it), it.message, it) }
+  }
+
+  @ReactMethod
+  fun scanConnectedFolder(promise: Promise) = executor.execute {
+    runCatching { scanFolder() }
+      .onSuccess(promise::resolve)
+      .onFailure { promise.reject("PROVIDER_SCAN_FAILED", it.message, it) }
+  }
+
+  private fun scanFolder(): com.facebook.react.bridge.WritableMap {
+    val folder = context.getSharedPreferences(FOLDER_PREFERENCES, android.app.Activity.MODE_PRIVATE)
+      .getString(FOLDER_URI, null)?.let(Uri::parse)
+      ?: fail("FOLDER_NOT_CONNECTED", "No backup folder is connected")
+    val children = DocumentsContract.buildChildDocumentsUriUsingTree(
+      folder,
+      DocumentsContract.getTreeDocumentId(folder)
+    )
+    val projection = arrayOf(
+      DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+      DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+      DocumentsContract.Document.COLUMN_MIME_TYPE,
+      DocumentsContract.Document.COLUMN_SIZE,
+      DocumentsContract.Document.COLUMN_LAST_MODIFIED
+    )
+    val archives = Arguments.createArray()
+    var complete = true
+    val cursor = context.contentResolver.query(children, projection, null, null, null)
+      ?: fail("PROVIDER_SCAN_FAILED", "The document provider returned no folder listing")
+    cursor.use {
+      while (it.moveToNext()) {
+        val name = it.stringOrNull(DocumentsContract.Document.COLUMN_DISPLAY_NAME) ?: continue
+        val mime = it.stringOrNull(DocumentsContract.Document.COLUMN_MIME_TYPE)
+        if (!ARCHIVE_NAME.matches(name) || mime == DocumentsContract.Document.MIME_TYPE_DIR) continue
+        val id = it.stringOrNull(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+        if (id == null) {
+          complete = false
+          continue
+        }
+        val uri = DocumentsContract.buildDocumentUriUsingTree(folder, id)
+        val size = it.longOrNull(DocumentsContract.Document.COLUMN_SIZE)
+        val modified = it.longOrNull(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+        archives.pushMap(scanArchive(uri, name, size, modified))
+      }
+      complete = complete &&
+        !it.extras.getBoolean(DocumentsContract.EXTRA_LOADING, false) &&
+        !it.extras.containsKey(DocumentsContract.EXTRA_ERROR)
+    }
+    return Arguments.createMap().apply {
+      putBoolean("complete", complete)
+      putArray("archives", archives)
+    }
+  }
+
+  private fun scanArchive(uri: Uri, name: String, providerSize: Long?, modified: Long?) = Arguments.createMap().apply {
+    putString("uri", uri.toString())
+    putString("name", name)
+    if (providerSize == null) putNull("bytes") else putDouble("bytes", providerSize.toDouble())
+    if (modified == null) putNull("providerModifiedAt") else putDouble("providerModifiedAt", modified.toDouble())
+    try {
+      val request = Arguments.createMap().apply { putString("archiveUri", uri.toString()) }
+      val validated = validate(request)
+      putString("state", "valid")
+      putString("verification", "verified")
+      putString("compatibility", "compatible")
+      putString("createdAt", validated.getString("createdAt"))
+      putDouble("bytes", validated.getDouble("archiveBytes"))
+    } catch (error: Exception) {
+      val code = errorCode(error)
+      val state = when (code) {
+        in INCOMPATIBLE_CODES -> "incompatible"
+        in UNCERTAIN_CODES -> "uncertain"
+        else -> "damaged"
+      }
+      putString("state", state)
+      putString("verification", if (state == "damaged") "failed" else "not_verified")
+      putString("compatibility", if (state == "incompatible") "incompatible" else "unknown")
+      putNull("createdAt")
+    }
+  }
+
+  private fun Cursor.stringOrNull(column: String): String? {
+    val index = getColumnIndex(column)
+    return if (index >= 0 && !isNull(index)) getString(index) else null
+  }
+
+  private fun Cursor.longOrNull(column: String): Long? {
+    val index = getColumnIndex(column)
+    return if (index >= 0 && !isNull(index)) getLong(index) else null
   }
 
   private fun pin(request: ReadableMap): com.facebook.react.bridge.WritableArray {
