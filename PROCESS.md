@@ -376,3 +376,10 @@
 - The active Pi session retained the old `--browserUrl http://127.0.0.1:9223` server arguments even after reconnect and one clean MCP process restart. Browser launch therefore still requires a Pi extension reload before the updated configuration can take effect.
 - The prototype HTTP server remains active on port 4173.
 - Next: ask the product owner to reload Pi extensions once, then launch Helium and open the prototype through Chrome DevTools MCP.
+
+## 2026-09-11 14:55 UTC
+
+- After the product owner reloaded Pi, Chrome DevTools MCP launched an isolated Helium instance successfully and confirmed the expected lone `about:blank` page.
+- The reload had stopped the HTTP server, so the first navigation returned `ERR_CONNECTION_REFUSED`. Restarted `npm run prototype:backup`, reopened the URL, and verified variant A directly through page state and a fresh screenshot.
+- Helium now displays variant A at the overview scene. The product owner can use the visible bottom arrows and scenario chips to compare every flow without running commands.
+- Next: capture the product owner's preferred variant and interaction elements.
