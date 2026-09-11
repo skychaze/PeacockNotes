@@ -16,3 +16,11 @@
 - The recorded next frontier is selective import identity and conflict rules, followed by the user-driven Drive export and import contract. The ZIP64 research ticket also needs independent review.
 - Files and commands: prior session JSONL under `~/.pi/agent/sessions`, `gh issue view`, and GitHub issue events.
 - Next: claim selective import identity and conflict rules and resume its human decision round.
+
+## 2026-09-11 11:43 UTC
+
+- Claimed selective import identity and conflict rules on GitHub.
+- Inspected its dependency links and the current database model. The app has folders, notes, note audio, and note files with cascade relationships, but no tombstones or portable IDs yet.
+- Confirmed the archive decision already requires portable UUIDs and allows either restoring an absent original identity or creating a recovered copy with a new identity.
+- Commands: `gh issue edit 11 --add-assignee @me`, GraphQL dependency query, and `rg` over `src/database/schema.ts`.
+- Next: settle selective import's root identity and conflict semantics with the product owner.
