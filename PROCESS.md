@@ -57,3 +57,10 @@
 - Added `CONTEXT.md` with the canonical recovery terms established by the planning work.
 - GitHub: issue #11 resolution comment and issue #1 map update.
 - Next: inspect the newly unblocked frontier and continue with the next human decision ticket.
+
+## 2026-09-11 12:13 UTC
+
+- Recomputed GitHub's native dependency frontier after closing selective import identity and conflict rules.
+- The next unclaimed decision is user-driven Drive export and import contract. Full import, the interaction prototype, and final guarantees remain blocked behind it or later work. ZIP64 research remains open and assigned pending independent review.
+- Command: GitHub GraphQL query for blockers and assignees on issues #10, #12, #13, #17, and #18.
+- Next session: claim and grill the user-driven Drive export and import contract.
