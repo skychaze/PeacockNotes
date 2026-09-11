@@ -383,3 +383,10 @@
 - The reload had stopped the HTTP server, so the first navigation returned `ERR_CONNECTION_REFUSED`. Restarted `npm run prototype:backup`, reopened the URL, and verified variant A directly through page state and a fresh screenshot.
 - Helium now displays variant A at the overview scene. The product owner can use the visible bottom arrows and scenario chips to compare every flow without running commands.
 - Next: capture the product owner's preferred variant and interaction elements.
+
+## 2026-09-11 15:01 UTC
+
+- Product owner selected variant A, Action first.
+- Recorded the winning hierarchy and interaction elements on GitHub issue #12, linked this throwaway branch and commit as the prototype's primary source, and closed the prototype ticket.
+- The validated direction leads with last verified status and immediate Export Backup and Import Backup actions, then connected-folder details and recent history. Focused import choices, destructive confirmation, progress, errors, and result counts remain separate states.
+- Next: preserve this checkpoint on the throwaway branch, stop the prototype server, restore the browser MCP configuration, and return to main with only the validated decision.
