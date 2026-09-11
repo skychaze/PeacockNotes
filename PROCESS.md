@@ -279,3 +279,11 @@
 - Renamed and rewrote issue #10 around import-everything validation and atomic recovery, posted the direction change, updated the parent map, and replaced Full import with Import everything in `CONTEXT.md`.
 - The destructive database-switch branch from the earlier capture decision is superseded for the product. The batch still requires full staging, validation, and atomic commit.
 - Next: settle archive-wide folder reconciliation, batch review, and atomic failure behavior under the non-destructive model.
+
+## 2026-09-11 13:55 UTC
+
+- Product owner restored two archive-wide import modes: additive import and full replacement import. The import flow must present both choices.
+- Accepted the prior recommendations for additive import: a complete pre-commit classification, restoration of missing empty folders, normal backup-clock treatment for actual additions, and cancellation only before commit.
+- Renamed and rewrote issue #10 around both modes, restored the replacement branch in parent map issue #1, and defined both terms in `CONTEXT.md`.
+- Full replacement again inherits the staged media generation, safety snapshot, exclusive database switch, and verified rollback protocol from issue #15.
+- Next: settle user-facing mode names, exact replacement scope, safety-snapshot lifetime, and backup-clock behavior for full replacement.

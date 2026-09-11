@@ -28,9 +28,13 @@ _Avoid_: Scheduled backup, cloud sync
 Changed recoverable content whose last verified archive is at least 24 hours old.
 _Avoid_: Missed backup, failed backup
 
-**Import everything**:
+**Additive import**:
 Atomic recovery of every archived note under the selective-import conflict rules, without deleting or overwriting current content.
-_Avoid_: Full import, replace, sync
+_Avoid_: Merge, replacement
+
+**Full replacement import**:
+Atomic replacement of current recoverable content with one validated export archive while device-local configuration remains intact.
+_Avoid_: Sync, database copy
 
 **Selective import**:
 Recovery of user-selected archived notes without overwriting or deleting current content.
