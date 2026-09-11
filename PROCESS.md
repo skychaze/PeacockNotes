@@ -134,3 +134,10 @@
 - Updated `CONTEXT.md` with backup collection and connected backup folder, while keeping export archive as the internal content term.
 - GitHub: the resolved backup-folder contract and parent map.
 - Next: recompute the frontier after the map redraw.
+
+## 2026-09-11 12:48 UTC
+
+- Recomputed GitHub's native dependency frontier after resolving the backup-folder contract.
+- Two unclaimed decisions are now available: automatic backup lifecycle for the authorized folder, and full import validation, replacement, and rollback. Collection retention remains blocked by the lifecycle decision. The ZIP64 research review remains assigned and open.
+- The next ticket is automatic backup lifecycle for the authorized folder because the map was just redrawn around automatic collection growth and retention depends on it.
+- Next session: claim and grill that lifecycle decision.
