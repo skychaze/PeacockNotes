@@ -148,3 +148,10 @@
 - Reloaded the parent map, prior Android scheduling research, folder contract, and canonical recovery terms.
 - Corrected stale map text that still said automatic backup was out of scope. Automatic work now means writing to the authorized folder without claiming that its document provider completed remote cloud synchronization.
 - Next: settle enablement, due-time, and network policy.
+
+## 2026-09-11 12:59 UTC
+
+- Settled automatic enablement, due-time, and network policy with the product owner.
+- Automatic backup requires explicit confirmation after writable-folder connection and immediately creates the first verified archive. Folder selection for import does not enable automation. A verified manual or automatic backup resets the 24-hour clock only when recoverable content changed.
+- Automatic work defaults to Wi-Fi only with an opt-in for mobile data. Manual export uses the current connection. A Wi-Fi-blocked attempt remains due and reports that it is waiting.
+- Next: decide retry behavior, long-running attempts, and operation concurrency.
