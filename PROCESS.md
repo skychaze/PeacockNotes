@@ -271,3 +271,11 @@
 - The remaining human decisions begin with what full import replaces, how confirmation communicates loss, and when a safety snapshot may expire.
 - Commands: `gh issue view` for issues #5, #6, #11, #15, and #17; `rg` over database and media code; `package.json` inspection.
 - Next: begin the full-import grilling round.
+
+## 2026-09-11 13:49 UTC
+
+- Product owner rejected destructive full replacement. Existing content must never be wiped during archive import.
+- Reframed the archive-wide action as Import everything. It applies selective-import rules to every archived note: restore missing identities, skip identical notes, preserve current-only notes, and create recovered copies for changed identity conflicts.
+- Renamed and rewrote issue #10 around import-everything validation and atomic recovery, posted the direction change, updated the parent map, and replaced Full import with Import everything in `CONTEXT.md`.
+- The destructive database-switch branch from the earlier capture decision is superseded for the product. The batch still requires full staging, validation, and atomic commit.
+- Next: settle archive-wide folder reconciliation, batch review, and atomic failure behavior under the non-destructive model.
