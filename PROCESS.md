@@ -119,3 +119,10 @@
 - Export Backup always creates and verifies a new archive when invoked manually, while automatic backup may skip unchanged content. Import validates and summarizes an archive before offering full import or selective import where applicable, followed by final confirmation.
 - The screen reports the connected folder, collection count, last verified backup, automatic status, and failures. It says "Verified in selected folder" rather than claiming cloud durability, and explains provider delay, reconnection requirements, and the archive's lack of encryption.
 - Next: decide collection authority, folder access degradation, and directory layout.
+
+## 2026-09-11 12:46 UTC
+
+- Settled collection authority, degraded access, and directory layout with the product owner.
+- Validated archive files and manifests are authoritative; any local SQLite index is a rebuildable cache. Read-only access permits import but pauses export and pruning, while lost read access requires explicit reconnection. Peacock Notes scans only direct child files, ignores unrelated content, and never mutates unknown files.
+- The backup-folder contract decision tree has no remaining open branch.
+- Next: present the consolidated contract for confirmation before resolving the GitHub ticket.
