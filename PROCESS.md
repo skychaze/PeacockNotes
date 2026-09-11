@@ -206,3 +206,11 @@
 - Pruning still begins only after a new archive verifies and a trustworthy scan completes. Cleanup failure keeps the new backup successful and leaves extra archives in place.
 - The interaction between seven-day expiry and long periods without content changes remains unresolved because automatic backup skips unchanged content.
 - Next: settle the exact seven-day boundary and protection of the newest recovery point.
+
+## 2026-09-11 13:17 UTC
+
+- Settled the retention boundary, sole-recovery-point protection, and reconciliation triggers with the product owner.
+- Seven days means a rolling 168-hour window from each manifest's UTC creation time. The newest valid archive never expires until a newer archive verifies successfully.
+- Reconciliation runs after a verified export, on app open, after folder reconnection, and on user refresh. There is no cleanup-only worker. Every prune requires a complete successful scan.
+- Posted these decisions to GitHub issue #9.
+- Next: decide the validation threshold for pruning, anomalous timestamps, and partial deletion behavior.
