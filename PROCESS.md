@@ -99,3 +99,9 @@
 - When recoverable content changed, Peacock Notes should attempt one automatic backup after 24 hours at the next Android-permitted opportunity and check overdue work when the app opens. Export Backup remains an immediate manual action. The product must not promise exact daily timing.
 - This brings the automatic backup lifecycle back into scope; its detailed failure and retry policy remains a separate decision.
 - Next: reopen and rewire that lifecycle decision, then continue the backup-folder contract.
+
+## 2026-09-11 12:30 UTC
+
+- Reopened and sharpened "Decide automatic backup lifecycle for the authorized folder," removed its old out-of-scope entry, and updated the parent destination and notes.
+- Made the active backup-folder contract block the lifecycle decision, and made the lifecycle decision block collection retention. Existing downstream prototype and reliability tickets again wait for the lifecycle decision.
+- Next: settle folder connection, reconnection, and latest-import behavior in the active contract.
