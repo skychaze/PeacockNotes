@@ -169,3 +169,11 @@
 - Automatic backup waits for a non-low battery but does not require charging. A due check on app open starts non-blocking work without another confirmation. Manual export ignores automatic battery gating.
 - Ordinary transient errors remain in the feature screen. Peacock Notes sends one non-repeating notification for action-required failures or when no verified backup succeeds within 48 hours after becoming due, then clears it after success.
 - Next: decide disablement, retry idempotency, and lifecycle reconciliation after reboot or force-stop.
+
+## 2026-09-11 13:05 UTC
+
+- Settled disablement, retry idempotency, and lifecycle persistence with the product owner.
+- Disabling automation removes future work but preserves folder access, collection state, archives, and manual export. One durable operation UUID lets retries detect an already-published valid archive and prevents duplicate publication after uncertain provider results.
+- Durable state covers enablement, folder permission, verified time and revision, due revision, active operation, retries, and failure. Launch and upgrade reconcile one worker; app open catches up after force-stop. Empty content waits without creating an automatic archive.
+- The automatic-backup lifecycle decision tree has no remaining open branch.
+- Next: present the consolidated contract for confirmation before resolving the GitHub ticket.
