@@ -19,7 +19,12 @@ import {
   type BackupFolderState,
 } from '../services/backupFolder';
 import { exportBackup, type ExportProgress, type VerifiedBackup } from '../services/backupExport';
-import { browseArchiveForImport, importSelectedNotes, previewNewestArchive } from '../services/backupImport';
+import {
+  browseArchiveForImport,
+  importAllNotesAdditively,
+  importSelectedNotes,
+  previewNewestArchive,
+} from '../services/backupImport';
 import {
   scanBackupCollection,
   type BackupCollectionArchive,
@@ -49,6 +54,7 @@ export const BackupScreen = () => {
   const [collection, setCollection] = useState<BackupCollectionScan | null>(null);
   const [scanState, setScanState] = useState<'idle' | 'loading' | 'failed'>('idle');
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [importMode, setImportMode] = useState<'selective' | 'additive' | null>(null);
   const [selectedNoteIds, setSelectedNoteIds] = useState<ReadonlySet<string>>(new Set());
   const [importState, setImportState] = useState<'idle' | 'previewing' | 'committing'>('idle');
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
@@ -138,6 +144,7 @@ export const BackupScreen = () => {
         : await browseArchiveForImport();
       if (!preview) return;
       setImportPreview(preview);
+      setImportMode(null);
       setSelectedNoteIds(new Set(preview.notes.map((note) => note.portableId)));
     } catch (error) {
       console.warn('Failed to preview backup archive:', error);
@@ -157,13 +164,16 @@ export const BackupScreen = () => {
   };
 
   const commitImport = async () => {
-    if (!importPreview || selectedNoteIds.size === 0) return;
+    if (!importPreview || !importMode || (importMode === 'selective' && selectedNoteIds.size === 0)) return;
     setImportState('committing');
     setImportError(null);
     try {
-      const result = await importSelectedNotes(importPreview, [...selectedNoteIds]);
+      const result = importMode === 'additive'
+        ? await importAllNotesAdditively(importPreview)
+        : await importSelectedNotes(importPreview, [...selectedNoteIds]);
       setImportResult(result);
       setImportPreview(null);
+      setImportMode(null);
       setSelectedNoteIds(new Set());
     } catch (error) {
       console.warn('Failed to import selected notes:', error);
@@ -306,9 +316,21 @@ export const BackupScreen = () => {
 
         {importPreview ? (
           <Card style={{ gap: ui.space.md }}>
-            <AppText variant="headline">{t('backup.import.preview')}</AppText>
+            <AppText variant="headline">{t('backup.import.modeTitle')}</AppText>
             <AppText variant="bodySmall" color={colors.textSecondary}>{t('backup.import.noOverwrite')}</AppText>
-            {importPreview.notes.map((note) => {
+            <PrimaryButton disabled={importState !== 'idle'} onPress={() => setImportMode('additive')}>
+              {t('backup.import.additive')}
+            </PrimaryButton>
+            <AppText variant="bodySmall" color={colors.textSecondary}>{t('backup.import.additiveHelp')}</AppText>
+            <PressableScale
+              accessibilityRole="button"
+              disabled={importState !== 'idle'}
+              onPress={() => setImportMode('selective')}
+              style={{ alignSelf: 'center', padding: ui.space.sm }}
+            >
+              <AppText variant="headline" color={colors.primary}>{t('backup.import.selective')}</AppText>
+            </PressableScale>
+            {importMode === 'selective' ? importPreview.notes.map((note) => {
               const selected = selectedNoteIds.has(note.portableId);
               return (
                 <PressableScale
@@ -331,11 +353,24 @@ export const BackupScreen = () => {
                   </AppText>
                 </PressableScale>
               );
-            })}
-            <PrimaryButton disabled={selectedNoteIds.size === 0 || importState !== 'idle'} onPress={() => void commitImport()}>
-              {importState === 'committing' ? t('backup.import.committing') : t('backup.import.selected', { count: selectedNoteIds.size })}
-            </PrimaryButton>
-            <PressableScale onPress={() => setImportPreview(null)} style={{ alignSelf: 'center', padding: ui.space.sm }}>
+            }) : null}
+            {importMode ? (
+              <PrimaryButton
+                disabled={(importMode === 'selective' && selectedNoteIds.size === 0) || importState !== 'idle'}
+                onPress={() => void commitImport()}
+              >
+                {importState === 'committing'
+                  ? t('backup.import.committing')
+                  : importMode === 'additive'
+                    ? t('backup.import.additiveConfirm', { count: importPreview.notes.length })
+                    : t('backup.import.selected', { count: selectedNoteIds.size })}
+              </PrimaryButton>
+            ) : null}
+            <View style={{ gap: ui.space.xs, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: ui.space.md }}>
+              <AppText variant="headline" color={colors.error}>{t('backup.import.replacement')}</AppText>
+              <AppText variant="bodySmall" color={colors.textSecondary}>{t('backup.import.replacementHelp')}</AppText>
+            </View>
+            <PressableScale onPress={() => { setImportPreview(null); setImportMode(null); }} style={{ alignSelf: 'center', padding: ui.space.sm }}>
               <AppText variant="headline" color={colors.textSecondary}>{t('common.cancel')}</AppText>
             </PressableScale>
           </Card>

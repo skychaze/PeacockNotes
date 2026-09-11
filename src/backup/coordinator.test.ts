@@ -88,6 +88,28 @@ export async function testRetriesReuseIdempotencyKey() {
   assert(keys.length === 2 && keys[0] === keys[1], 'retry changed its idempotency key');
 }
 
+export async function testExplicitRetryReusesIdempotencyKey() {
+  const store = new MemoryStore();
+  const keys: string[] = [];
+  let shouldFail = true;
+  const handler: BackupOperationHandler = {
+    async nextStep(operation) { return operation.checkpoint ? null : { name: 'import_all' }; },
+    async runStep(context) {
+      keys.push(context.idempotencyKey);
+      if (shouldFail) return { outcome: 'failed', code: 'interrupted', message: 'not committed' };
+      return { outcome: 'committed', checkpoint: 'imported', done: true };
+    },
+    async recoverInterruptedStep() { return { outcome: 'not_committed' }; },
+  };
+  const coordinator = new BackupOperationCoordinator(store, handlers(handler));
+  const failed = await coordinator.start('additive', 'import', '{}');
+  assert(failed.state === 'failed', 'initial import did not fail');
+  shouldFail = false;
+  const retried = await coordinator.retry('additive');
+  assert(retried.state === 'succeeded', 'explicit retry did not succeed');
+  assert(keys.length === 2 && keys[0] === keys[1], 'explicit retry changed the import receipt key');
+}
+
 export async function testCancellationWaitsForBoundary() {
   const store = new MemoryStore();
   let release: () => void = () => {};
@@ -134,6 +156,7 @@ export async function testRestartRecoversWithoutRepeatingStep() {
 export async function runCoordinatorTests() {
   await testSerializedOperations();
   await testRetriesReuseIdempotencyKey();
+  await testExplicitRetryReusesIdempotencyKey();
   await testCancellationWaitsForBoundary();
   await testRestartRecoversWithoutRepeatingStep();
 }

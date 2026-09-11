@@ -10,20 +10,25 @@ import {
   type ImportResult,
 } from './archive';
 
+type ImportMode = 'selective' | 'additive';
+
 type ImportPayload = Readonly<{
   version: 1;
+  mode: ImportMode;
   archiveUri: string;
   archiveSha256: string;
   selectedNoteIds: readonly string[];
 }>;
 
-const operationId = () => `import-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const selectiveOperationId = () => `import-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const additiveOperationId = (archiveSha256: string) => `import-additive-${archiveSha256}`;
 
 const parsePayload = (value: string): ImportPayload => {
   const parsed: unknown = JSON.parse(value);
   if (
     typeof parsed !== 'object' || parsed === null ||
     !('version' in parsed) || parsed.version !== 1 ||
+    !('mode' in parsed) || (parsed.mode !== 'selective' && parsed.mode !== 'additive') ||
     !('archiveUri' in parsed) || typeof parsed.archiveUri !== 'string' ||
     !('archiveSha256' in parsed) || typeof parsed.archiveSha256 !== 'string' ||
     !('selectedNoteIds' in parsed) || !Array.isArray(parsed.selectedNoteIds) ||
@@ -33,6 +38,7 @@ const parsePayload = (value: string): ImportPayload => {
   }
   return {
     version: 1,
+    mode: parsed.mode,
     archiveUri: parsed.archiveUri,
     archiveSha256: parsed.archiveSha256,
     selectedNoteIds: parsed.selectedNoteIds,
@@ -45,7 +51,9 @@ class ImportOperationHandler implements BackupOperationHandler {
   result: ImportResult | null = null;
 
   async nextStep(operation: Parameters<BackupOperationHandler['nextStep']>[0]) {
-    return operation.checkpoint ? null : { name: 'validate_and_commit_selected' };
+    if (operation.checkpoint) return null;
+    const payload = parsePayload(operation.payload);
+    return { name: payload.mode === 'additive' ? 'validate_and_commit_additive' : 'validate_and_commit_selected' };
   }
 
   async runStep({ operation, idempotencyKey }: Parameters<BackupOperationHandler['runStep']>[0]) {
@@ -68,7 +76,7 @@ class ImportOperationHandler implements BackupOperationHandler {
       const code = typeof error === 'object' && error !== null && 'code' in error
         ? String(error.code)
         : error instanceof Error ? error.message : 'IMPORT_FAILED';
-      const message = error instanceof Error ? error.message : 'Selective import failed.';
+      const message = error instanceof Error ? error.message : 'Import failed.';
       return { outcome: 'failed', code, message } as const;
     }
   }
@@ -110,24 +118,48 @@ export const browseArchiveForImport = async (): Promise<ImportPreview | null> =>
 export const previewNewestArchive = (archiveUri: string): Promise<ImportPreview> =>
   previewArchiveImport(archiveUri);
 
-export const importSelectedNotes = async (
+const importNotes = async (
   preview: ImportPreview,
   selectedNoteIds: readonly string[],
+  mode: ImportMode,
 ): Promise<ImportResult> => {
   const active = await store.getActive();
   if (active?.kind === 'import') await coordinator.resume();
   importHandler.result = null;
   const payload: ImportPayload = {
     version: 1,
+    mode,
     archiveUri: preview.archiveUri,
     archiveSha256: preview.archiveSha256,
     selectedNoteIds: [...new Set(selectedNoteIds)].sort(),
   };
-  const operation = await coordinator.start(operationId(), 'import', JSON.stringify(payload));
+  const id = mode === 'additive' ? additiveOperationId(preview.archiveSha256) : selectiveOperationId();
+  const existing = await store.get(id);
+  const operation = existing?.state === 'failed' || existing?.state === 'interrupted'
+    ? await coordinator.retry(id)
+    : existing ?? await coordinator.start(id, 'import', JSON.stringify(payload));
   if (operation.state !== 'succeeded') {
     const error = new Error(operation.errorMessage ?? 'IMPORT_FAILED');
     Object.assign(error, { code: operation.errorCode ?? 'IMPORT_FAILED' });
     throw error;
   }
-  return importHandler.result ?? { alreadyCommitted: true, importedCount: 0, recoveredCount: 0, skippedCount: 0 };
+  if (importHandler.result) return importHandler.result;
+
+  if (mode === 'additive') {
+    return commitSelectiveArchiveImport({
+      archiveUri: payload.archiveUri,
+      archiveSha256: payload.archiveSha256,
+      selectedNoteIds: payload.selectedNoteIds,
+      databaseUri: await liveDatabaseUri(),
+      mediaDirectoryUri: FileSystem.documentDirectory ?? '',
+      operationKey: `${id}:start:validate_and_commit_additive`,
+    });
+  }
+  return { alreadyCommitted: true, importedCount: 0, recoveredCount: 0, skippedCount: 0 };
 };
+
+export const importSelectedNotes = (preview: ImportPreview, selectedNoteIds: readonly string[]) =>
+  importNotes(preview, selectedNoteIds, 'selective');
+
+export const importAllNotesAdditively = (preview: ImportPreview) =>
+  importNotes(preview, preview.notes.map((note) => note.portableId), 'additive');
