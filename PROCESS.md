@@ -105,3 +105,10 @@
 - Reopened and sharpened "Decide automatic backup lifecycle for the authorized folder," removed its old out-of-scope entry, and updated the parent destination and notes.
 - Made the active backup-folder contract block the lifecycle decision, and made the lifecycle decision block collection retention. Existing downstream prototype and reliability tickets again wait for the lifecycle decision.
 - Next: settle folder connection, reconnection, and latest-import behavior in the active contract.
+
+## 2026-09-11 12:36 UTC
+
+- Settled backup-folder connection and import entry behavior with the product owner.
+- The screen shows the connected folder and allows changing it without moving or deleting the old collection. Import Backup offers the latest valid archive, all backups in the collection, or a file outside the folder. A fresh install or lost permission requires folder selection again.
+- Archive filenames will show only a simple local date and time, for example `2026-09-11 18-05-30.peacocknotes`. The archive UUID remains inside the manifest and is not shown in the filename. Manifest creation time, not filename or provider modification time, determines newest order.
+- Next: decide manual export behavior, import confirmation, and truthful status messaging.
