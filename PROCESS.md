@@ -305,3 +305,12 @@
 - A replacement plus rollback failure enters restricted recovery instead of reopening uncertain data or initializing an empty database.
 - Posted these decisions to GitHub issue #10.
 - Next: settle damaged-current-data recovery, per-mode disk admission, empty-backup replacement, and no-op behavior.
+
+## 2026-09-11 14:13 UTC
+
+- Settled damaged-current-data replacement, per-mode disk admission, empty-backup handling, exact-match no-op behavior, and explicit mode selection with the product owner.
+- A fully verified candidate may replace damaged current data without undo only through restricted recovery and explicit confirmation, while preserving a best-effort forensic copy.
+- Disk checks are mode-specific and never free space by deleting protected content. Empty replacement receives a zero-note warning and safety snapshot; exact matches perform no commit.
+- Neither mode is preselected.
+- Posted these decisions to GitHub issue #10.
+- Next: settle missing-media repair, coexistence with selective import, undo after later edits, and forensic-copy lifetime.
