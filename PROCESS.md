@@ -64,3 +64,10 @@
 - The next unclaimed decision is user-driven Drive export and import contract. Full import, the interaction prototype, and final guarantees remain blocked behind it or later work. ZIP64 research remains open and assigned pending independent review.
 - Command: GitHub GraphQL query for blockers and assignees on issues #10, #12, #13, #17, and #18.
 - Next session: claim and grill the user-driven Drive export and import contract.
+
+## 2026-09-11 12:14 UTC
+
+- Started a new Wayfinder session for user-driven Drive export and import contract and claimed the ticket before investigation.
+- Reloaded the parent map, canonical recovery glossary, current quick-menu entry points, and the completed Android archive-streaming research.
+- Confirmed the app currently has a placeholder "Backup & Restore" action. Android requires separate create-document and open-document picker flows; the document provider controls destination browsing and naming behavior.
+- Next: settle the user-visible entry points and picker contract.
