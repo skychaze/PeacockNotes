@@ -44,6 +44,13 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   override fun getName() = "Archive"
 
   @ReactMethod
+  fun pinMedia(request: ReadableMap, promise: Promise) = executor.execute {
+    runCatching { pin(request) }
+      .onSuccess(promise::resolve)
+      .onFailure { promise.reject(errorCode(it), it.message, it) }
+  }
+
+  @ReactMethod
   fun createArchive(request: ReadableMap, promise: Promise) = executor.execute {
     runCatching { create(request) }
       .onSuccess(promise::resolve)
@@ -55,6 +62,28 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     runCatching { validate(request) }
       .onSuccess(promise::resolve)
       .onFailure { promise.reject(errorCode(it), it.message, it) }
+  }
+
+  private fun pin(request: ReadableMap): com.facebook.react.bridge.WritableArray {
+    val directory = fileFromUri(requiredString(request, "directoryUri"))
+    if (!directory.exists() && !directory.mkdirs()) fail("STAGING_UNAVAILABLE", "Cannot create capture directory")
+    val media = parseMedia(request.getArray("media") ?: fail("INVALID_REQUEST", "media is required"))
+    val result = Arguments.createArray()
+    media.forEachIndexed { index, source ->
+      val target = File(directory, "pin-$index")
+      val sourceFile = fileFromUri(source.uri)
+      try {
+        java.nio.file.Files.createLink(target.toPath(), sourceFile.toPath())
+      } catch (_: Exception) {
+        open(source.uri).use { input -> FileOutputStream(target).use { output -> copyBounded(input, output, Long.MAX_VALUE) } }
+      }
+      result.pushMap(Arguments.createMap().apply {
+        putString("portableId", source.portableId)
+        putString("sourceUri", Uri.fromFile(target).toString())
+        putString("kind", source.kind)
+      })
+    }
+    return result
   }
 
   private fun create(request: ReadableMap): com.facebook.react.bridge.WritableMap {

@@ -4,13 +4,17 @@ import android.app.Activity
 import android.content.Intent
 import android.database.Cursor
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import android.system.Os
 import com.facebook.react.bridge.ActivityEventListener
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.ReadableMap
+import java.io.FileInputStream
 
 class BackupFolderModule(
   private val reactContext: ReactApplicationContext
@@ -62,6 +66,71 @@ class BackupFolderModule(
       pickerPromise = null
       promise.reject("PICKER_UNAVAILABLE", "The folder picker could not be opened.", error)
     }
+  }
+
+  @ReactMethod
+  fun publishArchive(request: ReadableMap, promise: Promise) {
+    val folder = storedUri()
+    if (folder == null) {
+      promise.reject("FOLDER_NOT_CONNECTED", "No backup folder is connected.")
+      return
+    }
+    Thread {
+      var document: Uri? = null
+      try {
+        val stagedUri = requireString(request, "stagedUri")
+        val requestedName = requireString(request, "displayName")
+        val expectedBytes = requireNonNegativeLong(request, "expectedBytes")
+        val parent = DocumentsContract.buildDocumentUriUsingTree(
+          folder,
+          DocumentsContract.getTreeDocumentId(folder)
+        )
+        document = DocumentsContract.createDocument(
+          reactContext.contentResolver,
+          parent,
+          "application/zip",
+          requestedName
+        ) ?: throw PublishException("PROVIDER_INTERRUPTED", "The provider did not create the backup document.")
+
+        reactContext.contentResolver.openFileDescriptor(document, "rw").use { descriptor ->
+          if (descriptor == null) throw PublishException("PROVIDER_INTERRUPTED", "The provider output is unavailable.")
+          val stats = try { Os.fstatvfs(descriptor.fileDescriptor) } catch (_: Exception) { null }
+          if (stats != null && stats.f_bavail * stats.f_bsize < expectedBytes) {
+            throw PublishException("DESTINATION_STORAGE_INSUFFICIENT", "The backup folder does not have enough free space.")
+          }
+        }
+
+        val source = if (stagedUri.startsWith("file:")) FileInputStream(Uri.parse(stagedUri).path!!) else
+          reactContext.contentResolver.openInputStream(Uri.parse(stagedUri))
+        source.use { input ->
+          if (input == null) throw PublishException("STAGING_MISSING", "The staged archive is missing.")
+          reactContext.contentResolver.openOutputStream(document, "wt").use { output ->
+            if (output == null) throw PublishException("PROVIDER_INTERRUPTED", "The provider output is unavailable.")
+            input.copyTo(output, 64 * 1024)
+            output.flush()
+          }
+        }
+        val actualName = displayName(document)
+        if (actualName != requestedName) {
+          throw PublishException("OUTPUT_RENAMED", "The provider renamed the backup document.")
+        }
+        val actualBytes = reactContext.contentResolver.openAssetFileDescriptor(document, "r").use { it?.length ?: -1L }
+        if (actualBytes != expectedBytes) {
+          throw PublishException("PARTIAL_WRITE", "The provider stored an incomplete backup document.")
+        }
+        promise.resolve(Arguments.createMap().apply {
+          putString("uri", document.toString())
+          putString("name", actualName)
+        })
+      } catch (error: Exception) {
+        if (document != null && !DocumentsContract.deleteDocument(reactContext.contentResolver, document)) {
+          promise.reject("PARTIAL_OUTPUT_REMAINS", "Export failed and a partial document may remain in the backup folder.", error)
+        } else {
+          val code = (error as? PublishException)?.code ?: "PROVIDER_INTERRUPTED"
+          promise.reject(code, error.message, error)
+        }
+      }
+    }.start()
   }
 
   @ReactMethod
@@ -140,6 +209,18 @@ class BackupFolderModule(
     return if (index >= 0 && !isNull(index)) getString(index) else null
   }
 
+  private fun requireString(map: ReadableMap, key: String): String =
+    if (map.hasKey(key) && !map.isNull(key)) map.getString(key)?.takeIf { it.isNotBlank() }
+      ?: throw PublishException("INVALID_REQUEST", "$key is required")
+    else throw PublishException("INVALID_REQUEST", "$key is required")
+
+  private fun requireNonNegativeLong(map: ReadableMap, key: String): Long {
+    if (!map.hasKey(key) || map.isNull(key)) throw PublishException("INVALID_REQUEST", "$key is required")
+    val value = map.getDouble(key)
+    if (!value.isFinite() || value < 0 || value % 1.0 != 0.0) throw PublishException("INVALID_REQUEST", "$key is invalid")
+    return value.toLong()
+  }
+
   private fun displayName(uri: Uri): String? = try {
     reactContext.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
       .use { cursor ->
@@ -163,6 +244,8 @@ class BackupFolderModule(
   private fun storedUri(): Uri? = preferences().getString(FOLDER_URI, null)?.let(Uri::parse)
 
   private fun preferences() = reactContext.getSharedPreferences(PREFERENCES, Activity.MODE_PRIVATE)
+
+  private class PublishException(val code: String, message: String) : Exception(message)
 
   private fun state(status: String, uri: Uri?, name: String?) = Arguments.createMap().apply {
     putString("status", status)

@@ -2,7 +2,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useCallback, useState } from 'react';
-import { Alert, ScrollView, View } from 'react-native';
+import { ActivityIndicator, Alert, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppText } from '../components/AppText';
 import { Card } from '../components/Card';
@@ -18,6 +18,7 @@ import {
   getBackupFolderState,
   type BackupFolderState,
 } from '../services/backupFolder';
+import { exportBackup, type ExportProgress, type VerifiedBackup } from '../services/backupExport';
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
 import type { RootStackParamList } from '../types/navigation';
@@ -34,6 +35,9 @@ export const BackupScreen = () => {
   const [folder, setFolder] = useState<BackupFolderState>(EMPTY_STATE);
   const [isLoading, setIsLoading] = useState(true);
   const [isChoosing, setIsChoosing] = useState(false);
+  const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
+  const [verifiedBackup, setVerifiedBackup] = useState<VerifiedBackup | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const loadFolder = useCallback(async () => {
     try {
@@ -62,6 +66,27 @@ export const BackupScreen = () => {
       Alert.alert(t('common.error'), t('backup.chooseError'));
     } finally {
       setIsChoosing(false);
+    }
+  };
+
+  const startExport = async () => {
+    setExportError(null);
+    setVerifiedBackup(null);
+    try {
+      const result = await exportBackup(setExportProgress);
+      setVerifiedBackup(result);
+    } catch (error: unknown) {
+      const code = typeof error === 'object' && error !== null && 'code' in error
+        ? String(error.code)
+        : error instanceof Error ? error.message : 'EXPORT_FAILED';
+      const known = [
+        'INSUFFICIENT_STORAGE', 'DESTINATION_STORAGE_INSUFFICIENT', 'PROVIDER_INTERRUPTED',
+        'PARTIAL_WRITE', 'PARTIAL_OUTPUT_REMAINS', 'OUTPUT_RENAMED', 'STAGING_MISSING',
+        'DESTINATION_VERIFICATION_FAILED',
+      ].includes(code) ? code : 'EXPORT_FAILED';
+      setExportError(t(`backup.export.error.${known}`));
+    } finally {
+      setExportProgress(null);
     }
   };
 
@@ -104,6 +129,33 @@ export const BackupScreen = () => {
             {t('backup.intro')}
           </AppText>
         </View>
+
+        <Card style={{ gap: ui.space.lg }}>
+          <View style={{ gap: ui.space.xs }}>
+            <AppText variant="headline">{t('backup.export.title')}</AppText>
+            <AppText variant="bodySmall" color={colors.textSecondary}>
+              {t('backup.export.help')}
+            </AppText>
+          </View>
+          <PrimaryButton onPress={() => void startExport()} disabled={!isConnected || exportProgress !== null}>
+            {exportProgress ? t(`backup.export.progress.${exportProgress}`) : t('backup.export.action')}
+          </PrimaryButton>
+          {exportProgress ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: ui.space.sm }}>
+              <ActivityIndicator color={colors.primary} />
+              <AppText variant="body" color={colors.textSecondary}>
+                {t(`backup.export.progress.${exportProgress}`)}
+              </AppText>
+            </View>
+          ) : null}
+          {verifiedBackup ? (
+            <View style={{ gap: ui.space.xs }}>
+              <AppText variant="headline" color={colors.primary}>{t('backup.export.success')}</AppText>
+              <AppText variant="bodySmall" color={colors.textSecondary}>{verifiedBackup.name}</AppText>
+            </View>
+          ) : null}
+          {exportError ? <AppText variant="body" color={colors.error}>{exportError}</AppText> : null}
+        </Card>
 
         <Card style={{ gap: ui.space.lg }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: ui.space.md }}>

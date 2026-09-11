@@ -8,10 +8,22 @@ export type BackupFolderState = {
   name: string | null;
 };
 
+export type PublishBackupRequest = Readonly<{
+  stagedUri: string;
+  displayName: string;
+  expectedBytes: number;
+}>;
+
+export type PublishedBackup = Readonly<{
+  uri: string;
+  name: string;
+}>;
+
 type BackupFolderNativeModule = {
   getFolderState(): Promise<BackupFolderState>;
   chooseFolder(): Promise<BackupFolderState>;
   disconnect(): Promise<BackupFolderState>;
+  publishArchive(request: PublishBackupRequest): Promise<PublishedBackup>;
 };
 
 const nativeModule = NativeModules.BackupFolder as BackupFolderNativeModule | undefined;
@@ -28,3 +40,6 @@ export const getBackupFolderState = () => requireAndroidModule().getFolderState(
 export const chooseBackupFolder = () => requireAndroidModule().chooseFolder();
 
 export const disconnectBackupFolder = () => requireAndroidModule().disconnect();
+
+export const publishBackupArchive = (request: PublishBackupRequest) =>
+  requireAndroidModule().publishArchive(request);

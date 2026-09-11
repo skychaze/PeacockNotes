@@ -47,6 +47,11 @@ export type ArchiveSummary = Readonly<{
   inventory: readonly ArchiveInventoryEntry[];
 }>;
 
+export type PinMediaRequest = Readonly<{
+  directoryUri: string;
+  media: readonly ArchiveMediaSource[];
+}>;
+
 export type ValidateArchiveRequest = Readonly<{
   archiveUri: string;
   stagingDirectoryUri?: string;
@@ -54,6 +59,7 @@ export type ValidateArchiveRequest = Readonly<{
 }>;
 
 type NativeArchiveModule = {
+  pinMedia(request: PinMediaRequest): Promise<readonly ArchiveMediaSource[]>;
   createArchive(request: CreateArchiveRequest): Promise<ArchiveSummary>;
   validateArchive(request: ValidateArchiveRequest): Promise<ArchiveSummary>;
 };
@@ -66,6 +72,9 @@ const moduleOrThrow = (): NativeArchiveModule => {
   }
   return nativeArchive;
 };
+
+export const pinMedia = (request: PinMediaRequest): Promise<readonly ArchiveMediaSource[]> =>
+  moduleOrThrow().pinMedia(request);
 
 export const createArchive = (request: CreateArchiveRequest): Promise<ArchiveSummary> =>
   moduleOrThrow().createArchive(request);
