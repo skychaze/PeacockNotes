@@ -353,3 +353,10 @@
 - Posted the selected hierarchy to issue #12, closed the ticket, and added its decision pointer to parent map issue #1.
 - Stopped the local prototype server, restored Chrome DevTools MCP to its original Helium attach configuration, and returned to main. The unrelated untracked `docs/` directory remains untouched.
 - Next: commit and push the selected prototype decision, then recompute the final-guarantees frontier and ZIP64 review status.
+
+## 2026-09-11 15:06 UTC
+
+- Recomputed GitHub's dependency graph after resolving the interaction prototype.
+- Final guarantees issue #13 now waits only for the independent review of ZIP64 and SHA-256 Android research issue #18.
+- Inspected issue #18 and its single research commit. The interim recommendation is a small Android-only Expo module over Zip4j 2.11.6 plus native Android content, digest, and filesystem APIs, but every material claim still needs independent primary-source verification.
+- Next: delegate the required independent research review under the research workflow, then reconcile any corrections before closing issue #18.
