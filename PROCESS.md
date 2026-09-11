@@ -36,3 +36,9 @@
 - Settled the second selective-import round with the product owner.
 - A recovered note uses the current matching folder. If the folder is absent, import restores it with its archived UUID and name. Comparison uses canonical user content and excludes timestamps, local paths, integer IDs, and list positions. Recovery provenance prevents duplicate import of an archived version while its prior recovered copy still exists.
 - Next: decide copied child identity, recovered-copy presentation, and whole-folder reconciliation.
+
+## 2026-09-11 12:09 UTC
+
+- Settled the third selective-import round with the product owner.
+- A conflicting note copy and all copied child entities receive new UUIDs, while SHA-256 blobs may remain deduplicated. Archived titles and content remain unchanged; recovery status and archive date are separate metadata. Whole-folder recovery reconciles each archived note without replacing the folder or touching current-only notes.
+- Next: settle folder-name collisions, imported ordering and timestamps, and batch failure semantics.
