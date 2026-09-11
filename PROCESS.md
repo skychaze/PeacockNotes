@@ -330,3 +330,10 @@
 - Posted the resolution and closed GitHub issue #10 as completed.
 - Added the resolved import decision to parent map issue #1. `CONTEXT.md` already contains the accepted additive-import and full-replacement-import terms.
 - Next: commit and push this checkpoint, then recompute the remaining planning frontier.
+
+## 2026-09-11 14:24 UTC
+
+- Recomputed GitHub's native dependency graph after resolving import behavior.
+- The export and import interaction prototype in issue #12 is now fully unblocked. It blocks final guarantees in issue #13, which also remains blocked by the assigned ZIP64 review in issue #18.
+- Command: GitHub GraphQL query over open issues and their `blockedBy` and `blocking` relationships.
+- Next: claim issue #12 and follow the prototype workflow using the confirmed product contracts.
