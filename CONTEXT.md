@@ -16,6 +16,10 @@ _Avoid_: Backup database, cloud history
 The Android document-provider folder the user has authorized Peacock Notes to read and write.
 _Avoid_: Drive account, cloud database
 
+**Managed retention**:
+The accepted policy that removes expired archives from a connected backup folder while always preserving its newest valid recovery point.
+_Avoid_: Cleanup, count limit
+
 **Automatic backup**:
 Explicitly enabled, opportunistic creation of an export archive when changed recoverable content is due. It is not an exact daily schedule or proof of remote cloud synchronization.
 _Avoid_: Scheduled backup, cloud sync

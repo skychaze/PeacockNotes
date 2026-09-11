@@ -247,3 +247,10 @@
 - Product owner confirmed the consolidated backup-retention contract without revisions.
 - Attempted to close issue #9 with `gh issue close --comment-file`, but this installed GitHub CLI version does not support that flag. The issue remains open and no remote state changed.
 - Next: post the prepared resolution with `gh issue comment`, then close the issue using supported flags.
+
+## 2026-09-11 13:37 UTC
+
+- Posted the confirmed retention resolution with a supported GitHub CLI command and closed issue #9 as completed.
+- Added managed retention to `CONTEXT.md` and linked the resolved decision from parent map issue #1.
+- GitHub: issue #9 resolution and issue #1 decision map.
+- Next: commit and push the glossary and process updates, then recompute the unblocked planning frontier.
