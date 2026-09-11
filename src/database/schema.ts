@@ -43,12 +43,14 @@ export const initDb = async () => {
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS Folders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      portableId TEXT,
       name TEXT NOT NULL,
       createdAt TEXT NOT NULL,
       sortOrder INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS Notes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      portableId TEXT,
       folderId INTEGER NOT NULL,
       title TEXT NOT NULL,
       content TEXT,
@@ -60,6 +62,7 @@ export const initDb = async () => {
     );
     CREATE TABLE IF NOT EXISTS NoteAudios (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      portableId TEXT,
       noteId INTEGER NOT NULL,
       uri TEXT NOT NULL,
       displayName TEXT,
@@ -71,6 +74,7 @@ export const initDb = async () => {
     );
     CREATE TABLE IF NOT EXISTS NoteFiles (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      portableId TEXT,
       noteId INTEGER NOT NULL,
       uri TEXT NOT NULL,
       displayName TEXT,
@@ -79,11 +83,17 @@ export const initDb = async () => {
       createdAt TEXT NOT NULL,
       FOREIGN KEY (noteId) REFERENCES Notes(id) ON DELETE CASCADE
     );
+    CREATE TABLE IF NOT EXISTS ContentMetadata (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      revision INTEGER NOT NULL CHECK (revision >= 0)
+    );
+    INSERT OR IGNORE INTO ContentMetadata (id, revision) VALUES (1, 0);
   `);
 
   const noteColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(Notes);');
   const hasUpdatedAt = noteColumns.some((column) => column.name === 'updatedAt');
   const hasNoteSortOrder = noteColumns.some((column) => column.name === 'sortOrder');
+  const hasNotePortableId = noteColumns.some((column) => column.name === 'portableId');
 
   if (!hasUpdatedAt) {
     await db.execAsync('ALTER TABLE Notes ADD COLUMN updatedAt TEXT;');
@@ -91,11 +101,18 @@ export const initDb = async () => {
   if (!hasNoteSortOrder) {
     await db.execAsync('ALTER TABLE Notes ADD COLUMN sortOrder INTEGER;');
   }
+  if (!hasNotePortableId) {
+    await db.execAsync('ALTER TABLE Notes ADD COLUMN portableId TEXT;');
+  }
 
   const folderColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(Folders);');
   const hasFolderSortOrder = folderColumns.some((column) => column.name === 'sortOrder');
+  const hasFolderPortableId = folderColumns.some((column) => column.name === 'portableId');
   if (!hasFolderSortOrder) {
     await db.execAsync('ALTER TABLE Folders ADD COLUMN sortOrder INTEGER;');
+  }
+  if (!hasFolderPortableId) {
+    await db.execAsync('ALTER TABLE Folders ADD COLUMN portableId TEXT;');
   }
 
   const noteAudioColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(NoteAudios);');
@@ -108,8 +125,18 @@ export const initDb = async () => {
     await db.execAsync('ALTER TABLE NoteAudios ADD COLUMN groupId TEXT;');
   }
   const hasSegmentIndex = noteAudioColumns.some((column) => column.name === 'segmentIndex');
+  const hasNoteAudioPortableId = noteAudioColumns.some((column) => column.name === 'portableId');
   if (!hasSegmentIndex) {
     await db.execAsync('ALTER TABLE NoteAudios ADD COLUMN segmentIndex INTEGER;');
+  }
+  if (!hasNoteAudioPortableId) {
+    await db.execAsync('ALTER TABLE NoteAudios ADD COLUMN portableId TEXT;');
+  }
+
+  const noteFileColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(NoteFiles);');
+  const hasNoteFilePortableId = noteFileColumns.some((column) => column.name === 'portableId');
+  if (!hasNoteFilePortableId) {
+    await db.execAsync('ALTER TABLE NoteFiles ADD COLUMN portableId TEXT;');
   }
 
   await db.execAsync(`
@@ -154,8 +181,13 @@ export const initDb = async () => {
   `);
 
   await db.execAsync(`
-    INSERT INTO NoteAudios (noteId, uri, orderIndex, createdAt)
-    SELECT N.id, N.audioUri, 1, N.createdAt
+    INSERT INTO NoteAudios (portableId, noteId, uri, orderIndex, createdAt)
+    SELECT lower(
+      hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' ||
+      substr(hex(randomblob(2)), 2) || '-' ||
+      substr('89ab', 1 + (abs(random()) % 4), 1) || substr(hex(randomblob(2)), 2) || '-' ||
+      hex(randomblob(6))
+    ), N.id, N.audioUri, 1, N.createdAt
     FROM Notes N
     WHERE N.audioUri IS NOT NULL
       AND LENGTH(TRIM(N.audioUri)) > 0
@@ -181,10 +213,83 @@ export const initDb = async () => {
     SET segmentIndex = COALESCE(segmentIndex, 1)
     WHERE segmentIndex IS NULL OR segmentIndex <= 0;
   `);
+
+  const missingPortableIds = await db.getFirstAsync<{ count: number }>(`
+    SELECT
+      (SELECT COUNT(*) FROM Folders WHERE portableId IS NULL OR LENGTH(TRIM(portableId)) = 0) +
+      (SELECT COUNT(*) FROM Notes WHERE portableId IS NULL OR LENGTH(TRIM(portableId)) = 0) +
+      (SELECT COUNT(*) FROM NoteAudios WHERE portableId IS NULL OR LENGTH(TRIM(portableId)) = 0) +
+      (SELECT COUNT(*) FROM NoteFiles WHERE portableId IS NULL OR LENGTH(TRIM(portableId)) = 0) AS count;
+  `);
+
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    for (const table of ['Folders', 'Notes', 'NoteAudios', 'NoteFiles']) {
+      await txn.execAsync(`
+        UPDATE ${table}
+        SET portableId = lower(
+          hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' ||
+          substr(hex(randomblob(2)), 2) || '-' ||
+          substr('89ab', 1 + (abs(random()) % 4), 1) || substr(hex(randomblob(2)), 2) || '-' ||
+          hex(randomblob(6))
+        )
+        WHERE portableId IS NULL OR LENGTH(TRIM(portableId)) = 0;
+      `);
+    }
+    if (Number(missingPortableIds?.count ?? 0) > 0) {
+      await txn.runAsync('UPDATE ContentMetadata SET revision = revision + 1 WHERE id = 1;');
+    }
+  });
+
+  await db.execAsync(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_portableId ON Folders(portableId);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_portableId ON Notes(portableId);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_note_audios_portableId ON NoteAudios(portableId);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_note_files_portableId ON NoteFiles(portableId);
+  `);
+
+  for (const table of ['Folders', 'Notes', 'NoteAudios', 'NoteFiles']) {
+    await db.execAsync(`
+      CREATE TRIGGER IF NOT EXISTS trg_${table}_portableId_insert
+      BEFORE INSERT ON ${table}
+      WHEN NEW.portableId IS NULL OR NEW.portableId NOT GLOB
+        '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-4[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+      BEGIN SELECT RAISE(ABORT, 'portableId must be a UUIDv4'); END;
+      CREATE TRIGGER IF NOT EXISTS trg_${table}_portableId_immutable
+      BEFORE UPDATE OF portableId ON ${table}
+      WHEN NEW.portableId IS NOT OLD.portableId
+      BEGIN SELECT RAISE(ABORT, 'portableId is immutable'); END;
+    `);
+  }
 };
 
 const nowIso = () => new Date().toISOString();
 const createAudioGroupId = () => `audio_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+const createPortableId = async (db: SQLite.SQLiteDatabase): Promise<string> => {
+  const row = await db.getFirstAsync<{ portableId: string }>(`
+    SELECT lower(
+      hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' ||
+      substr(hex(randomblob(2)), 2) || '-' ||
+      substr('89ab', 1 + (abs(random()) % 4), 1) || substr(hex(randomblob(2)), 2) || '-' ||
+      hex(randomblob(6))
+    ) AS portableId;
+  `);
+  if (!row) {
+    throw new Error('Failed to generate portable identity');
+  }
+  return row.portableId;
+};
+
+const advanceContentRevision = async (db: SQLite.SQLiteDatabase): Promise<void> => {
+  await db.runAsync('UPDATE ContentMetadata SET revision = revision + 1 WHERE id = 1;');
+};
+
+export const getContentRevision = async (): Promise<number> => {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ revision: number }>(
+    'SELECT revision FROM ContentMetadata WHERE id = 1;'
+  );
+  return Number(row?.revision ?? 0);
+};
 
 const listNoteMediaUris = async (db: SQLite.SQLiteDatabase, noteIds: number[]): Promise<string[]> => {
   if (noteIds.length === 0) {
@@ -208,6 +313,7 @@ const listNoteMediaUris = async (db: SQLite.SQLiteDatabase, noteIds: number[]): 
 
 type FolderRow = {
   id: number;
+  portableId: string;
   name: string;
   createdAt: string;
   sortOrder: number;
@@ -216,6 +322,7 @@ type FolderRow = {
 
 type NoteRow = {
   id: number;
+  portableId: string;
   folderId: number;
   title: string;
   content: string | null;
@@ -228,6 +335,7 @@ type NoteRow = {
 
 type NoteAudioRow = {
   id: number;
+  portableId: string;
   noteId: number;
   uri: string;
   displayName: string | null;
@@ -239,6 +347,7 @@ type NoteAudioRow = {
 
 type NoteFileRow = {
   id: number;
+  portableId: string;
   noteId: number;
   uri: string;
   displayName: string | null;
@@ -249,6 +358,7 @@ type NoteFileRow = {
 
 const mapNote = (row: NoteRow): Note => ({
   id: row.id,
+  portableId: row.portableId,
   folderId: row.folderId,
   title: row.title,
   content: row.content ?? '',
@@ -260,6 +370,7 @@ const mapNote = (row: NoteRow): Note => ({
 
 const mapNoteAudio = (row: NoteAudioRow): NoteAudio => ({
   id: row.id,
+  portableId: row.portableId,
   noteId: row.noteId,
   uri: row.uri,
   displayName: row.displayName?.trim() ? row.displayName : `Audio ${row.orderIndex}`,
@@ -271,6 +382,7 @@ const mapNoteAudio = (row: NoteAudioRow): NoteAudio => ({
 
 const mapNoteFile = (row: NoteFileRow): NoteFile => ({
   id: row.id,
+  portableId: row.portableId,
   noteId: row.noteId,
   uri: row.uri,
   displayName: row.displayName?.trim() ? row.displayName : `File ${row.orderIndex}`,
@@ -307,6 +419,7 @@ export const listFolders = async (
   const rows = await db.getAllAsync<FolderRow>(`
     SELECT
       F.id,
+      F.portableId,
       F.name,
       F.createdAt,
       F.sortOrder,
@@ -319,6 +432,7 @@ export const listFolders = async (
 
   return rows.map((row) => ({
     id: row.id,
+    portableId: row.portableId,
     name: row.name,
     createdAt: row.createdAt,
     noteCount: Number(row.noteCount ?? 0),
@@ -331,15 +445,19 @@ export const createFolder = async (name: string): Promise<number> => {
   if (!trimmedName) {
     throw new Error('Folder name is required');
   }
-  const orderRow = await db.getFirstAsync<{ maxSortOrder: number | null }>(
-    'SELECT MAX(sortOrder) AS maxSortOrder FROM Folders;'
-  );
-  const nextSortOrder = Number(orderRow?.maxSortOrder ?? 0) + 1;
-  const result = await db.runAsync(
-    'INSERT INTO Folders (name, createdAt, sortOrder) VALUES (?, ?, ?);',
-    [trimmedName, nowIso(), nextSortOrder]
-  );
-  return Number(result.lastInsertRowId);
+  let folderId = 0;
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    const orderRow = await txn.getFirstAsync<{ maxSortOrder: number | null }>(
+      'SELECT MAX(sortOrder) AS maxSortOrder FROM Folders;'
+    );
+    const result = await txn.runAsync(
+      'INSERT INTO Folders (portableId, name, createdAt, sortOrder) VALUES (?, ?, ?, ?);',
+      [await createPortableId(txn), trimmedName, nowIso(), Number(orderRow?.maxSortOrder ?? 0) + 1]
+    );
+    folderId = Number(result.lastInsertRowId);
+    await advanceContentRevision(txn);
+  });
+  return folderId;
 };
 
 export const updateFolderName = async (folderId: number, name: string): Promise<void> => {
@@ -348,7 +466,10 @@ export const updateFolderName = async (folderId: number, name: string): Promise<
   if (!trimmedName) {
     throw new Error('Folder name is required');
   }
-  await db.runAsync('UPDATE Folders SET name = ? WHERE id = ?;', [trimmedName, folderId]);
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    const result = await txn.runAsync('UPDATE Folders SET name = ? WHERE id = ?;', [trimmedName, folderId]);
+    if (result.changes > 0) await advanceContentRevision(txn);
+  });
 };
 
 export const moveFolderPosition = async (
@@ -370,9 +491,10 @@ export const moveFolderPosition = async (
 
   const current = rows[index];
   const target = rows[targetIndex];
-  await db.withTransactionAsync(async () => {
-    await db.runAsync('UPDATE Folders SET sortOrder = ? WHERE id = ?;', [target.sortOrder, current.id]);
-    await db.runAsync('UPDATE Folders SET sortOrder = ? WHERE id = ?;', [current.sortOrder, target.id]);
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    await txn.runAsync('UPDATE Folders SET sortOrder = ? WHERE id = ?;', [target.sortOrder, current.id]);
+    await txn.runAsync('UPDATE Folders SET sortOrder = ? WHERE id = ?;', [current.sortOrder, target.id]);
+    await advanceContentRevision(txn);
   });
   return true;
 };
@@ -385,7 +507,10 @@ export const deleteFolder = async (folderId: number): Promise<void> => {
     noteRows.map((row) => row.id)
   );
 
-  await db.runAsync('DELETE FROM Folders WHERE id = ?;', [folderId]);
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    const result = await txn.runAsync('DELETE FROM Folders WHERE id = ?;', [folderId]);
+    if (result.changes > 0) await advanceContentRevision(txn);
+  });
 
   await deleteMediaFiles(mediaUris);
 };
@@ -400,6 +525,7 @@ export const listNotesByFolder = async (
     `
     SELECT
       N.id,
+      N.portableId,
       N.folderId,
       N.title,
       N.content,
@@ -427,6 +553,7 @@ export const getNoteById = async (noteId: number): Promise<Note | null> => {
     `
     SELECT
       N.id,
+      N.portableId,
       N.folderId,
       N.title,
       N.content,
@@ -458,7 +585,7 @@ export const listNoteAudios = async (noteId: number): Promise<NoteAudio[]> => {
   const db = await getDb();
   const rows = await db.getAllAsync<NoteAudioRow>(
     `
-    SELECT id, noteId, uri, displayName, groupId, segmentIndex, orderIndex, createdAt
+    SELECT id, portableId, noteId, uri, displayName, groupId, segmentIndex, orderIndex, createdAt
     FROM NoteAudios
     WHERE noteId = ?
     ORDER BY orderIndex ASC, id ASC;
@@ -473,7 +600,7 @@ export const listNoteFiles = async (noteId: number): Promise<NoteFile[]> => {
   const db = await getDb();
   const rows = await db.getAllAsync<NoteFileRow>(
     `
-    SELECT id, noteId, uri, displayName, mimeType, orderIndex, createdAt
+    SELECT id, portableId, noteId, uri, displayName, mimeType, orderIndex, createdAt
     FROM NoteFiles
     WHERE noteId = ?
     ORDER BY orderIndex ASC, id ASC;
@@ -494,20 +621,46 @@ const saveNoteFiles = async (
       const uri = file.uri.trim();
       const displayName = file.displayName.trim() || `File ${index + 1}`;
       const mimeType = file.mimeType.trim() || 'application/octet-stream';
-      return { uri, displayName, mimeType };
+      return { portableId: file.portableId, uri, displayName, mimeType };
     })
     .filter((file) => Boolean(file.uri));
 
+  const existing = await db.getAllAsync<{ portableId: string; uri: string }>(
+    'SELECT portableId, uri FROM NoteFiles WHERE noteId = ? ORDER BY orderIndex ASC, id ASC;',
+    [noteId]
+  );
+  const reusable = new Map<string, string[]>();
+  for (const item of existing) reusable.set(item.uri, [...(reusable.get(item.uri) ?? []), item.portableId]);
+  const existingPortableIds = new Set(existing.map((item) => item.portableId));
+  const usedPortableIds = new Set<string>();
   await db.runAsync('DELETE FROM NoteFiles WHERE noteId = ?;', [noteId]);
 
   for (const [index, file] of normalizedFiles.entries()) {
+    const requestedPortableId = file.portableId && existingPortableIds.has(file.portableId)
+      ? file.portableId
+      : undefined;
+    const reusablePortableId = reusable.get(file.uri)?.find(
+      (portableId) => !usedPortableIds.has(portableId)
+    );
+    const portableId = requestedPortableId && !usedPortableIds.has(requestedPortableId)
+      ? requestedPortableId
+      : reusablePortableId ?? await createPortableId(db);
     await db.runAsync(
       `
-      INSERT INTO NoteFiles (noteId, uri, displayName, mimeType, orderIndex, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?);
+      INSERT INTO NoteFiles (portableId, noteId, uri, displayName, mimeType, orderIndex, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?);
       `,
-      [noteId, file.uri, file.displayName, file.mimeType, index + 1, nowIso()]
+      [
+        portableId,
+        noteId,
+        file.uri,
+        file.displayName,
+        file.mimeType,
+        index + 1,
+        nowIso(),
+      ]
     );
+    usedPortableIds.add(portableId);
   }
 };
 
@@ -528,21 +681,21 @@ export const appendFilesToNote = async (
     return;
   }
 
-  await db.withTransactionAsync(async () => {
-    const orderRow = await db.getFirstAsync<{ maxOrder: number | null }>(
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    const orderRow = await txn.getFirstAsync<{ maxOrder: number | null }>(
       'SELECT MAX(orderIndex) as maxOrder FROM NoteFiles WHERE noteId = ?;',
       [noteId]
     );
     const baseOrder = Number(orderRow?.maxOrder ?? 0);
 
     for (const [index, file] of normalizedFiles.entries()) {
-      await db.runAsync(
+      await txn.runAsync(
         `
-        INSERT INTO NoteFiles (noteId, uri, displayName, mimeType, orderIndex, createdAt)
-        VALUES (?, ?, ?, ?, ?, ?);
+        INSERT INTO NoteFiles (portableId, noteId, uri, displayName, mimeType, orderIndex, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?);
         `,
         [
-          noteId,
+          await createPortableId(txn), noteId,
           file.uri,
           file.displayName || `File ${baseOrder + index + 1}`,
           file.mimeType,
@@ -552,7 +705,8 @@ export const appendFilesToNote = async (
       );
     }
 
-    await db.runAsync('UPDATE Notes SET updatedAt = ? WHERE id = ?;', [nowIso(), noteId]);
+    await txn.runAsync('UPDATE Notes SET updatedAt = ? WHERE id = ?;', [nowIso(), noteId]);
+    await advanceContentRevision(txn);
   });
 };
 
@@ -567,20 +721,47 @@ const saveNoteAudios = async (
       const displayName = audio.displayName.trim() || `Audio ${index + 1}`;
       const groupId = audio.groupId?.trim() || createAudioGroupId();
       const segmentIndex = Number(audio.segmentIndex ?? 1);
-      return { uri, displayName, groupId, segmentIndex: segmentIndex > 0 ? segmentIndex : 1 };
+      return { portableId: audio.portableId, uri, displayName, groupId, segmentIndex: segmentIndex > 0 ? segmentIndex : 1 };
     })
     .filter((audio) => Boolean(audio.uri));
 
+  const existing = await db.getAllAsync<{ portableId: string; uri: string }>(
+    'SELECT portableId, uri FROM NoteAudios WHERE noteId = ? ORDER BY orderIndex ASC, id ASC;',
+    [noteId]
+  );
+  const reusable = new Map<string, string[]>();
+  for (const item of existing) reusable.set(item.uri, [...(reusable.get(item.uri) ?? []), item.portableId]);
+  const existingPortableIds = new Set(existing.map((item) => item.portableId));
+  const usedPortableIds = new Set<string>();
   await db.runAsync('DELETE FROM NoteAudios WHERE noteId = ?;', [noteId]);
 
   for (const [index, audio] of normalizedAudios.entries()) {
+    const requestedPortableId = audio.portableId && existingPortableIds.has(audio.portableId)
+      ? audio.portableId
+      : undefined;
+    const reusablePortableId = reusable.get(audio.uri)?.find(
+      (portableId) => !usedPortableIds.has(portableId)
+    );
+    const portableId = requestedPortableId && !usedPortableIds.has(requestedPortableId)
+      ? requestedPortableId
+      : reusablePortableId ?? await createPortableId(db);
     await db.runAsync(
       `
-      INSERT INTO NoteAudios (noteId, uri, displayName, groupId, segmentIndex, orderIndex, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?);
+      INSERT INTO NoteAudios (portableId, noteId, uri, displayName, groupId, segmentIndex, orderIndex, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?);
       `,
-      [noteId, audio.uri, audio.displayName, audio.groupId, audio.segmentIndex, index + 1, nowIso()]
+      [
+        portableId,
+        noteId,
+        audio.uri,
+        audio.displayName,
+        audio.groupId,
+        audio.segmentIndex,
+        index + 1,
+        nowIso(),
+      ]
     );
+    usedPortableIds.add(portableId);
   }
 };
 
@@ -594,24 +775,22 @@ export const createNote = async (
   if (!title) {
     throw new Error('Note title is required');
   }
-  const orderRow = await db.getFirstAsync<{ maxSortOrder: number | null }>(
-    'SELECT MAX(sortOrder) AS maxSortOrder FROM Notes WHERE folderId = ?;',
-    [folderId]
-  );
-  const nextSortOrder = Number(orderRow?.maxSortOrder ?? 0) + 1;
-
   let noteId = 0;
-  await db.withTransactionAsync(async () => {
-    const result = await db.runAsync(
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    const orderRow = await txn.getFirstAsync<{ maxSortOrder: number | null }>(
+      'SELECT MAX(sortOrder) AS maxSortOrder FROM Notes WHERE folderId = ?;', [folderId]
+    );
+    const result = await txn.runAsync(
       `
-      INSERT INTO Notes (folderId, title, content, audioUri, createdAt, updatedAt, sortOrder)
-      VALUES (?, ?, ?, ?, ?, ?, ?);
+      INSERT INTO Notes (portableId, folderId, title, content, audioUri, createdAt, updatedAt, sortOrder)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?);
       `,
-      [folderId, title, draft.content, null, timestamp, timestamp, nextSortOrder]
+      [await createPortableId(txn), folderId, title, draft.content, null, timestamp, timestamp, Number(orderRow?.maxSortOrder ?? 0) + 1]
     );
     noteId = Number(result.lastInsertRowId);
-    await saveNoteAudios(db, noteId, draft.audios);
-    await saveNoteFiles(db, noteId, draft.files);
+    await saveNoteAudios(txn, noteId, draft.audios);
+    await saveNoteFiles(txn, noteId, draft.files);
+    await advanceContentRevision(txn);
   });
   return noteId;
 };
@@ -637,9 +816,10 @@ export const moveNotePosition = async (
 
   const current = rows[index];
   const target = rows[targetIndex];
-  await db.withTransactionAsync(async () => {
-    await db.runAsync('UPDATE Notes SET sortOrder = ? WHERE id = ?;', [target.sortOrder, current.id]);
-    await db.runAsync('UPDATE Notes SET sortOrder = ? WHERE id = ?;', [current.sortOrder, target.id]);
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    await txn.runAsync('UPDATE Notes SET sortOrder = ? WHERE id = ?;', [target.sortOrder, current.id]);
+    await txn.runAsync('UPDATE Notes SET sortOrder = ? WHERE id = ?;', [current.sortOrder, target.id]);
+    await advanceContentRevision(txn);
   });
   return true;
 };
@@ -656,8 +836,8 @@ export const updateNote = async (
 
   const previousUris = await listNoteMediaUris(db, [noteId]);
 
-  await db.withTransactionAsync(async () => {
-    await db.runAsync(
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    const result = await txn.runAsync(
       `
       UPDATE Notes
       SET title = ?, content = ?, audioUri = NULL, updatedAt = ?
@@ -665,8 +845,10 @@ export const updateNote = async (
       `,
       [title, draft.content, nowIso(), noteId]
     );
-    await saveNoteAudios(db, noteId, draft.audios);
-    await saveNoteFiles(db, noteId, draft.files);
+    if (result.changes === 0) return;
+    await saveNoteAudios(txn, noteId, draft.audios);
+    await saveNoteFiles(txn, noteId, draft.files);
+    await advanceContentRevision(txn);
   });
 
   const keptUris = new Set([
@@ -679,7 +861,10 @@ export const updateNote = async (
 export const deleteNote = async (noteId: number): Promise<void> => {
   const db = await getDb();
   const mediaUris = await listNoteMediaUris(db, [noteId]);
-  await db.runAsync('DELETE FROM Notes WHERE id = ?;', [noteId]);
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    const result = await txn.runAsync('DELETE FROM Notes WHERE id = ?;', [noteId]);
+    if (result.changes > 0) await advanceContentRevision(txn);
+  });
   await deleteMediaFiles(mediaUris);
 };
 
@@ -701,21 +886,21 @@ export const appendAudiosToNote = async (
     return;
   }
 
-  await db.withTransactionAsync(async () => {
-    const orderRow = await db.getFirstAsync<{ maxOrder: number | null }>(
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    const orderRow = await txn.getFirstAsync<{ maxOrder: number | null }>(
       'SELECT MAX(orderIndex) as maxOrder FROM NoteAudios WHERE noteId = ?;',
       [noteId]
     );
     const baseOrder = Number(orderRow?.maxOrder ?? 0);
 
     for (const [index, audio] of normalizedAudios.entries()) {
-      await db.runAsync(
+      await txn.runAsync(
         `
-        INSERT INTO NoteAudios (noteId, uri, displayName, groupId, segmentIndex, orderIndex, createdAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?);
+        INSERT INTO NoteAudios (portableId, noteId, uri, displayName, groupId, segmentIndex, orderIndex, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         `,
         [
-          noteId,
+          await createPortableId(txn), noteId,
           audio.uri,
           audio.displayName || `Audio ${baseOrder + index + 1}`,
           audio.groupId,
@@ -726,7 +911,8 @@ export const appendAudiosToNote = async (
       );
     }
 
-    await db.runAsync('UPDATE Notes SET updatedAt = ? WHERE id = ?;', [nowIso(), noteId]);
+    await txn.runAsync('UPDATE Notes SET updatedAt = ? WHERE id = ?;', [nowIso(), noteId]);
+    await advanceContentRevision(txn);
   });
 };
 
