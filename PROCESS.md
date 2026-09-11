@@ -42,3 +42,10 @@
 - Settled the third selective-import round with the product owner.
 - A conflicting note copy and all copied child entities receive new UUIDs, while SHA-256 blobs may remain deduplicated. Archived titles and content remain unchanged; recovery status and archive date are separate metadata. Whole-folder recovery reconciles each archived note without replacing the folder or touching current-only notes.
 - Next: settle folder-name collisions, imported ordering and timestamps, and batch failure semantics.
+
+## 2026-09-11 12:10 UTC
+
+- Settled the final selective-import edge cases with the product owner.
+- Folder identity never falls back to name matching. Restored originals retain archived timestamps; recovered copies use the import time and retain source timestamps in provenance. Imported items append after current custom ordering while preserving batch-relative order. Each confirmed selective import is atomic and fails without changing current content.
+- The selective-import decision tree has no remaining open branch.
+- Next: present the consolidated contract for confirmation before resolving the GitHub ticket.
