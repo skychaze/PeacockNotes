@@ -184,3 +184,10 @@
 - Posted the resolution, closed the lifecycle decision, and appended its context pointer to the parent map.
 - Updated `CONTEXT.md` with automatic backup and due backup, explicitly separating them from exact scheduling and cloud synchronization claims.
 - Next: recompute the frontier, including the now-unblocked collection-retention decision.
+
+## 2026-09-11 13:07 UTC
+
+- Recomputed the native dependency frontier after resolving automatic backup lifecycle.
+- Backup collection retention and pruning is now unblocked alongside full import validation. The prototype and final guarantees remain blocked. ZIP64 research review remains assigned and open.
+- The next ticket is backup collection retention and pruning because it directly follows the lifecycle decision and owns the requested roughly 20-archive history.
+- Next session: claim and grill the retention decision.
