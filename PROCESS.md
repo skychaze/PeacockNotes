@@ -49,3 +49,11 @@
 - Folder identity never falls back to name matching. Restored originals retain archived timestamps; recovered copies use the import time and retain source timestamps in provenance. Imported items append after current custom ordering while preserving batch-relative order. Each confirmed selective import is atomic and fails without changing current content.
 - The selective-import decision tree has no remaining open branch.
 - Next: present the consolidated contract for confirmation before resolving the GitHub ticket.
+
+## 2026-09-11 12:12 UTC
+
+- Product owner confirmed the consolidated selective-import contract.
+- Posted the resolution to GitHub, closed selective import identity and conflict rules, and added its decision pointer to the parent map.
+- Added `CONTEXT.md` with the canonical recovery terms established by the planning work.
+- GitHub: issue #11 resolution comment and issue #1 map update.
+- Next: inspect the newly unblocked frontier and continue with the next human decision ticket.
