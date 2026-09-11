@@ -111,6 +111,20 @@ export type ImportResult = Readonly<{
   skippedCount: number;
 }>;
 
+export type FullReplacementRequest = Readonly<{
+  archiveUri: string;
+  archiveSha256: string;
+  databaseUri: string;
+  mediaDirectoryUri: string;
+  operationKey: string;
+}>;
+
+export type FullReplacementResult = Readonly<{
+  alreadyCommitted: boolean;
+  restoredNoteCount: number;
+  safetySnapshotId: string;
+}>;
+
 type NativeArchiveModule = {
   pinMedia(request: PinMediaRequest): Promise<readonly ArchiveMediaSource[]>;
   createArchive(request: CreateArchiveRequest): Promise<ArchiveSummary>;
@@ -118,6 +132,8 @@ type NativeArchiveModule = {
   scanConnectedFolder(): Promise<BackupCollectionScan>;
   previewImport(request: Readonly<{ archiveUri: string }>): Promise<ImportPreview>;
   commitSelectiveImport(request: CommitSelectiveImportRequest): Promise<ImportResult>;
+  commitFullReplacement(request: FullReplacementRequest): Promise<FullReplacementResult>;
+  recoverFullReplacement(): Promise<Readonly<{ rolledBack: boolean }>>;
   hasImportReceipt(request: Readonly<{ databaseUri: string; operationKey: string }>): Promise<Readonly<{ committed: boolean }>>;
 };
 
@@ -147,6 +163,12 @@ export const previewArchiveImport = (archiveUri: string): Promise<ImportPreview>
 
 export const commitSelectiveArchiveImport = (request: CommitSelectiveImportRequest): Promise<ImportResult> =>
   moduleOrThrow().commitSelectiveImport(request);
+
+export const commitFullReplacementArchiveImport = (request: FullReplacementRequest): Promise<FullReplacementResult> =>
+  moduleOrThrow().commitFullReplacement(request);
+
+export const recoverInterruptedFullReplacement = (): Promise<boolean> =>
+  moduleOrThrow().recoverFullReplacement().then((result) => result.rolledBack);
 
 export const hasArchiveImportReceipt = (databaseUri: string, operationKey: string): Promise<boolean> =>
   moduleOrThrow().hasImportReceipt({ databaseUri, operationKey }).then((result) => result.committed);

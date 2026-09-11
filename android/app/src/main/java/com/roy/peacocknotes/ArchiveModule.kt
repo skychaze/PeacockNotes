@@ -41,6 +41,8 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     private const val MAX_MANIFEST_BYTES = 2L * 1024 * 1024
     private const val FOLDER_PREFERENCES = "peacock_notes_backup_folder"
     private const val FOLDER_URI = "folder_uri"
+    private const val REPLACEMENT_PREFERENCES = "peacock_notes_full_replacement"
+    private const val REPLACEMENT_JOURNAL = "journal"
     private val ARCHIVE_NAME = Regex("^peacock-notes-\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z\\.pnbak$")
     private val INCOMPATIBLE_CODES = setOf("UNSUPPORTED_FORMAT_VERSION", "UNSUPPORTED_DATABASE_VERSION")
     private val UNCERTAIN_CODES = setOf("SOURCE_UNAVAILABLE", "STAGING_UNAVAILABLE", "INSUFFICIENT_STORAGE", "ARCHIVE_OPERATION_FAILED")
@@ -89,6 +91,21 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     runCatching { commitImport(request) }
       .onSuccess(promise::resolve)
       .onFailure { promise.reject(errorCode(it), it.message, it) }
+  }
+
+  @ReactMethod
+  fun commitFullReplacement(request: ReadableMap, promise: Promise) = executor.execute {
+    runCatching { commitReplacement(request) }
+      .onSuccess(promise::resolve)
+      .onFailure { promise.reject(errorCode(it), it.message, it) }
+  }
+
+  @ReactMethod
+  fun recoverFullReplacement(promise: Promise) = executor.execute {
+    runCatching {
+      val rolledBack = recoverReplacementIfNeeded()
+      Arguments.createMap().apply { putBoolean("rolledBack", rolledBack) }
+    }.onSuccess(promise::resolve).onFailure { promise.reject(errorCode(it), it.message, it) }
   }
 
   @ReactMethod
@@ -436,6 +453,197 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       } finally { source.close(); live.close() }
     } finally { work.deleteRecursively() }
   }
+
+  private fun commitReplacement(request: ReadableMap): com.facebook.react.bridge.WritableMap {
+    recoverReplacementIfNeeded()
+    val archiveUri = requiredString(request, "archiveUri")
+    val expectedHash = requiredString(request, "archiveSha256")
+    val databaseFile = fileFromUri(requiredString(request, "databaseUri"))
+    val mediaRoot = fileFromUri(requiredString(request, "mediaDirectoryUri"))
+    val operationKey = requiredString(request, "operationKey")
+    val existing = SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READONLY)
+    try {
+      if (importReceiptExists(existing, operationKey)) {
+        val count = scalarCount(existing, "SELECT COUNT(*) FROM Notes").toInt()
+        return replacementResult(true, count, "existing")
+      }
+    } finally { existing.close() }
+
+    val work = newWorkDirectory("replacement")
+    val generationId = UUID.randomUUID().toString()
+    val durableRoot = File(context.filesDir, "backup-replacement")
+    val staged = File(durableRoot, "staged-$generationId")
+    val snapshot = File(durableRoot, "snapshot-$generationId")
+    try {
+      if (!staged.mkdirs() || !snapshot.mkdirs()) fail("STAGING_UNAVAILABLE", "Cannot create replacement staging")
+      val validationRequest = Arguments.createMap().apply {
+        putString("archiveUri", archiveUri)
+        putString("stagingDirectoryUri", Uri.fromFile(work).toString())
+      }
+      val summary = validate(validationRequest)
+      if (summary.getString("archiveSha256") != expectedHash) fail("ARCHIVE_CHANGED", "The selected archive changed after preview")
+      val extracted = work.listFiles()?.singleOrNull { it.isDirectory && it.name.startsWith("validated-") }
+        ?: fail("STAGING_UNAVAILABLE", "Validated replacement staging is missing")
+
+      val stagedDatabase = File(staged, "peacocknotes.db")
+      copyFileVerified(databaseFile, stagedDatabase, "SAFETY_SNAPSHOT_FAILED")
+      val snapshotDatabase = File(snapshot, "peacocknotes.db")
+      copyFileVerified(databaseFile, snapshotDatabase, "SAFETY_SNAPSHOT_FAILED")
+      copyDirectoryVerified(File(mediaRoot, "audio"), File(snapshot, "audio"))
+      copyDirectoryVerified(File(mediaRoot, "files"), File(snapshot, "files"))
+
+      val source = SQLiteDatabase.openDatabase(File(extracted, DATABASE_PATH).path, null, SQLiteDatabase.OPEN_READONLY)
+      val target = SQLiteDatabase.openDatabase(stagedDatabase.path, null, SQLiteDatabase.OPEN_READWRITE)
+      val stagedAudio = File(staged, "audio")
+      val stagedFiles = File(staged, "files")
+      try {
+        target.beginTransaction()
+        target.execSQL("PRAGMA foreign_keys=OFF")
+        listOf("RecoveryProvenance", "NoteAudios", "NoteFiles", "Notes", "Folders").forEach { target.execSQL("DELETE FROM $it") }
+        target.execSQL("DELETE FROM sqlite_sequence WHERE name IN ('Folders','Notes','NoteAudios','NoteFiles')")
+        copyReplacementFolders(source, target)
+        copyReplacementNotes(source, target)
+        copyReplacementMedia(source, target, extracted, stagedAudio, true)
+        copyReplacementMedia(source, target, extracted, stagedFiles, false)
+        target.execSQL("UPDATE ContentMetadata SET revision=revision+1 WHERE id=1")
+        val noteCount = scalarCount(source, "SELECT COUNT(*) FROM Notes").toInt()
+        target.execSQL(
+          "INSERT INTO BackupImportReceipts(operationKey,archiveSha256,selectedNoteIds,importedCount,recoveredCount,skippedCount,committedAt) VALUES(?,?,?,?,0,0,?)",
+          arrayOf<Any>(operationKey, expectedHash, "__full_replacement__", noteCount, java.time.Instant.now().toString())
+        )
+        target.setTransactionSuccessful()
+      } finally {
+        if (target.inTransaction()) target.endTransaction()
+        source.close(); target.close()
+      }
+      verifyLiveGeneration(stagedDatabase, stagedAudio, stagedFiles, operationKey)
+
+      val journal = JSONObject()
+        .put("database", databaseFile.path).put("mediaRoot", mediaRoot.path)
+        .put("snapshot", snapshot.path).put("staged", staged.path)
+      context.getSharedPreferences(REPLACEMENT_PREFERENCES, android.app.Activity.MODE_PRIVATE)
+        .edit().putString(REPLACEMENT_JOURNAL, journal.toString()).commit()
+      try {
+        replaceFile(stagedDatabase, databaseFile)
+        replaceDirectory(stagedAudio, File(mediaRoot, "audio"))
+        replaceDirectory(stagedFiles, File(mediaRoot, "files"))
+        verifyLiveGeneration(databaseFile, File(mediaRoot, "audio"), File(mediaRoot, "files"), operationKey)
+      } catch (error: Exception) {
+        rollbackReplacement(journal)
+        throw ArchiveException("REPLACEMENT_ROLLED_BACK", "Full replacement failed and the prior content was restored", error)
+      }
+      context.getSharedPreferences(REPLACEMENT_PREFERENCES, android.app.Activity.MODE_PRIVATE)
+        .edit().remove(REPLACEMENT_JOURNAL).commit()
+      val count = SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READONLY).useDatabase {
+        scalarCount(it, "SELECT COUNT(*) FROM Notes").toInt()
+      }
+      return replacementResult(false, count, generationId)
+    } finally {
+      work.deleteRecursively()
+      staged.deleteRecursively()
+    }
+  }
+
+  private fun copyReplacementFolders(source: SQLiteDatabase, target: SQLiteDatabase) {
+    copyRows(source, target, "SELECT portableId,name,createdAt,sortOrder FROM Folders ORDER BY portableId", "INSERT INTO Folders(portableId,name,createdAt,sortOrder) VALUES(?,?,?,?)", 4)
+  }
+
+  private fun copyReplacementNotes(source: SQLiteDatabase, target: SQLiteDatabase) {
+    source.rawQuery("SELECT portableId,folderPortableId,title,content,createdAt,updatedAt,sortOrder FROM Notes ORDER BY portableId", null).use { cursor ->
+      val statement = target.compileStatement("INSERT INTO Notes(portableId,folderId,title,content,audioUri,createdAt,updatedAt,sortOrder) VALUES(?,(SELECT id FROM Folders WHERE portableId=?),?,?,NULL,?,?,?)")
+      while (cursor.moveToNext()) {
+        statement.clearBindings()
+        for (index in 0 until cursor.columnCount) bind(statement, index + 1, cursor, index)
+        statement.executeInsert()
+      }
+    }
+  }
+
+  private fun copyReplacementMedia(source: SQLiteDatabase, target: SQLiteDatabase, extracted: File, destination: File, audio: Boolean) {
+    if (!destination.mkdirs() && !destination.isDirectory) fail("STAGING_UNAVAILABLE", "Cannot stage replacement media")
+    val table = if (audio) "NoteAudios" else "NoteFiles"
+    val columns = if (audio) "portableId,notePortableId,mediaPath,displayName,groupId,segmentIndex,orderIndex,createdAt" else "portableId,notePortableId,mediaPath,displayName,mimeType,orderIndex,createdAt"
+    val insert = if (audio)
+      "INSERT INTO NoteAudios(portableId,noteId,uri,displayName,groupId,segmentIndex,orderIndex,createdAt) VALUES(?,(SELECT id FROM Notes WHERE portableId=?),?,?,?,?,?,?)"
+    else "INSERT INTO NoteFiles(portableId,noteId,uri,displayName,mimeType,orderIndex,createdAt) VALUES(?,(SELECT id FROM Notes WHERE portableId=?),?,?,?,?,?)"
+    source.rawQuery("SELECT $columns FROM $table ORDER BY portableId", null).use { cursor ->
+      val statement = target.compileStatement(insert)
+      while (cursor.moveToNext()) {
+        val sourceFile = File(extracted, cursor.getString(2))
+        val targetFile = File(destination, cursor.getString(2).substringAfterLast('/'))
+        if (!targetFile.exists()) copyFileVerified(sourceFile, targetFile, "STAGING_VERIFICATION_FAILED")
+        statement.clearBindings()
+        statement.bindString(1, cursor.getString(0)); statement.bindString(2, cursor.getString(1))
+        statement.bindString(3, Uri.fromFile(File(File(fileFromUri("file://${context.filesDir.path}"), if (audio) "audio" else "files"), targetFile.name)).toString())
+        for (index in 3 until cursor.columnCount) bind(statement, index + 1, cursor, index)
+        statement.executeInsert()
+      }
+    }
+  }
+
+  private fun verifyLiveGeneration(database: File, audio: File, files: File, operationKey: String) {
+    val db = SQLiteDatabase.openDatabase(database.path, null, SQLiteDatabase.OPEN_READONLY)
+    try {
+      val integrity = db.rawQuery("PRAGMA integrity_check", null).use { if (it.moveToFirst()) it.getString(0) else "failed" }
+      if (integrity != "ok" || !importReceiptExists(db, operationKey)) fail("POST_SWITCH_VERIFICATION_FAILED", "Replacement database verification failed")
+      listOf("NoteAudios" to audio, "NoteFiles" to files).forEach { (table, root) ->
+        db.rawQuery("SELECT uri FROM $table", null).use { cursor ->
+          while (cursor.moveToNext()) if (!File(root, File(Uri.parse(cursor.getString(0)).path ?: "").name).isFile) {
+            fail("POST_SWITCH_VERIFICATION_FAILED", "Replacement media verification failed")
+          }
+        }
+      }
+    } finally { db.close() }
+  }
+
+  private fun recoverReplacementIfNeeded(): Boolean {
+    val preferences = context.getSharedPreferences(REPLACEMENT_PREFERENCES, android.app.Activity.MODE_PRIVATE)
+    val raw = preferences.getString(REPLACEMENT_JOURNAL, null) ?: return false
+    val journal = JSONObject(raw)
+    rollbackReplacement(journal)
+    preferences.edit().remove(REPLACEMENT_JOURNAL).commit()
+    return true
+  }
+
+  private fun rollbackReplacement(journal: JSONObject) {
+    val database = File(journal.getString("database")); val mediaRoot = File(journal.getString("mediaRoot"))
+    val snapshot = File(journal.getString("snapshot"))
+    replaceFile(File(snapshot, "peacocknotes.db"), database, copy = true)
+    replaceDirectory(File(snapshot, "audio"), File(mediaRoot, "audio"), copy = true)
+    replaceDirectory(File(snapshot, "files"), File(mediaRoot, "files"), copy = true)
+    val db = SQLiteDatabase.openDatabase(database.path, null, SQLiteDatabase.OPEN_READONLY)
+    try {
+      if (db.rawQuery("PRAGMA integrity_check", null).use { it.moveToFirst() && it.getString(0) == "ok" }.not()) fail("ROLLBACK_FAILED", "Safety snapshot database is invalid")
+    } finally { db.close() }
+  }
+
+  private fun copyFileVerified(source: File, target: File, code: String) {
+    target.parentFile?.mkdirs(); source.copyTo(target, overwrite = true)
+    if (FileInputStream(source).use(::sha256) != FileInputStream(target).use(::sha256)) fail(code, "Copied file verification failed")
+  }
+
+  private fun copyDirectoryVerified(source: File, target: File) {
+    if (!source.exists()) { target.mkdirs(); return }
+    source.walkTopDown().filter { it.isFile }.forEach { file -> copyFileVerified(file, File(target, file.relativeTo(source).path), "SAFETY_SNAPSHOT_FAILED") }
+  }
+
+  private fun replaceFile(source: File, target: File, copy: Boolean = false) {
+    target.delete(); target.parentFile?.mkdirs()
+    if (copy) copyFileVerified(source, target, "ROLLBACK_FAILED")
+    else if (!source.renameTo(target)) fail("COMMIT_INTERRUPTED", "Could not switch replacement database")
+  }
+
+  private fun replaceDirectory(source: File, target: File, copy: Boolean = false) {
+    target.deleteRecursively(); target.parentFile?.mkdirs()
+    if (copy) copyDirectoryVerified(source, target)
+    else if (!source.renameTo(target)) fail("COMMIT_INTERRUPTED", "Could not switch replacement media")
+  }
+
+  private fun replacementResult(already: Boolean, count: Int, snapshotId: String) = Arguments.createMap().apply {
+    putBoolean("alreadyCommitted", already); putInt("restoredNoteCount", count); putString("safetySnapshotId", snapshotId)
+  }
+
+  private inline fun <T> SQLiteDatabase.useDatabase(block: (SQLiteDatabase) -> T): T = try { block(this) } finally { close() }
 
   private fun importReceiptExists(db: SQLiteDatabase, key: String): Boolean {
     return try { db.rawQuery("SELECT 1 FROM BackupImportReceipts WHERE operationKey=?", arrayOf(key)).use { it.moveToFirst() } } catch (_: Exception) { false }

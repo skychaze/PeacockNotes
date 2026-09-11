@@ -1,6 +1,6 @@
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useEffect, useMemo, useState } from 'react';
-import { View, useColorScheme } from 'react-native';
+import { Platform, View, useColorScheme } from 'react-native';
 import {
   NavigationContainer,
   DarkTheme,
@@ -27,6 +27,7 @@ import { ShareImportScreen } from './src/screens/ShareImportScreen';
 import { StorageUsageScreen } from './src/screens/StorageUsageScreen';
 import { BackupScreen } from './src/screens/BackupScreen';
 import { LanguageProvider, useLanguage } from './src/i18n/LanguageContext';
+import { recoverInterruptedFullReplacement } from './src/services/archive';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const navigationRef = createNavigationContainerRef<RootStackParamList>();
@@ -48,6 +49,7 @@ const AppNavigator = () => {
           'NotoSansBengali': require('./assets/fonts/NotoSansBengali-Regular.ttf'),
           'NotoSansBengali-SemiBold': require('./assets/fonts/NotoSansBengali-SemiBold.ttf'),
         });
+        if (Platform.OS === 'android') await recoverInterruptedFullReplacement();
         await initDb();
         setHasSetupError(false);
       } catch (e) {

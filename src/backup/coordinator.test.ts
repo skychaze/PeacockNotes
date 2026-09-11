@@ -153,10 +153,37 @@ export async function testRestartRecoversWithoutRepeatingStep() {
   assert(executions === 0, 'restart repeated a possibly committed step');
 }
 
+export async function testInterruptedReplacementRollsBackBeforeRetry() {
+  const store = new MemoryStore();
+  const created = await store.create({ id: 'replacement', kind: 'import', payload: '{"mode":"replacement"}' }, 'now');
+  await store.update(created.id, created.version, {
+    state: 'running', activeStep: 'validate_snapshot_and_replace', activeStepKey: 'replacement:start:validate_snapshot_and_replace', attempt: 1,
+  }, 'later');
+  const events: string[] = [];
+  const handler: BackupOperationHandler = {
+    async nextStep(operation) { return operation.checkpoint ? null : { name: 'validate_snapshot_and_replace' }; },
+    async runStep(context) {
+      events.push(`commit:${context.idempotencyKey}`);
+      return { outcome: 'committed', checkpoint: 'full_replacement_committed', done: true };
+    },
+    async recoverInterruptedStep(context) {
+      events.push(`rollback:${context.idempotencyKey}`);
+      return { outcome: 'not_committed' };
+    },
+  };
+  const result = await new BackupOperationCoordinator(store, handlers(handler)).resume();
+  assert(result?.state === 'succeeded', 'replacement did not resume');
+  assert(
+    events.join(',') === 'rollback:replacement:start:validate_snapshot_and_replace,commit:replacement:start:validate_snapshot_and_replace',
+    'replacement retried before rollback or changed its key',
+  );
+}
+
 export async function runCoordinatorTests() {
   await testSerializedOperations();
   await testRetriesReuseIdempotencyKey();
   await testExplicitRetryReusesIdempotencyKey();
   await testCancellationWaitsForBoundary();
   await testRestartRecoversWithoutRepeatingStep();
+  await testInterruptedReplacementRollsBackBeforeRetry();
 }

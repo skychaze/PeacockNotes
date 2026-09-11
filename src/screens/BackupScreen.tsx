@@ -22,6 +22,7 @@ import { exportBackup, type ExportProgress, type VerifiedBackup } from '../servi
 import {
   browseArchiveForImport,
   importAllNotesAdditively,
+  importAllNotesByReplacement,
   importSelectedNotes,
   previewNewestArchive,
 } from '../services/backupImport';
@@ -30,6 +31,7 @@ import {
   type BackupCollectionArchive,
   type BackupCollectionScan,
   type ImportPreview,
+  type FullReplacementResult,
   type ImportResult,
 } from '../services/archive';
 import { ui } from '../theme/ui';
@@ -54,10 +56,11 @@ export const BackupScreen = () => {
   const [collection, setCollection] = useState<BackupCollectionScan | null>(null);
   const [scanState, setScanState] = useState<'idle' | 'loading' | 'failed'>('idle');
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
-  const [importMode, setImportMode] = useState<'selective' | 'additive' | null>(null);
+  const [importMode, setImportMode] = useState<'selective' | 'additive' | 'replacement' | null>(null);
   const [selectedNoteIds, setSelectedNoteIds] = useState<ReadonlySet<string>>(new Set());
   const [importState, setImportState] = useState<'idle' | 'previewing' | 'committing'>('idle');
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [replacementResult, setReplacementResult] = useState<FullReplacementResult | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
 
   const scanCollection = useCallback(async () => {
@@ -138,6 +141,7 @@ export const BackupScreen = () => {
     setImportState('previewing');
     setImportError(null);
     setImportResult(null);
+    setReplacementResult(null);
     try {
       const preview = archiveUri
         ? await previewNewestArchive(archiveUri)
@@ -181,6 +185,33 @@ export const BackupScreen = () => {
     } finally {
       setImportState('idle');
     }
+  };
+
+  const confirmReplacement = () => {
+    if (!importPreview || importState !== 'idle') return;
+    Alert.alert(t('backup.import.replacementConfirmTitle'), t('backup.import.replacementConfirmBody'), [
+      { text: t('common.cancel'), style: 'cancel' },
+      {
+        text: t('backup.import.replacementConfirm'),
+        style: 'destructive',
+        onPress: async () => {
+          setImportMode('replacement');
+          setImportState('committing');
+          setImportError(null);
+          try {
+            setReplacementResult(await importAllNotesByReplacement(importPreview));
+            setImportPreview(null);
+            setImportMode(null);
+            setSelectedNoteIds(new Set());
+          } catch (error) {
+            console.warn('Failed to replace content from backup:', error);
+            setImportError(t('backup.import.replacementFailed'));
+          } finally {
+            setImportState('idle');
+          }
+        },
+      },
+    ]);
   };
 
   const disconnect = () => {
@@ -311,6 +342,11 @@ export const BackupScreen = () => {
                 })}
               </AppText>
             ) : null}
+            {replacementResult ? (
+              <AppText variant="body" color={colors.primary}>
+                {t('backup.import.replacementSuccess', { count: replacementResult.restoredNoteCount })}
+              </AppText>
+            ) : null}
           </Card>
         ) : null}
 
@@ -366,9 +402,14 @@ export const BackupScreen = () => {
                     : t('backup.import.selected', { count: selectedNoteIds.size })}
               </PrimaryButton>
             ) : null}
-            <View style={{ gap: ui.space.xs, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: ui.space.md }}>
+            <View style={{ gap: ui.space.sm, borderTopWidth: 2, borderTopColor: colors.error, paddingTop: ui.space.lg, marginTop: ui.space.sm }}>
               <AppText variant="headline" color={colors.error}>{t('backup.import.replacement')}</AppText>
-              <AppText variant="bodySmall" color={colors.textSecondary}>{t('backup.import.replacementHelp')}</AppText>
+              <AppText variant="bodySmall" color={colors.error}>{t('backup.import.replacementHelp')}</AppText>
+              <PrimaryButton disabled={importState !== 'idle'} onPress={confirmReplacement}>
+                {importState === 'committing' && importMode === 'replacement'
+                  ? t('backup.import.replacementCommitting')
+                  : t('backup.import.replacementAction')}
+              </PrimaryButton>
             </View>
             <PressableScale onPress={() => { setImportPreview(null); setImportMode(null); }} style={{ alignSelf: 'center', padding: ui.space.sm }}>
               <AppText variant="headline" color={colors.textSecondary}>{t('common.cancel')}</AppText>

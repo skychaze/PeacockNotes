@@ -35,6 +35,15 @@ export const getDb = async () => {
   return dbPromise;
 };
 
+export const closeDb = async (): Promise<void> => {
+  const pending = dbPromise;
+  dbPromise = null;
+  if (!pending) return;
+  const db = await pending;
+  await db.execAsync('PRAGMA wal_checkpoint(TRUNCATE);');
+  await db.closeAsync();
+};
+
 export const initDb = async () => {
   const db = await getDb();
 

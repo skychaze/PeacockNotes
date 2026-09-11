@@ -1,16 +1,19 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
 import { BackupOperationCoordinator, SqliteBackupOperationStore, type BackupOperationHandler } from '../backup';
-import { getDb } from '../database/schema';
+import { closeDb, getDb, initDb } from '../database/schema';
 import {
+  commitFullReplacementArchiveImport,
   commitSelectiveArchiveImport,
   hasArchiveImportReceipt,
   previewArchiveImport,
+  recoverInterruptedFullReplacement,
+  type FullReplacementResult,
   type ImportPreview,
   type ImportResult,
 } from './archive';
 
-type ImportMode = 'selective' | 'additive';
+type ImportMode = 'selective' | 'additive' | 'replacement';
 
 type ImportPayload = Readonly<{
   version: 1;
@@ -22,13 +25,15 @@ type ImportPayload = Readonly<{
 
 const selectiveOperationId = () => `import-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const additiveOperationId = (archiveSha256: string) => `import-additive-${archiveSha256}`;
+const replacementOperationId = (archiveSha256: string) => `import-replacement-${archiveSha256}`;
 
 const parsePayload = (value: string): ImportPayload => {
   const parsed: unknown = JSON.parse(value);
   if (
     typeof parsed !== 'object' || parsed === null ||
     !('version' in parsed) || parsed.version !== 1 ||
-    !('mode' in parsed) || (parsed.mode !== 'selective' && parsed.mode !== 'additive') ||
+    !('mode' in parsed) ||
+      (parsed.mode !== 'selective' && parsed.mode !== 'additive' && parsed.mode !== 'replacement') ||
     !('archiveUri' in parsed) || typeof parsed.archiveUri !== 'string' ||
     !('archiveSha256' in parsed) || typeof parsed.archiveSha256 !== 'string' ||
     !('selectedNoteIds' in parsed) || !Array.isArray(parsed.selectedNoteIds) ||
@@ -48,12 +53,16 @@ const parsePayload = (value: string): ImportPayload => {
 const liveDatabaseUri = async () => `file://${(await getDb()).databasePath}`;
 
 class ImportOperationHandler implements BackupOperationHandler {
-  result: ImportResult | null = null;
+  result: ImportResult | FullReplacementResult | null = null;
 
   async nextStep(operation: Parameters<BackupOperationHandler['nextStep']>[0]) {
     if (operation.checkpoint) return null;
     const payload = parsePayload(operation.payload);
-    return { name: payload.mode === 'additive' ? 'validate_and_commit_additive' : 'validate_and_commit_selected' };
+    return {
+      name: payload.mode === 'replacement'
+        ? 'validate_snapshot_and_replace'
+        : payload.mode === 'additive' ? 'validate_and_commit_additive' : 'validate_and_commit_selected',
+    };
   }
 
   async runStep({ operation, idempotencyKey }: Parameters<BackupOperationHandler['runStep']>[0]) {
@@ -63,6 +72,22 @@ class ImportOperationHandler implements BackupOperationHandler {
     }
     try {
       const payload = parsePayload(operation.payload);
+      if (payload.mode === 'replacement') {
+        const databaseUri = await liveDatabaseUri();
+        await closeDb();
+        try {
+          this.result = await commitFullReplacementArchiveImport({
+            archiveUri: payload.archiveUri,
+            archiveSha256: payload.archiveSha256,
+            databaseUri,
+            mediaDirectoryUri,
+            operationKey: idempotencyKey,
+          });
+        } finally {
+          await initDb();
+        }
+        return { outcome: 'committed', checkpoint: 'full_replacement_committed', done: true } as const;
+      }
       this.result = await commitSelectiveArchiveImport({
         archiveUri: payload.archiveUri,
         archiveSha256: payload.archiveSha256,
@@ -82,9 +107,23 @@ class ImportOperationHandler implements BackupOperationHandler {
   }
 
   async recoverInterruptedStep({ operation, idempotencyKey }: Parameters<BackupOperationHandler['recoverInterruptedStep']>[0]) {
+    const payload = parsePayload(operation.payload);
+    if (payload.mode === 'replacement') {
+      await closeDb();
+      try {
+        await recoverInterruptedFullReplacement();
+      } finally {
+        await initDb();
+      }
+    }
     const committed = await hasArchiveImportReceipt(await liveDatabaseUri(), idempotencyKey);
-    if (committed) return { outcome: 'committed', checkpoint: 'selected_batch_committed', done: true } as const;
-    parsePayload(operation.payload);
+    if (committed) {
+      return {
+        outcome: 'committed',
+        checkpoint: payload.mode === 'replacement' ? 'full_replacement_committed' : 'selected_batch_committed',
+        done: true,
+      } as const;
+    }
     return { outcome: 'not_committed' } as const;
   }
 }
@@ -122,7 +161,7 @@ const importNotes = async (
   preview: ImportPreview,
   selectedNoteIds: readonly string[],
   mode: ImportMode,
-): Promise<ImportResult> => {
+): Promise<ImportResult | FullReplacementResult> => {
   const active = await store.getActive();
   if (active?.kind === 'import') await coordinator.resume();
   importHandler.result = null;
@@ -133,7 +172,9 @@ const importNotes = async (
     archiveSha256: preview.archiveSha256,
     selectedNoteIds: [...new Set(selectedNoteIds)].sort(),
   };
-  const id = mode === 'additive' ? additiveOperationId(preview.archiveSha256) : selectiveOperationId();
+  const id = mode === 'additive'
+    ? additiveOperationId(preview.archiveSha256)
+    : mode === 'replacement' ? replacementOperationId(preview.archiveSha256) : selectiveOperationId();
   const existing = await store.get(id);
   const operation = existing?.state === 'failed' || existing?.state === 'interrupted'
     ? await coordinator.retry(id)
@@ -145,6 +186,21 @@ const importNotes = async (
   }
   if (importHandler.result) return importHandler.result;
 
+  if (mode === 'replacement') {
+    const databaseUri = await liveDatabaseUri();
+    await closeDb();
+    try {
+      return await commitFullReplacementArchiveImport({
+        archiveUri: payload.archiveUri,
+        archiveSha256: payload.archiveSha256,
+        databaseUri,
+        mediaDirectoryUri: FileSystem.documentDirectory ?? '',
+        operationKey: `${id}:start:validate_snapshot_and_replace`,
+      });
+    } finally {
+      await initDb();
+    }
+  }
   if (mode === 'additive') {
     return commitSelectiveArchiveImport({
       archiveUri: payload.archiveUri,
@@ -158,8 +214,19 @@ const importNotes = async (
   return { alreadyCommitted: true, importedCount: 0, recoveredCount: 0, skippedCount: 0 };
 };
 
-export const importSelectedNotes = (preview: ImportPreview, selectedNoteIds: readonly string[]) =>
-  importNotes(preview, selectedNoteIds, 'selective');
+const requireNonDestructiveResult = (result: ImportResult | FullReplacementResult): ImportResult => {
+  if (!('importedCount' in result)) throw new Error('IMPORT_RESULT_MISSING');
+  return result;
+};
 
-export const importAllNotesAdditively = (preview: ImportPreview) =>
-  importNotes(preview, preview.notes.map((note) => note.portableId), 'additive');
+export const importSelectedNotes = async (preview: ImportPreview, selectedNoteIds: readonly string[]): Promise<ImportResult> =>
+  requireNonDestructiveResult(await importNotes(preview, selectedNoteIds, 'selective'));
+
+export const importAllNotesAdditively = async (preview: ImportPreview): Promise<ImportResult> =>
+  requireNonDestructiveResult(await importNotes(preview, preview.notes.map((note) => note.portableId), 'additive'));
+
+export const importAllNotesByReplacement = async (preview: ImportPreview): Promise<FullReplacementResult> => {
+  const result = await importNotes(preview, [], 'replacement');
+  if (!('restoredNoteCount' in result)) throw new Error('FULL_REPLACEMENT_RESULT_MISSING');
+  return result;
+};
