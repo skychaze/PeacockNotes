@@ -198,3 +198,11 @@
 - Reloaded the parent map, automatic lifecycle decision, connected-folder contract, and canonical terms.
 - The requested "about 20" archive limit does not itself guarantee seven days of history because manual exports may create many archives in one day. Count limit and time coverage must be decided together.
 - Next: settle the count and time policy, treatment of manual archives, and safe pruning trigger.
+
+## 2026-09-11 13:13 UTC
+
+- Product owner replaced the roughly 20-archive limit with time-only retention.
+- The collection keeps every verified manual and automatic backup from the last seven days, regardless of count. Manual and automatic archives follow the same rules. Users may move or copy an archive outside the connected folder to exempt it from management.
+- Pruning still begins only after a new archive verifies and a trustworthy scan completes. Cleanup failure keeps the new backup successful and leaves extra archives in place.
+- The interaction between seven-day expiry and long periods without content changes remains unresolved because automatic backup skips unchanged content.
+- Next: settle the exact seven-day boundary and protection of the newest recovery point.
