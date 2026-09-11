@@ -262,3 +262,12 @@
 - The unrelated untracked `docs/ui-redesign-plan.md` remains untouched.
 - Commands: `git status`, `gh issue list`, and `gh issue view` for issues #10, #12, and #13.
 - Next: claim issue #10 and inspect the established import and snapshot decisions before starting its grilling round.
+
+## 2026-09-11 13:43 UTC
+
+- Claimed full import validation, replacement, and rollback in GitHub issue #10.
+- Reloaded the resolved snapshot, archive-format, selective-import, capture-and-staging, and backup-folder contracts, then inspected the current SQLite and media code.
+- The inherited full-import base is strict archive and database validation, migration only in staging, a mandatory pre-import safety snapshot, candidate media in a new generation, one exclusive commit barrier, SQLite backup-API replacement, verified rollback on commit failure, and deferred old-generation cleanup.
+- The remaining human decisions begin with what full import replaces, how confirmation communicates loss, and when a safety snapshot may expire.
+- Commands: `gh issue view` for issues #5, #6, #11, #15, and #17; `rg` over database and media code; `package.json` inspection.
+- Next: begin the full-import grilling round.
