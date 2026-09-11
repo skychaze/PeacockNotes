@@ -223,3 +223,12 @@
 - Managed retention requires one-time explicit acceptance and never deletes a younger archive merely to free storage.
 - Posted these decisions to GitHub issue #9.
 - Next: settle archive ownership recognition, timestamp ties, shared-folder authority, and retention opt-out behavior.
+
+## 2026-09-11 13:27 UTC
+
+- Settled archive recognition, newest-time ties, shared-folder authority, and retention opt-out behavior with the product owner.
+- Automatic management requires the expected extension and a readable, supported Peacock Notes manifest. Unreadable candidates and unsupported newer formats remain untouched and pause pruning.
+- Every archive tied at the newest manifest timestamp is protected, and latest import requires a choice when that timestamp is tied.
+- The connected folder is one collection across installations. Retention is inseparable from its writable managed-folder contract; disconnecting stops management without altering files.
+- Posted these decisions to GitHub issue #9.
+- Next: settle full verification of deletion candidates and user recovery from pruning blockers.
