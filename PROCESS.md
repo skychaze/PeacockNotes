@@ -30,3 +30,9 @@
 - Settled the first selective-import round with the product owner.
 - An archived entity whose portable UUID is absent locally regains its original identity. A conflicting changed entity stays untouched and the archived version becomes a recovered copy with a new UUID. Notes are the smallest selectable recovery unit and always carry their archived audio and attachments together. Folder selection acts on its note subtree.
 - Next: decide parent placement, comparison rules, and repeated-recovery handling.
+
+## 2026-09-11 12:08 UTC
+
+- Settled the second selective-import round with the product owner.
+- A recovered note uses the current matching folder. If the folder is absent, import restores it with its archived UUID and name. Comparison uses canonical user content and excludes timestamps, local paths, integer IDs, and list positions. Recovery provenance prevents duplicate import of an archived version while its prior recovered copy still exists.
+- Next: decide copied child identity, recovered-copy presentation, and whole-folder reconciliation.
