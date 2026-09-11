@@ -422,21 +422,23 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
 
         if (!mediaRoot.exists() && !mediaRoot.mkdirs()) fail("STAGING_UNAVAILABLE", "Cannot create media directory")
         ensureSpace(mediaRoot, summary.getDouble("expandedBytes").toLong())
+        val restrictions = inspectCurrentMedia(live, mediaRoot)
 
         val mediaUris = mutableMapOf<String, String>()
         listOf("NoteAudios", "NoteFiles").forEach { table ->
           source.rawQuery("SELECT DISTINCT mediaPath FROM $table WHERE notePortableId IN (${selected.joinToString(",") { "?" }})", selected.toTypedArray()).use { cursor ->
             while (cursor.moveToNext()) {
               val path = cursor.getString(0); val staged = File(extracted, path)
+              val hash = path.substringAfterLast('/')
               val kind = if (table == "NoteAudios") "audio" else "files"
-              val target = File(File(mediaRoot, kind), path.substringAfterLast('/'))
-              target.parentFile?.mkdirs()
-              if (target.exists()) {
-                val existingDigest = FileInputStream(target).use(::sha256)
-                if (existingDigest.hex != path.substringAfterLast('/')) fail("CURRENT_MEDIA_DAMAGED", "Existing app media does not match its content address")
-              } else {
-                FileInputStream(staged).use { input -> FileOutputStream(target).use { output -> copyBounded(input, output, staged.length()) } }
-              }
+              val addressedTarget = File(File(mediaRoot, kind), hash)
+              addressedTarget.parentFile?.mkdirs()
+              val addressedDigest = if (addressedTarget.exists()) runCatching { FileInputStream(addressedTarget).use(::sha256) }.getOrNull() else null
+              val target = if (addressedTarget.exists() && addressedDigest?.hex != hash) {
+                val keyHash = MessageDigest.getInstance("SHA-256").digest(operationKey.toByteArray()).joinToString("") { "%02x".format(it) }.take(12)
+                File(addressedTarget.parentFile, "$hash.recovered-$keyHash")
+              } else addressedTarget
+              if (!target.exists()) copyFileVerified(staged, target, "STAGING_VERIFICATION_FAILED")
               mediaUris[mediaKey(table, path)] = Uri.fromFile(target).toString()
             }
           }
@@ -446,6 +448,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         var imported = 0; var recovered = 0; var skipped = 0
         live.beginTransaction()
         try {
+          applyMediaRestrictions(live, restrictions)
           selected.sorted().forEach { noteId ->
             val note = source.rawQuery("SELECT n.portableId,n.folderPortableId,n.title,n.content,n.createdAt,n.updatedAt,n.sortOrder,f.name,f.createdAt,f.sortOrder FROM Notes n JOIN Folders f ON f.portableId=n.folderPortableId WHERE n.portableId=?", arrayOf(noteId)).use { cursor ->
               if (!cursor.moveToFirst()) fail("INVALID_SELECTION", "Selected note is missing")
@@ -471,11 +474,11 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
             }
             imported++; if (existing != null) recovered++
           }
-          live.execSQL("INSERT INTO BackupImportReceipts(operationKey,archiveSha256,selectedNoteIds,importedCount,recoveredCount,skippedCount,committedAt) VALUES(?,?,?,?,?,?,?)", arrayOf<Any>(operationKey, expectedHash, selected.sorted().joinToString(","), imported, recovered, skipped, java.time.Instant.now().toString()))
+          live.execSQL("INSERT INTO BackupImportReceipts(operationKey,archiveSha256,selectedNoteIds,importedCount,recoveredCount,skippedCount,restrictedAudioCount,restrictedFileCount,committedAt) VALUES(?,?,?,?,?,?,?,?,?)", arrayOf<Any>(operationKey, expectedHash, selected.sorted().joinToString(","), imported, recovered, skipped, restrictions.audioIds.size, restrictions.fileIds.size, java.time.Instant.now().toString()))
           if (imported > 0) live.execSQL("UPDATE ContentMetadata SET revision=revision+1 WHERE id=1")
           live.setTransactionSuccessful()
         } finally { live.endTransaction() }
-        return importResult(false, imported, recovered, skipped)
+        return importResult(false, imported, recovered, skipped, restrictions.audioIds.size, restrictions.fileIds.size)
       } finally { source.close(); live.close() }
     } finally { work.deleteRecursively() }
   }
@@ -491,7 +494,8 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     try {
       if (importReceiptExists(existing, operationKey)) {
         val count = scalarCount(existing, "SELECT COUNT(*) FROM Notes").toInt()
-        return replacementResult(true, count, "existing")
+        val restrictions = receiptRestrictions(existing, operationKey)
+        return replacementResult(true, count, "existing", restrictions.first, restrictions.second)
       }
     } finally { existing.close() }
 
@@ -515,8 +519,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       copyFileVerified(databaseFile, stagedDatabase, "SAFETY_SNAPSHOT_FAILED")
       val snapshotDatabase = File(snapshot, "peacocknotes.db")
       copyFileVerified(databaseFile, snapshotDatabase, "SAFETY_SNAPSHOT_FAILED")
-      copyDirectoryVerified(File(mediaRoot, "audio"), File(snapshot, "audio"))
-      copyDirectoryVerified(File(mediaRoot, "files"), File(snapshot, "files"))
+      val restrictions = createRestrictedSnapshot(snapshotDatabase, mediaRoot, snapshot)
 
       val source = SQLiteDatabase.openDatabase(File(extracted, DATABASE_PATH).path, null, SQLiteDatabase.OPEN_READONLY)
       val target = SQLiteDatabase.openDatabase(stagedDatabase.path, null, SQLiteDatabase.OPEN_READWRITE)
@@ -534,8 +537,8 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         target.execSQL("UPDATE ContentMetadata SET revision=revision+1 WHERE id=1")
         val noteCount = scalarCount(source, "SELECT COUNT(*) FROM Notes").toInt()
         target.execSQL(
-          "INSERT INTO BackupImportReceipts(operationKey,archiveSha256,selectedNoteIds,importedCount,recoveredCount,skippedCount,committedAt) VALUES(?,?,?,?,0,0,?)",
-          arrayOf<Any>(operationKey, expectedHash, "__full_replacement__", noteCount, java.time.Instant.now().toString())
+          "INSERT INTO BackupImportReceipts(operationKey,archiveSha256,selectedNoteIds,importedCount,recoveredCount,skippedCount,restrictedAudioCount,restrictedFileCount,committedAt) VALUES(?,?,?,?,0,0,?,?,?)",
+          arrayOf<Any>(operationKey, expectedHash, "__full_replacement__", noteCount, restrictions.audioIds.size, restrictions.fileIds.size, java.time.Instant.now().toString())
         )
         target.setTransactionSuccessful()
       } finally {
@@ -572,7 +575,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       val count = SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READONLY).useDatabase {
         scalarCount(it, "SELECT COUNT(*) FROM Notes").toInt()
       }
-      return replacementResult(false, count, generationId)
+      return replacementResult(false, count, generationId, restrictions.audioIds.size, restrictions.fileIds.size)
     } finally {
       work.deleteRecursively()
       staged.deleteRecursively()
@@ -785,6 +788,65 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     } finally { db.close() }
   }
 
+  private data class MediaRestrictions(val audioIds: Set<Long>, val fileIds: Set<Long>)
+
+  private fun inspectCurrentMedia(db: SQLiteDatabase, mediaRoot: File): MediaRestrictions {
+    fun invalidIds(table: String, directory: String): Set<Long> {
+      val root = File(mediaRoot, directory)
+      val rootPath = runCatching { root.canonicalPath }.getOrElse { return emptySet() }
+      val invalid = mutableSetOf<Long>()
+      db.rawQuery("SELECT id,uri FROM $table", null).use { cursor ->
+        while (cursor.moveToNext()) {
+          val file = runCatching {
+            val uri = Uri.parse(cursor.getString(1))
+            if (uri.scheme != "file" || uri.path.isNullOrBlank()) null else File(uri.path!!)
+          }.getOrNull()
+          val safe = file != null && runCatching {
+            val path = file.canonicalPath
+            path.startsWith("$rootPath${File.separator}") && file.isFile && file.canRead() &&
+              FileInputStream(file).use { input ->
+                val digest = sha256(input).hex
+                !file.name.matches(Regex("^[0-9a-f]{64}$")) || digest == file.name
+              }
+          }.getOrDefault(false)
+          if (!safe) invalid.add(cursor.getLong(0))
+        }
+      }
+      return invalid
+    }
+    return MediaRestrictions(invalidIds("NoteAudios", "audio"), invalidIds("NoteFiles", "files"))
+  }
+
+  private fun applyMediaRestrictions(db: SQLiteDatabase, restrictions: MediaRestrictions) {
+    fun remove(table: String, ids: Set<Long>) {
+      if (ids.isNotEmpty()) db.execSQL("DELETE FROM $table WHERE id IN (${ids.joinToString(",") { "?" }})", ids.toTypedArray())
+    }
+    remove("NoteAudios", restrictions.audioIds)
+    remove("NoteFiles", restrictions.fileIds)
+  }
+
+  private fun createRestrictedSnapshot(database: File, mediaRoot: File, snapshot: File): MediaRestrictions {
+    val db = SQLiteDatabase.openDatabase(database.path, null, SQLiteDatabase.OPEN_READWRITE)
+    try {
+      val restrictions = inspectCurrentMedia(db, mediaRoot)
+      db.beginTransaction()
+      try {
+        applyMediaRestrictions(db, restrictions)
+        db.setTransactionSuccessful()
+      } finally { db.endTransaction() }
+      listOf("NoteAudios" to "audio", "NoteFiles" to "files").forEach { (table, directory) ->
+        val destination = File(snapshot, directory).apply { mkdirs() }
+        db.rawQuery("SELECT uri FROM $table", null).use { cursor ->
+          while (cursor.moveToNext()) {
+            val source = File(Uri.parse(cursor.getString(0)).path!!)
+            copyFileVerified(source, File(destination, source.name), "SAFETY_SNAPSHOT_FAILED")
+          }
+        }
+      }
+      return restrictions
+    } finally { db.close() }
+  }
+
   private fun copyFileVerified(source: File, target: File, code: String) {
     target.parentFile?.mkdirs(); source.copyTo(target, overwrite = true)
     if (FileInputStream(source).use(::sha256) != FileInputStream(target).use(::sha256)) fail(code, "Copied file verification failed")
@@ -807,8 +869,9 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     else if (!source.renameTo(target)) fail("COMMIT_INTERRUPTED", "Could not switch replacement media")
   }
 
-  private fun replacementResult(already: Boolean, count: Int, snapshotId: String) = Arguments.createMap().apply {
+  private fun replacementResult(already: Boolean, count: Int, snapshotId: String, restrictedAudio: Int, restrictedFiles: Int) = Arguments.createMap().apply {
     putBoolean("alreadyCommitted", already); putInt("restoredNoteCount", count); putString("safetySnapshotId", snapshotId)
+    putRecoveryRestriction(restrictedAudio, restrictedFiles)
   }
 
   private inline fun <T> SQLiteDatabase.useDatabase(block: (SQLiteDatabase) -> T): T = try { block(this) } finally { close() }
@@ -818,13 +881,24 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   }
 
   private fun importReceiptResult(db: SQLiteDatabase, key: String): com.facebook.react.bridge.WritableMap? {
-    return db.rawQuery("SELECT importedCount,recoveredCount,skippedCount FROM BackupImportReceipts WHERE operationKey=?", arrayOf(key)).use {
-      if (it.moveToFirst()) importResult(true, it.getInt(0), it.getInt(1), it.getInt(2)) else null
+    return db.rawQuery("SELECT importedCount,recoveredCount,skippedCount,restrictedAudioCount,restrictedFileCount FROM BackupImportReceipts WHERE operationKey=?", arrayOf(key)).use {
+      if (it.moveToFirst()) importResult(true, it.getInt(0), it.getInt(1), it.getInt(2), it.getInt(3), it.getInt(4)) else null
     }
   }
 
-  private fun importResult(alreadyCommitted: Boolean, imported: Int, recovered: Int, skipped: Int = 0) = Arguments.createMap().apply {
+  private fun receiptRestrictions(db: SQLiteDatabase, key: String): Pair<Int, Int> =
+    db.rawQuery("SELECT restrictedAudioCount,restrictedFileCount FROM BackupImportReceipts WHERE operationKey=?", arrayOf(key)).use {
+      if (it.moveToFirst()) it.getInt(0) to it.getInt(1) else 0 to 0
+    }
+
+  private fun importResult(alreadyCommitted: Boolean, imported: Int, recovered: Int, skipped: Int = 0, restrictedAudio: Int = 0, restrictedFiles: Int = 0) = Arguments.createMap().apply {
     putBoolean("alreadyCommitted", alreadyCommitted); putInt("importedCount", imported); putInt("recoveredCount", recovered); putInt("skippedCount", skipped)
+    putRecoveryRestriction(restrictedAudio, restrictedFiles)
+  }
+
+  private fun com.facebook.react.bridge.WritableMap.putRecoveryRestriction(audio: Int, files: Int) {
+    putInt("restrictedAudioCount", audio); putInt("restrictedFileCount", files)
+    putBoolean("recoveryComplete", audio == 0 && files == 0)
   }
 
   private fun ensureImportedFolder(db: SQLiteDatabase, portableId: String, name: String, createdAt: String, sortOrder: Int): Long {

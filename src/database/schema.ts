@@ -103,6 +103,8 @@ export const initDb = async () => {
       importedCount INTEGER NOT NULL,
       recoveredCount INTEGER NOT NULL,
       skippedCount INTEGER NOT NULL,
+      restrictedAudioCount INTEGER NOT NULL DEFAULT 0,
+      restrictedFileCount INTEGER NOT NULL DEFAULT 0,
       committedAt TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS RecoveryProvenance (
@@ -140,6 +142,12 @@ export const initDb = async () => {
   const receiptColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(BackupImportReceipts);');
   if (!receiptColumns.some((column) => column.name === 'skippedCount')) {
     await db.execAsync('ALTER TABLE BackupImportReceipts ADD COLUMN skippedCount INTEGER NOT NULL DEFAULT 0;');
+  }
+  if (!receiptColumns.some((column) => column.name === 'restrictedAudioCount')) {
+    await db.execAsync('ALTER TABLE BackupImportReceipts ADD COLUMN restrictedAudioCount INTEGER NOT NULL DEFAULT 0;');
+  }
+  if (!receiptColumns.some((column) => column.name === 'restrictedFileCount')) {
+    await db.execAsync('ALTER TABLE BackupImportReceipts ADD COLUMN restrictedFileCount INTEGER NOT NULL DEFAULT 0;');
   }
 
   const provenanceColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(RecoveryProvenance);');

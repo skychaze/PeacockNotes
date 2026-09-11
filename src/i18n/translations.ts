@@ -265,6 +265,8 @@ export const translations: Record<Language, Translations> = {
     'backup.import.invalid': 'আর্কাইভটি সম্পূর্ণ, সামঞ্জস্যপূর্ণ ও অক্ষত হিসেবে যাচাই করা যায়নি। কোনো নোট বদলানো হয়নি।',
     'backup.import.failed': 'নির্বাচিত নোট ইম্পোর্ট করা যায়নি। বর্তমান নোট অপরিবর্তিত আছে।',
     'backup.import.success': '{imported}টি নোট পুনরুদ্ধার হয়েছে, {recovered}টি রিকভার্ড কপি তৈরি হয়েছে, এবং {skipped}টি অপরিবর্তিত নোট বাদ দেওয়া হয়েছে।',
+    'backup.import.restriction.complete': 'রিকভারি পয়েন্টটি সম্পূর্ণ। কোনো বর্তমান মিডিয়া বাদ দেওয়া হয়নি।',
+    'backup.import.restriction.incomplete': 'রিকভারি সীমিত ছিল। {audio}টি অনুপস্থিত, অপাঠযোগ্য বা অনিরাপদ অডিও রেফারেন্স এবং {files}টি ফাইল রেফারেন্স বাদ দেওয়া হয়েছে। ফলের রিকভারি পয়েন্টটি অসম্পূর্ণ।',
 
     'drawer.quickMenu': 'কুইক মেনু',
     'drawer.storage': 'Storage',
@@ -539,6 +541,8 @@ export const translations: Record<Language, Translations> = {
     'backup.import.invalid': 'The archive could not be verified as complete, compatible, and intact. No notes were changed.',
     'backup.import.failed': 'The selected notes could not be imported. Current notes are unchanged.',
     'backup.import.success': 'Restored {imported} notes, created {recovered} recovered copies, and skipped {skipped} unchanged notes.',
+    'backup.import.restriction.complete': 'The recovery point is complete. No current media was excluded.',
+    'backup.import.restriction.incomplete': 'Recovery was restricted. Excluded {audio} missing, unreadable, or unsafe audio reference(s) and {files} file reference(s). The resulting recovery point is incomplete.',
 
     'drawer.quickMenu': 'Quick Menu',
     'drawer.storage': 'Storage',

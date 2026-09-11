@@ -235,7 +235,15 @@ const importNotes = async (
       operationKey: `${id}:start:validate_and_commit_additive`,
     });
   }
-  return { alreadyCommitted: true, importedCount: 0, recoveredCount: 0, skippedCount: 0 };
+  return {
+    alreadyCommitted: true,
+    importedCount: 0,
+    recoveredCount: 0,
+    skippedCount: 0,
+    restrictedAudioCount: 0,
+    restrictedFileCount: 0,
+    recoveryComplete: true,
+  };
 };
 
 const requireNonDestructiveResult = (result: ImportResult | FullReplacementResult | FullReplacementUndoResult): ImportResult => {

@@ -104,12 +104,18 @@ export type CommitSelectiveImportRequest = Readonly<{
   selectedNoteIds: readonly string[];
 }>;
 
+export type RecoveryRestriction = Readonly<{
+  restrictedAudioCount: number;
+  restrictedFileCount: number;
+  recoveryComplete: boolean;
+}>;
+
 export type ImportResult = Readonly<{
   alreadyCommitted: boolean;
   importedCount: number;
   recoveredCount: number;
   skippedCount: number;
-}>;
+}> & RecoveryRestriction;
 
 export type FullReplacementRequest = Readonly<{
   archiveUri: string;
@@ -123,7 +129,7 @@ export type FullReplacementResult = Readonly<{
   alreadyCommitted: boolean;
   restoredNoteCount: number;
   safetySnapshotId: string;
-}>;
+}> & RecoveryRestriction;
 
 export type FullReplacementUndo = Readonly<{
   state: 'none' | 'available' | 'expired' | 'unavailable' | 'damaged';

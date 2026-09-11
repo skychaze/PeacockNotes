@@ -304,6 +304,13 @@ export const BackupScreen = () => {
     const unit = Math.min(Math.floor(Math.log(Math.max(bytes, 1)) / Math.log(1024)), units.length - 1);
     return `${new Intl.NumberFormat(language === 'bn' ? 'bn-BD' : 'en-US', { maximumFractionDigits: 1 }).format(bytes / 1024 ** unit)} ${units[unit]}`;
   };
+  const recoveryRestrictionText = (result: ImportResult | FullReplacementResult) =>
+    result.recoveryComplete
+      ? t('backup.import.restriction.complete')
+      : t('backup.import.restriction.incomplete', {
+          audio: result.restrictedAudioCount,
+          files: result.restrictedFileCount,
+        });
 
   return (
     <ScreenContainer>
@@ -403,18 +410,28 @@ export const BackupScreen = () => {
             </PressableScale>
             {importError ? <AppText variant="body" color={colors.error}>{importError}</AppText> : null}
             {importResult ? (
-              <AppText variant="body" color={colors.primary}>
-                {t('backup.import.success', {
-                  imported: importResult.importedCount - importResult.recoveredCount,
-                  recovered: importResult.recoveredCount,
-                  skipped: importResult.skippedCount,
-                })}
-              </AppText>
+              <View style={{ gap: ui.space.xs }}>
+                <AppText variant="body" color={colors.primary}>
+                  {t('backup.import.success', {
+                    imported: importResult.importedCount - importResult.recoveredCount,
+                    recovered: importResult.recoveredCount,
+                    skipped: importResult.skippedCount,
+                  })}
+                </AppText>
+                <AppText variant="body" color={importResult.recoveryComplete ? colors.primary : colors.error}>
+                  {recoveryRestrictionText(importResult)}
+                </AppText>
+              </View>
             ) : null}
             {replacementResult ? (
-              <AppText variant="body" color={colors.primary}>
-                {t('backup.import.replacementSuccess', { count: replacementResult.restoredNoteCount })}
-              </AppText>
+              <View style={{ gap: ui.space.xs }}>
+                <AppText variant="body" color={colors.primary}>
+                  {t('backup.import.replacementSuccess', { count: replacementResult.restoredNoteCount })}
+                </AppText>
+                <AppText variant="body" color={replacementResult.recoveryComplete ? colors.primary : colors.error}>
+                  {recoveryRestrictionText(replacementResult)}
+                </AppText>
+              </View>
             ) : null}
           </Card>
         ) : null}
