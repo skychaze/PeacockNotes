@@ -1,0 +1,889 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Peacock Notes backup flow prototype</title>
+  <!-- Three variants of the backup and import flow, switchable with ?variant=A, B, or C. -->
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f7f6f2;
+      --paper-deep: #eff1ec;
+      --surface: #ffffff;
+      --surface-soft: #eeede7;
+      --ink: #191917;
+      --muted: #5f5f59;
+      --green: #0a7d62;
+      --green-bright: #12b58c;
+      --green-pale: #d2f2dd;
+      --blue-pale: #d5ecfb;
+      --orange-pale: #ffedc9;
+      --red: #b3261e;
+      --red-pale: #ffe1dd;
+      --line: #e4e3dc;
+      --shadow: 0 24px 70px rgba(24, 40, 34, 0.16);
+      --radius-sm: 10px;
+      --radius-md: 16px;
+      --radius-lg: 24px;
+      font-family: "Noto Sans", "Segoe UI", Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 20% 8%, rgba(255, 217, 188, 0.72), transparent 32rem),
+        radial-gradient(circle at 82% 30%, rgba(189, 235, 220, 0.72), transparent 34rem),
+        linear-gradient(145deg, #f8f7f3, #e9eeeb);
+    }
+
+    button { font: inherit; }
+
+    .workspace {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(260px, 360px) minmax(360px, 460px);
+      justify-content: center;
+      gap: 48px;
+      padding: 40px 24px 120px;
+    }
+
+    .brief {
+      align-self: start;
+      position: sticky;
+      top: 40px;
+      padding-top: 28px;
+    }
+
+    .brief h1 {
+      margin: 0 0 16px;
+      max-width: 12ch;
+      font-size: clamp(36px, 5vw, 58px);
+      line-height: 0.98;
+      letter-spacing: -0.055em;
+    }
+
+    .brief > p {
+      max-width: 34ch;
+      margin: 0 0 28px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.55;
+    }
+
+    .scene-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      max-width: 340px;
+    }
+
+    .scene-button {
+      border: 0;
+      border-radius: 999px;
+      padding: 9px 13px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.66);
+      cursor: pointer;
+    }
+
+    .scene-button[aria-current="true"] {
+      color: white;
+      background: var(--green);
+    }
+
+    .phone {
+      width: 100%;
+      min-height: 780px;
+      overflow: hidden;
+      position: relative;
+      border: 10px solid #242522;
+      border-radius: 42px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+    }
+
+    .status-bar {
+      height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .camera {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      width: 72px;
+      height: 20px;
+      border-radius: 99px;
+      transform: translateX(-50%);
+      background: #242522;
+    }
+
+    .screen { min-height: 736px; }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 18px 12px;
+    }
+
+    .topbar h2 {
+      margin: 0;
+      flex: 1;
+      font-size: 23px;
+      letter-spacing: -0.035em;
+    }
+
+    .icon-button {
+      width: 40px;
+      height: 40px;
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: 50%;
+      color: var(--ink);
+      background: var(--surface-soft);
+      cursor: pointer;
+    }
+
+    .icon-button svg { width: 20px; height: 20px; }
+
+    .content { padding: 8px 18px 110px; }
+
+    .eyebrow {
+      margin: 0 0 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .headline {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.08;
+      letter-spacing: -0.045em;
+    }
+
+    .body-copy {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .primary,
+    .secondary,
+    .danger,
+    .text-action {
+      min-height: 48px;
+      border-radius: 15px;
+      padding: 0 17px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .primary { border: 0; color: white; background: var(--green); }
+    .secondary { border: 0; color: var(--ink); background: var(--surface-soft); }
+    .danger { border: 0; color: white; background: var(--red); }
+    .text-action { border: 1px solid var(--line); color: var(--green); background: transparent; }
+    .full { width: 100%; }
+
+    .folder-line {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .folder-icon {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      flex: 0 0 auto;
+      place-items: center;
+      border-radius: 11px;
+      color: var(--green);
+      background: var(--green-pale);
+    }
+
+    .folder-line strong,
+    .folder-line span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .folder-line span { margin-top: 2px; color: var(--muted); font-size: 12px; }
+
+    .card {
+      border-radius: var(--radius-lg);
+      padding: 18px;
+      background: var(--surface);
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 99px;
+      padding: 6px 9px;
+      color: var(--green);
+      background: var(--green-pale);
+      font-size: 11px;
+      font-weight: 750;
+    }
+
+    .tag::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+
+    .meta-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .meta-row strong { color: var(--ink); font-weight: 700; }
+
+    .choice {
+      width: 100%;
+      display: flex;
+      gap: 13px;
+      align-items: flex-start;
+      border: 2px solid transparent;
+      border-radius: 18px;
+      padding: 15px;
+      text-align: left;
+      color: var(--ink);
+      background: var(--surface-soft);
+      cursor: pointer;
+    }
+
+    .choice.selected { border-color: var(--green); background: #f5fffb; }
+    .choice.dangerous.selected { border-color: var(--red); background: #fff8f7; }
+
+    .choice-mark {
+      width: 22px;
+      height: 22px;
+      display: grid;
+      flex: 0 0 auto;
+      place-items: center;
+      border: 2px solid #acaea8;
+      border-radius: 50%;
+      color: white;
+      font-size: 12px;
+    }
+
+    .selected .choice-mark { border-color: var(--green); background: var(--green); }
+    .dangerous.selected .choice-mark { border-color: var(--red); background: var(--red); }
+    .choice strong { display: block; margin-bottom: 4px; font-size: 14px; }
+    .choice small { display: block; color: var(--muted); font-size: 12px; line-height: 1.4; }
+
+    .bottom-action {
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      padding: 14px 18px 20px;
+      background: linear-gradient(transparent, var(--paper) 18%, var(--paper));
+    }
+
+    .progress-track {
+      height: 9px;
+      overflow: hidden;
+      border-radius: 99px;
+      background: #d9ddd8;
+    }
+
+    .progress-track span {
+      display: block;
+      width: 62%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--green-bright), var(--green));
+    }
+
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 11px 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .step + .step { border-top: 1px solid var(--line); }
+    .step-dot { width: 18px; height: 18px; border: 2px solid #bbbdb8; border-radius: 50%; }
+    .step.done .step-dot { border: 5px solid var(--green); }
+    .step.active { color: var(--ink); font-weight: 700; }
+    .step.active .step-dot { border-color: var(--green); box-shadow: 0 0 0 4px var(--green-pale); }
+
+    .problem {
+      color: var(--red);
+      background: var(--red-pale);
+    }
+
+    .problem h3,
+    .success-card h3 { margin: 10px 0 6px; font-size: 21px; }
+    .problem p,
+    .success-card p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+
+    .success-card { background: var(--green-pale); }
+
+    .result-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+      margin-top: 15px;
+    }
+
+    .result-grid div {
+      border-radius: 14px;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.66);
+    }
+
+    .result-grid strong { display: block; font-size: 20px; }
+    .result-grid span { color: var(--muted); font-size: 11px; }
+
+    /* Variant A: actions dominate, archive history stays secondary. */
+    .variant-a .hero {
+      margin: 4px 0 14px;
+      padding: 22px;
+      color: #073f31;
+      background: linear-gradient(145deg, #c6f4df, #9be8cb);
+    }
+
+    .variant-a .hero .headline { max-width: 9ch; }
+    .variant-a .hero .tag { margin-bottom: 24px; background: rgba(255,255,255,0.55); }
+
+    .action-pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .action-tile {
+      min-height: 126px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      border: 0;
+      border-radius: 20px;
+      padding: 16px;
+      text-align: left;
+      color: var(--ink);
+      background: var(--surface);
+      cursor: pointer;
+    }
+
+    .action-tile.import { background: var(--blue-pale); }
+    .action-tile svg { width: 26px; height: 26px; color: var(--green); }
+    .action-tile strong { font-size: 15px; }
+
+    .section-title {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin: 20px 0 10px;
+    }
+
+    .section-title h3 { margin: 0; font-size: 16px; }
+    .section-title button { border: 0; color: var(--green); background: none; font-size: 12px; font-weight: 700; }
+
+    .archive-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 13px 0;
+    }
+
+    .archive-row + .archive-row { border-top: 1px solid var(--line); }
+    .archive-date { flex: 1; }
+    .archive-date strong { display: block; font-size: 13px; }
+    .archive-date span { color: var(--muted); font-size: 11px; }
+    .archive-size { color: var(--muted); font-size: 11px; }
+
+    .sheet {
+      margin: 0 -18px -110px;
+      min-height: 610px;
+      border-radius: 30px 30px 0 0;
+      padding: 12px 20px 110px;
+      background: var(--surface);
+      box-shadow: 0 -14px 40px rgba(38, 50, 44, 0.12);
+    }
+
+    .grabber { width: 40px; height: 4px; margin: 0 auto 22px; border-radius: 99px; background: #c8cac5; }
+    .sheet .choice { margin-top: 10px; }
+
+    /* Variant B: the collection is the home screen and actions live in context. */
+    .variant-b { background: #f3f1e9; }
+
+    .variant-b .topbar { padding-bottom: 18px; }
+
+    .variant-b .collection-header {
+      margin: 0 -18px;
+      padding: 18px 18px 22px;
+      background: var(--surface);
+    }
+
+    .variant-b .folder-line { margin-bottom: 18px; }
+
+    .compact-actions { display: flex; gap: 9px; }
+    .compact-actions button { flex: 1; }
+
+    .date-label {
+      margin: 20px 0 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .ledger-item {
+      position: relative;
+      display: grid;
+      grid-template-columns: 50px 1fr auto;
+      align-items: center;
+      gap: 12px;
+      min-height: 74px;
+      padding: 10px 0;
+    }
+
+    .ledger-time { font-size: 12px; font-weight: 750; }
+    .ledger-copy strong { display: block; font-size: 13px; }
+    .ledger-copy span { color: var(--muted); font-size: 11px; }
+    .verified-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); }
+
+    .variant-b .import-panel {
+      margin-top: 4px;
+      border-radius: 22px;
+      padding: 18px;
+      background: var(--surface);
+    }
+
+    .variant-b .import-panel .choice { margin-top: 9px; }
+
+    .summary-strip {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      overflow: hidden;
+      margin: 16px 0;
+      border-radius: 16px;
+      background: var(--line);
+    }
+
+    .summary-strip div { padding: 12px 8px; text-align: center; background: var(--surface-soft); }
+    .summary-strip strong { display: block; font-size: 16px; }
+    .summary-strip span { color: var(--muted); font-size: 10px; }
+
+    /* Variant C: status and readiness form a timeline. */
+    .variant-c {
+      color: #edf8f3;
+      background: #15342c;
+    }
+
+    .variant-c .status-bar,
+    .variant-c .topbar h2 { color: #edf8f3; }
+    .variant-c .icon-button { color: #edf8f3; background: rgba(255,255,255,0.12); }
+    .variant-c .content { padding-top: 14px; }
+
+    .variant-c .status-hero {
+      padding: 12px 2px 26px;
+    }
+
+    .variant-c .status-hero .eyebrow { color: #a8c7bc; }
+    .variant-c .status-hero .headline { max-width: 10ch; color: white; font-size: 34px; }
+    .variant-c .body-copy { color: #b6cec5; }
+
+    .variant-c .timeline {
+      position: relative;
+      margin-left: 6px;
+      padding-left: 28px;
+    }
+
+    .variant-c .timeline::before {
+      content: "";
+      position: absolute;
+      top: 15px;
+      bottom: 15px;
+      left: 7px;
+      width: 2px;
+      background: rgba(255,255,255,0.14);
+    }
+
+    .timeline-card {
+      position: relative;
+      margin-bottom: 12px;
+      border-radius: 20px;
+      padding: 16px;
+      color: var(--ink);
+      background: #f7f6f2;
+    }
+
+    .timeline-card::before {
+      content: "";
+      position: absolute;
+      top: 22px;
+      left: -28px;
+      width: 12px;
+      height: 12px;
+      border: 3px solid #15342c;
+      border-radius: 50%;
+      background: #7fe8c4;
+    }
+
+    .timeline-card h3 { margin: 0 0 5px; font-size: 14px; }
+    .timeline-card p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
+    .timeline-card button { margin-top: 12px; }
+
+    .variant-c .bottom-action {
+      background: linear-gradient(transparent, #15342c 18%, #15342c);
+    }
+
+    .variant-c .choice { margin-top: 10px; background: #ebece6; }
+    .variant-c .choice.selected { background: #e6fff5; }
+    .variant-c .choice.dangerous.selected { background: #fff0ee; }
+    .variant-c .progress-track { background: rgba(255,255,255,0.18); }
+    .variant-c .step { color: #b6cec5; border-color: rgba(255,255,255,0.12); }
+    .variant-c .step.active { color: white; }
+    .variant-c .step.done .step-dot { border-color: #7fe8c4; }
+    .variant-c .step.active .step-dot { border-color: #7fe8c4; box-shadow: 0 0 0 4px rgba(127,232,196,0.2); }
+
+    .switcher {
+      position: fixed;
+      z-index: 20;
+      bottom: 22px;
+      left: 50%;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      transform: translateX(-50%);
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 999px;
+      padding: 6px;
+      color: white;
+      background: #20231f;
+      box-shadow: 0 12px 36px rgba(0,0,0,0.28);
+    }
+
+    .switcher button {
+      width: 38px;
+      height: 38px;
+      border: 0;
+      border-radius: 50%;
+      color: white;
+      background: rgba(255,255,255,0.1);
+      cursor: pointer;
+    }
+
+    .switcher-label { min-width: 190px; text-align: center; font-size: 12px; font-weight: 750; }
+
+    .prototype-note {
+      margin-top: 22px;
+      max-width: 34ch;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    @media (max-width: 820px) {
+      .workspace { display: block; padding: 0 0 100px; }
+      .brief { position: static; padding: 24px 20px 18px; }
+      .brief h1 { max-width: none; font-size: 32px; }
+      .brief > p { margin-bottom: 16px; }
+      .prototype-note { display: none; }
+      .phone { width: min(100%, 460px); min-height: calc(100vh - 190px); margin: auto; border: 0; border-radius: 0; box-shadow: none; }
+      .camera { display: none; }
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .screen { animation: enter 180ms ease-out; }
+      @keyframes enter { from { opacity: 0; transform: translateY(5px); } }
+    }
+  </style>
+</head>
+<body>
+  <main class="workspace">
+    <aside class="brief">
+      <h1>Backup flow prototype</h1>
+      <p>Compare how Peacock Notes could explain folder status, export, archive selection, safe recovery, replacement, progress, and failures.</p>
+      <nav class="scene-list" aria-label="Prototype scenario"></nav>
+      <p class="prototype-note">Throwaway prototype. All files, progress, and results are simulated. Use the bottom switcher or left and right arrow keys to compare layouts.</p>
+    </aside>
+    <section class="phone" aria-label="Android phone preview">
+      <div class="camera"></div>
+      <div class="status-bar"><span>9:41</span><span>5G&nbsp;&nbsp;92%</span></div>
+      <div id="app"></div>
+    </section>
+  </main>
+
+  <div class="switcher" aria-label="Prototype variant switcher">
+    <button id="previous" aria-label="Previous variant">←</button>
+    <div class="switcher-label" id="variant-label"></div>
+    <button id="next" aria-label="Next variant">→</button>
+  </div>
+
+  <script>
+    const variants = {
+      A: 'Action first',
+      B: 'Backup history',
+      C: 'Recovery timeline',
+    };
+
+    const scenes = {
+      overview: 'Overview',
+      choose: 'Import choices',
+      replace: 'Replacement warning',
+      progress: 'Progress',
+      problem: 'Problem',
+      done: 'Result',
+    };
+
+    const params = new URLSearchParams(window.location.search);
+    let variant = variants[params.get('variant')] ? params.get('variant') : 'A';
+    let scene = scenes[params.get('scene')] ? params.get('scene') : 'overview';
+    let selectedMode = null;
+
+    const icon = (name) => {
+      const paths = {
+        back: '<path d="M15 18l-6-6 6-6"/><path d="M9 12h10"/>',
+        refresh: '<path d="M20 6v5h-5"/><path d="M19 11a7 7 0 10.2 5"/>',
+        upload: '<path d="M12 16V4m0 0L7 9m5-5 5 5"/><path d="M5 14v5h14v-5"/>',
+        download: '<path d="M12 4v12m0 0-5-5m5 5 5-5"/><path d="M5 20h14"/>',
+        folder: '<path d="M3 7h7l2 2h9v10H3z"/>',
+      };
+      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
+    };
+
+    const setUrl = () => {
+      const next = new URL(window.location.href);
+      next.searchParams.set('variant', variant);
+      next.searchParams.set('scene', scene);
+      history.replaceState({}, '', next);
+    };
+
+    const go = (nextScene) => {
+      scene = nextScene;
+      selectedMode = null;
+      setUrl();
+      render();
+    };
+
+    const chooseMode = (mode) => {
+      selectedMode = mode;
+      render();
+    };
+
+    const folderLine = () => `
+      <div class="folder-line">
+        <div class="folder-icon">${icon('folder')}</div>
+        <div><strong>Peacock Notes backups</strong><span>Google Drive / Personal</span></div>
+      </div>`;
+
+    const archiveRows = () => `
+      <div class="archive-row"><div class="verified-dot"></div><div class="archive-date"><strong>Today, 8:42 PM</strong><span>Automatic backup</span></div><div class="archive-size">84 MB</div></div>
+      <div class="archive-row"><div class="verified-dot"></div><div class="archive-date"><strong>Yesterday, 7:18 PM</strong><span>Manual export</span></div><div class="archive-size">82 MB</div></div>
+      <div class="archive-row"><div class="verified-dot"></div><div class="archive-date"><strong>11 Sep, 6:05 PM</strong><span>Automatic backup</span></div><div class="archive-size">79 MB</div></div>`;
+
+    const choices = () => `
+      <button class="choice ${selectedMode === 'selective' ? 'selected' : ''}" data-mode="selective">
+        <span class="choice-mark">✓</span><span><strong>Choose what to add</strong><small>Select individual folders or notes. Current content stays.</small></span>
+      </button>
+      <button class="choice ${selectedMode === 'additive' ? 'selected' : ''}" data-mode="additive">
+        <span class="choice-mark">✓</span><span><strong>Add everything without replacing</strong><small>Restore missing items and recover changed versions as copies.</small></span>
+      </button>
+      <button class="choice dangerous ${selectedMode === 'replace' ? 'selected' : ''}" data-mode="replace">
+        <span class="choice-mark">✓</span><span><strong>Import all and replace</strong><small>Remove current notes and reproduce this backup exactly.</small></span>
+      </button>`;
+
+    const continueButton = () => {
+      if (!selectedMode) return '<button class="secondary full" disabled>Choose an import mode</button>';
+      const target = selectedMode === 'replace' ? 'replace' : 'progress';
+      return `<button class="primary full" data-go="${target}">Continue</button>`;
+    };
+
+    const sharedScene = (layout) => {
+      if (scene === 'choose') {
+        const inner = `
+          <p class="eyebrow">Verified backup</p>
+          <h3 class="headline">Today, 8:42 PM</h3>
+          <p class="body-copy">18 folders, 246 notes, 39 recordings, 12 files. 84 MB.</p>
+          <div class="summary-strip"><div><strong>31</strong><span>missing</span></div><div><strong>4</strong><span>changed</span></div><div><strong>211</strong><span>same</span></div></div>
+          ${choices()}`;
+        if (layout === 'A') return `<div class="sheet"><div class="grabber"></div>${inner}</div><div class="bottom-action">${continueButton()}</div>`;
+        if (layout === 'B') return `<div class="import-panel">${inner}</div><div class="bottom-action">${continueButton()}</div>`;
+        return `<div class="status-hero"><p class="eyebrow">Archive verified</p><h3 class="headline">How should this backup be used?</h3></div>${choices()}<div class="bottom-action">${continueButton()}</div>`;
+      }
+
+      if (scene === 'replace') {
+        return `
+          <div class="card problem">
+            <p class="eyebrow">Full replacement</p>
+            <h3>Current notes will be removed</h3>
+            <p>This backup has 246 notes from today at 8:42 PM. Your current 219 notes, 34 recordings, and 9 files will be replaced.</p>
+          </div>
+          <div class="summary-strip"><div><strong>219</strong><span>current notes</span></div><div><strong>246</strong><span>backup notes</span></div><div><strong>84 MB</strong><span>backup size</span></div></div>
+          <div class="card">
+            <strong>Undo stays available for 7 days</strong>
+            <p class="body-copy">The undo backup stays on this device. Uninstalling Peacock Notes removes it.</p>
+          </div>
+          <div class="bottom-action"><button class="danger full" data-go="progress">Replace all current notes</button></div>`;
+      }
+
+      if (scene === 'progress') {
+        return `
+          <p class="eyebrow">Importing backup</p>
+          <h3 class="headline">Checking every file</h3>
+          <p class="body-copy">You can leave this screen. Peacock Notes will keep the operation visible.</p>
+          <div style="margin: 24px 0 10px" class="progress-track"><span></span></div>
+          <div class="meta-row"><span>62%</span><strong>52 of 84 MB</strong></div>
+          <div class="card" style="margin-top: 22px">
+            <div class="step done"><span class="step-dot"></span><span>Archive copied locally</span></div>
+            <div class="step done"><span class="step-dot"></span><span>Manifest and database verified</span></div>
+            <div class="step active"><span class="step-dot"></span><span>Checking recordings and files</span></div>
+            <div class="step"><span class="step-dot"></span><span>Ready for final commit</span></div>
+          </div>
+          <div class="bottom-action"><button class="text-action full" data-go="overview">Cancel import</button></div>`;
+      }
+
+      if (scene === 'problem') {
+        return `
+          <div class="card problem">
+            <p class="eyebrow">Action needed</p>
+            <h3>Backup folder is read-only</h3>
+            <p>You can still import backups. Export and retention are paused until Peacock Notes can write to this folder.</p>
+          </div>
+          <div class="card" style="margin-top: 12px">${folderLine()}</div>
+          <div style="display:grid;gap:9px;margin-top:16px">
+            <button class="primary full" data-go="overview">Reconnect folder</button>
+            <button class="secondary full" data-go="choose">Import a backup anyway</button>
+          </div>`;
+      }
+
+      if (scene === 'done') {
+        return `
+          <div class="card success-card">
+            <span class="tag">Import complete</span>
+            <h3>Your current notes were kept</h3>
+            <p>The selected backup was added without replacing current content.</p>
+            <div class="result-grid"><div><strong>31</strong><span>notes restored</span></div><div><strong>4</strong><span>recovered copies</span></div><div><strong>3</strong><span>media repaired</span></div><div><strong>211</strong><span>already present</span></div></div>
+          </div>
+          <div class="card" style="margin-top:12px">
+            <div class="meta-row"><span>Automatic backup</span><strong>Due in 24 hours</strong></div>
+          </div>
+          <div class="bottom-action"><button class="primary full" data-go="overview">View notes</button></div>`;
+      }
+      return '';
+    };
+
+    const variantA = () => {
+      const overview = `
+        <div class="card hero">
+          <span class="tag">Verified in selected folder</span>
+          <p class="eyebrow">Last backup</p>
+          <h3 class="headline">Today at 8:42 PM</h3>
+          <p class="body-copy">18 backups. Automatic backup is on.</p>
+        </div>
+        <div class="action-pair">
+          <button class="action-tile" data-go="progress">${icon('upload')}<strong>Export Backup</strong></button>
+          <button class="action-tile import" data-go="choose">${icon('download')}<strong>Import Backup</strong></button>
+        </div>
+        <div class="card">${folderLine()}</div>
+        <div class="section-title"><h3>Recent backups</h3><button data-go="choose">Browse all</button></div>
+        <div class="card">${archiveRows()}</div>`;
+      return shell('variant-a', scene === 'overview' ? overview : sharedScene('A'));
+    };
+
+    const variantB = () => {
+      const overview = `
+        <div class="collection-header">
+          ${folderLine()}
+          <div class="compact-actions"><button class="primary" data-go="progress">Export Backup</button><button class="secondary" data-go="choose">Import Backup</button></div>
+        </div>
+        <p class="date-label">Today</p>
+        <div class="ledger-item"><div class="ledger-time">8:42 PM</div><div class="ledger-copy"><strong>Automatic backup</strong><span>246 notes and 51 media files</span></div><span class="verified-dot"></span></div>
+        <p class="date-label">Yesterday</p>
+        <div class="ledger-item"><div class="ledger-time">7:18 PM</div><div class="ledger-copy"><strong>Manual export</strong><span>241 notes and 50 media files</span></div><span class="verified-dot"></span></div>
+        <div class="ledger-item"><div class="ledger-time">9:04 AM</div><div class="ledger-copy"><strong>Automatic backup</strong><span>238 notes and 49 media files</span></div><span class="verified-dot"></span></div>
+        <p class="date-label">Retention</p>
+        <div class="card"><div class="meta-row"><span>Last reconciled</span><strong>2 minutes ago</strong></div><div class="meta-row" style="margin-top:9px"><span>Removed</span><strong>2 expired backups</strong></div></div>`;
+      return shell('variant-b', scene === 'overview' ? overview : sharedScene('B'));
+    };
+
+    const variantC = () => {
+      const overview = `
+        <div class="status-hero">
+          <p class="eyebrow">Recovery status</p>
+          <h3 class="headline">Your latest backup is ready</h3>
+          <p class="body-copy">Verified today at 8:42 PM in your selected folder.</p>
+        </div>
+        <div class="timeline">
+          <div class="timeline-card"><h3>Backup folder connected</h3><p>Google Drive / Personal. Read and write access available.</p><button class="text-action" data-go="problem">View folder</button></div>
+          <div class="timeline-card"><h3>Automatic backup on</h3><p>Nothing is due. Peacock Notes checks again when content changes.</p></div>
+          <div class="timeline-card"><h3>18 verified backups</h3><p>Two expired backups were removed during the last reconciliation.</p><button class="text-action" data-go="choose">Choose a backup</button></div>
+        </div>
+        <div class="bottom-action"><div class="compact-actions"><button class="secondary" data-go="progress">Export Backup</button><button class="primary" data-go="choose">Import Backup</button></div></div>`;
+      return shell('variant-c', scene === 'overview' ? overview : sharedScene('C'));
+    };
+
+    const shell = (className, content) => `
+      <div class="screen ${className}">
+        <header class="topbar">
+          <button class="icon-button" aria-label="Back">${icon('back')}</button>
+          <h2>Backup & import</h2>
+          <button class="icon-button" aria-label="Refresh" data-go="overview">${icon('refresh')}</button>
+        </header>
+        <div class="content">${content}</div>
+      </div>`;
+
+    const bind = () => {
+      document.querySelectorAll('[data-go]').forEach((element) => {
+        element.addEventListener('click', () => go(element.dataset.go));
+      });
+      document.querySelectorAll('[data-mode]').forEach((element) => {
+        element.addEventListener('click', () => chooseMode(element.dataset.mode));
+      });
+    };
+
+    const render = () => {
+      document.querySelector('#app').innerHTML = variant === 'A' ? variantA() : variant === 'B' ? variantB() : variantC();
+      document.querySelector('#variant-label').textContent = `${variant} (${variants[variant]})`;
+      document.querySelector('.scene-list').innerHTML = Object.entries(scenes).map(([key, label]) => `<button class="scene-button" data-scene="${key}" aria-current="${scene === key}">${label}</button>`).join('');
+      document.querySelectorAll('[data-scene]').forEach((element) => element.addEventListener('click', () => go(element.dataset.scene)));
+      bind();
+    };
+
+    const cycle = (direction) => {
+      const keys = Object.keys(variants);
+      const index = keys.indexOf(variant);
+      variant = keys[(index + direction + keys.length) % keys.length];
+      setUrl();
+      render();
+    };
+
+    document.querySelector('#previous').addEventListener('click', () => cycle(-1));
+    document.querySelector('#next').addEventListener('click', () => cycle(1));
+    document.addEventListener('keydown', (event) => {
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement?.isContentEditable) return;
+      if (event.key === 'ArrowLeft') cycle(-1);
+      if (event.key === 'ArrowRight') cycle(1);
+    });
+
+    render();
+  </script>
+</body>
+</html>

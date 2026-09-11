@@ -345,3 +345,12 @@
 - Planned three structurally different variants: action-first guidance, history-first collection browsing, and status-first timeline. Each will use simulated state and a URL-persisted variant switcher.
 - The untracked `docs/ui-redesign-plan.md` remains outside this work.
 - Next: create and push the throwaway prototype branch, then build the three variants.
+
+## 2026-09-11 14:38 UTC
+
+- Created and pushed `prototype/export-import-flow` from main.
+- Added `src/prototypes/backup-flow-prototype.html` with three structurally distinct mobile layouts, six shared scenarios, simulated import-mode selection, URL-persisted variant and scene state, keyboard switching, responsive layout, and reduced-motion handling.
+- Added `npm run prototype:backup` as the one-command launcher. No production screen or mutation code changed.
+- Passed extracted JavaScript syntax checking, `package.json` parsing, `git diff --check`, HTTP serving, and direct fetch. Chrome DevTools had no attached browser and no standalone Chrome binary was installed, so screenshot review was unavailable.
+- Commands: `node --check`, Node JSON parse, `git diff --check`, background prototype server, `curl`, Chrome DevTools connection attempt, and browser-binary lookup.
+- Next: commit and push the runnable prototype, then inspect its interaction coverage against issue #12.
