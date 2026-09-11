@@ -254,3 +254,11 @@
 - Added managed retention to `CONTEXT.md` and linked the resolved decision from parent map issue #1.
 - GitHub: issue #9 resolution and issue #1 decision map.
 - Next: commit and push the glossary and process updates, then recompute the unblocked planning frontier.
+
+## 2026-09-11 13:39 UTC
+
+- Recomputed the open planning frontier after closing backup retention.
+- Full import validation, replacement, and rollback is the remaining unclaimed human decision available before the interaction prototype and final guarantees. ZIP64 research remains open and assigned for independent review.
+- The unrelated untracked `docs/ui-redesign-plan.md` remains untouched.
+- Commands: `git status`, `gh issue list`, and `gh issue view` for issues #10, #12, and #13.
+- Next: claim issue #10 and inspect the established import and snapshot decisions before starting its grilling round.
