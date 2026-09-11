@@ -287,3 +287,12 @@
 - Renamed and rewrote issue #10 around both modes, restored the replacement branch in parent map issue #1, and defined both terms in `CONTEXT.md`.
 - Full replacement again inherits the staged media generation, safety snapshot, exclusive database switch, and verified rollback protocol from issue #15.
 - Next: settle user-facing mode names, exact replacement scope, safety-snapshot lifetime, and backup-clock behavior for full replacement.
+
+## 2026-09-11 14:02 UTC
+
+- Settled import-mode naming, replacement scope, undo lifetime, post-replacement backup behavior, and empty-install behavior with the product owner.
+- Existing installations see Add without replacing first and Import all and replace second. Replacement changes only recoverable content and preserves device-local configuration.
+- One verified local safety snapshot supports Undo last replacement for seven days. Empty installations use one Import all notes action and need no undo snapshot.
+- Replacement from any archive other than the protected newest collection archive triggers immediate automatic backup when enabled, or offers Export Backup now when disabled.
+- Posted these decisions to GitHub issue #10.
+- Next: settle destructive confirmation, undo semantics, open-editor handling, and replacement failure recovery.
