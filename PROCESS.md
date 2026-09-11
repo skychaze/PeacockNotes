@@ -92,3 +92,10 @@
 - Reopened and sharpened "Decide backup collection retention and pruning," removed its old out-of-scope entry, and made it depend on the active folder-contract decision using GitHub's native blocking relationship.
 - Updated the map language to Export Backup, Import Backup, and backup collection. The provider owns remote storage; Peacock Notes manages only recognized archives inside the authorized folder.
 - Next: decide whether collection growth is manual or scheduled, then continue the folder contract.
+
+## 2026-09-11 12:29 UTC
+
+- Product owner chose automatic plus manual collection growth.
+- When recoverable content changed, Peacock Notes should attempt one automatic backup after 24 hours at the next Android-permitted opportunity and check overdue work when the app opens. Export Backup remains an immediate manual action. The product must not promise exact daily timing.
+- This brings the automatic backup lifecycle back into scope; its detailed failure and retry policy remains a separate decision.
+- Next: reopen and rewire that lifecycle decision, then continue the backup-folder contract.
