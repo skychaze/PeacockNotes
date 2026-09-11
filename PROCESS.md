@@ -214,3 +214,12 @@
 - Reconciliation runs after a verified export, on app open, after folder reconnection, and on user refresh. There is no cleanup-only worker. Every prune requires a complete successful scan.
 - Posted these decisions to GitHub issue #9.
 - Next: decide the validation threshold for pruning, anomalous timestamps, and partial deletion behavior.
+
+## 2026-09-11 13:22 UTC
+
+- Settled the pruning verification threshold, clock-anomaly behavior, partial deletion semantics, consent, and storage-pressure policy with the product owner.
+- Cleanup requires a complete direct-child and manifest scan plus a current or safely cached verification of the protected newest archive. It never automatically deletes malformed, corrupt, or unreadable archives.
+- Future-dated recognized archives pause pruning. Eligible archives delete oldest first with a pre-delete identity recheck; cleanup stops and reports any partial failure without changing backup success.
+- Managed retention requires one-time explicit acceptance and never deletes a younger archive merely to free storage.
+- Posted these decisions to GitHub issue #9.
+- Next: settle archive ownership recognition, timestamp ties, shared-folder authority, and retention opt-out behavior.
