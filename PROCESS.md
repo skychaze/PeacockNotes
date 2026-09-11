@@ -71,3 +71,10 @@
 - Reloaded the parent map, canonical recovery glossary, current quick-menu entry points, and the completed Android archive-streaming research.
 - Confirmed the app currently has a placeholder "Backup & Restore" action. Android requires separate create-document and open-document picker flows; the document provider controls destination browsing and naming behavior.
 - Next: settle the user-visible entry points and picker contract.
+
+## 2026-09-11 12:21 UTC
+
+- The product owner rejected the initial explicit-file-only contract and described a managed backup history instead: Export Backup and Import Backup actions, timestamped archives, newest-backup import, cloud archive browsing, and retention of roughly 20 archives with oldest-first deletion.
+- This conflicts with the current map destination and earlier scope boundary. The selected system-file-picker design cannot independently discover a latest cloud file, enumerate a managed history, or enforce retention because Peacock Notes only receives access to documents the user selects.
+- The desired retention wording also mixes seven days, fourteen to twenty days, and twenty archives; exact policy depends on first choosing the storage and access model.
+- Next: ask whether to preserve the current explicit archive destination or redraw the map around a user-authorized managed backup collection.
