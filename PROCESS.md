@@ -360,3 +360,10 @@
 - Final guarantees issue #13 now waits only for the independent review of ZIP64 and SHA-256 Android research issue #18.
 - Inspected issue #18 and its single research commit. The interim recommendation is a small Android-only Expo module over Zip4j 2.11.6 plus native Android content, digest, and filesystem APIs, but every material claim still needs independent primary-source verification.
 - Next: delegate the required independent research review under the research workflow, then reconcile any corrections before closing issue #18.
+
+## 2026-09-11 15:08 UTC
+
+- Started the required independent review in background subagent `sa-1` using the configured research model and high reasoning effort.
+- The reviewer has a read-only mandate to treat commit `52bf898` as untrusted, verify every material claim against primary sources, identify corrections and caveats, and judge whether the recommendation is safe to accept.
+- No file ownership conflict exists because the reviewer will not modify the repository or GitHub.
+- Next: inspect the research document and final-guarantees ticket locally while the independent review runs.
