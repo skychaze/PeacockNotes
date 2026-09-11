@@ -98,7 +98,7 @@ export const FoldersScreen = () => {
       {
         icon: 'backup-restore',
         label: t('drawer.backupRestore'),
-        onPress: () => Alert.alert(t('drawer.comingSoonTitle'), t('drawer.futureMessage')),
+        onPress: () => navigation.navigate('Backup'),
       },
     ],
     [navigation, t]

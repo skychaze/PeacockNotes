@@ -25,6 +25,7 @@ import {
 } from 'expo-share-intent';
 import { ShareImportScreen } from './src/screens/ShareImportScreen';
 import { StorageUsageScreen } from './src/screens/StorageUsageScreen';
+import { BackupScreen } from './src/screens/BackupScreen';
 import { LanguageProvider, useLanguage } from './src/i18n/LanguageContext';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -144,6 +145,7 @@ const AppNavigator = () => {
           <Stack.Screen name="ShareImport" component={ShareImportScreen} />
           <Stack.Screen name="Folders" component={FoldersScreen} />
           <Stack.Screen name="StorageUsage" component={StorageUsageScreen} />
+          <Stack.Screen name="Backup" component={BackupScreen} />
           <Stack.Screen name="NotesList" component={NotesListScreen} />
           <Stack.Screen name="NoteEditor" component={NoteEditorScreen} />
         </Stack.Navigator>
