@@ -78,3 +78,10 @@
 - This conflicts with the current map destination and earlier scope boundary. The selected system-file-picker design cannot independently discover a latest cloud file, enumerate a managed history, or enforce retention because Peacock Notes only receives access to documents the user selects.
 - The desired retention wording also mixes seven days, fourteen to twenty days, and twenty archives; exact policy depends on first choosing the storage and access model.
 - Next: ask whether to preserve the current explicit archive destination or redraw the map around a user-authorized managed backup collection.
+
+## 2026-09-11 12:24 UTC
+
+- Product owner chose a user-selected backup folder through Android's document-provider interface.
+- Peacock Notes will retain access to that folder, create and enumerate its timestamped archives there, offer newest-archive import, and prune the oldest Peacock Notes archive after a verified export when the collection exceeds its configured limit. A fresh installation must ask the user to select the folder again.
+- This redraws the map destination and brings provider-folder access and managed retention back into scope without adding Drive OAuth scopes or a Peacock Notes cloud backend.
+- Next: update the map and ticket graph before continuing the export and import contract.
