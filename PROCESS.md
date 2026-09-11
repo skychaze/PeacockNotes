@@ -112,3 +112,10 @@
 - The screen shows the connected folder and allows changing it without moving or deleting the old collection. Import Backup offers the latest valid archive, all backups in the collection, or a file outside the folder. A fresh install or lost permission requires folder selection again.
 - Archive filenames will show only a simple local date and time, for example `2026-09-11 18-05-30.peacocknotes`. The archive UUID remains inside the manifest and is not shown in the filename. Manifest creation time, not filename or provider modification time, determines newest order.
 - Next: decide manual export behavior, import confirmation, and truthful status messaging.
+
+## 2026-09-11 12:43 UTC
+
+- Settled manual export, import confirmation, and status messaging with the product owner.
+- Export Backup always creates and verifies a new archive when invoked manually, while automatic backup may skip unchanged content. Import validates and summarizes an archive before offering full import or selective import where applicable, followed by final confirmation.
+- The screen reports the connected folder, collection count, last verified backup, automatic status, and failures. It says "Verified in selected folder" rather than claiming cloud durability, and explains provider delay, reconnection requirements, and the archive's lack of encryption.
+- Next: decide collection authority, folder access degradation, and directory layout.
