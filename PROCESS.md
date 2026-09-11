@@ -407,3 +407,10 @@
 - Document checks passed. Posted the reviewed resolution to GitHub issue #18 and closed it as completed.
 - Added the corrected native-module decision to parent map issue #1, then returned to main. The research branch remains the primary source and the unrelated untracked `docs/` directory remains untouched.
 - Next: commit and push this checkpoint, recompute the now-unblocked final-guarantees decision, and begin its human grilling round.
+
+## 2026-09-11 15:27 UTC
+
+- Confirmed through GitHub's native dependency graph that every blocker of final guarantees issue #13 is now closed.
+- Claimed issue #13. This is the last human decision ticket before the parent planning map can be completed.
+- The first frontier is the exact product promise, release-blocking test environments, numeric hostile-archive limits, and required diagnostic evidence.
+- Next: begin the final-guarantees grilling round.
