@@ -323,3 +323,10 @@
 - Damaged-data forensic copies remain for 168 hours after success and indefinitely while recovery remains incomplete. Failed current integrity disables additive and selective commit but leaves verified full replacement available in restricted recovery.
 - Posted these decisions to GitHub issue #10. The additive and full replacement import decision tree now has no open branch.
 - Next: present the consolidated import contract for product-owner confirmation before resolving the ticket.
+
+## 2026-09-11 14:22 UTC
+
+- Product owner confirmed the consolidated selective, additive, and full replacement import contract without revisions.
+- Posted the resolution and closed GitHub issue #10 as completed.
+- Added the resolved import decision to parent map issue #1. `CONTEXT.md` already contains the accepted additive-import and full-replacement-import terms.
+- Next: commit and push this checkpoint, then recompute the remaining planning frontier.
