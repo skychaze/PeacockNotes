@@ -24,3 +24,9 @@
 - Confirmed the archive decision already requires portable UUIDs and allows either restoring an absent original identity or creating a recovered copy with a new identity.
 - Commands: `gh issue edit 11 --add-assignee @me`, GraphQL dependency query, and `rg` over `src/database/schema.ts`.
 - Next: settle selective import's root identity and conflict semantics with the product owner.
+
+## 2026-09-11 12:04 UTC
+
+- Settled the first selective-import round with the product owner.
+- An archived entity whose portable UUID is absent locally regains its original identity. A conflicting changed entity stays untouched and the archived version becomes a recovered copy with a new UUID. Notes are the smallest selectable recovery unit and always carry their archived audio and attachments together. Folder selection acts on its note subtree.
+- Next: decide parent placement, comparison rules, and repeated-recovery handling.
