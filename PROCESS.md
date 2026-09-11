@@ -232,3 +232,12 @@
 - The connected folder is one collection across installations. Retention is inseparable from its writable managed-folder contract; disconnecting stops management without altering files.
 - Posted these decisions to GitHub issue #9.
 - Next: settle full verification of deletion candidates and user recovery from pruning blockers.
+
+## 2026-09-11 13:31 UTC
+
+- Settled pre-deletion integrity verification, blocker recovery, and cleanup reporting with the product owner.
+- Peacock Notes verifies all protected newest archives and expired deletion candidates before deleting anything. Any required read or integrity failure cancels that deletion phase.
+- The Backup screen names blocking files and reasons. Users resolve uncertain files through the document provider, while unsupported formats direct them to update the app. There is no in-app force-delete path.
+- Successful cleanup remains quiet but records its time and removal count. Existing action-required notifications apply only when pruning prevents a new backup.
+- Posted these decisions to GitHub issue #9. The retention decision tree now has no open branch.
+- Next: present the consolidated retention contract for product-owner confirmation before resolving the ticket.
