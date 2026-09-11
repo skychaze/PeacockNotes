@@ -387,3 +387,9 @@
 - Cancelled fallback subagent `sa-1` before it produced a result. It made no repository or GitHub changes.
 - Local inspection independently confirmed that the installed DocumentPicker uses `ACTION_OPEN_DOCUMENT`, while Expo FileSystem's legacy folder picker uses `ACTION_OPEN_DOCUMENT_TREE`, persists the offered permission, and can create child documents. This exposes a stale create-document assumption in the original research after the product moved to a managed folder.
 - Next: checkpoint the cancellation, then rerun the independent review with Terra at medium effort and an explicit check of the managed-folder mismatch.
+
+## 2026-09-11 15:17 UTC
+
+- Started independent fallback reviewer `sa-2` with Terra at medium effort as requested.
+- The mandate remains read-only and now explicitly requires reconciling the original create-document recommendation with the accepted persisted managed-folder contract.
+- Next: wait for the bounded independent result, apply verified corrections to the research branch, and resolve issue #18 if the corrected recommendation holds.
