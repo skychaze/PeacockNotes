@@ -125,6 +125,14 @@ export type FullReplacementResult = Readonly<{
   safetySnapshotId: string;
 }>;
 
+export type FullReplacementUndo = Readonly<{
+  state: 'none' | 'available' | 'expired' | 'unavailable' | 'damaged';
+  snapshotId: string | null;
+  expiresAt: number | null;
+}>;
+
+export type FullReplacementUndoResult = Readonly<{ alreadyUndone: boolean }>;
+
 type NativeArchiveModule = {
   pinMedia(request: PinMediaRequest): Promise<readonly ArchiveMediaSource[]>;
   createArchive(request: CreateArchiveRequest): Promise<ArchiveSummary>;
@@ -134,6 +142,9 @@ type NativeArchiveModule = {
   commitSelectiveImport(request: CommitSelectiveImportRequest): Promise<ImportResult>;
   commitFullReplacement(request: FullReplacementRequest): Promise<FullReplacementResult>;
   recoverFullReplacement(): Promise<Readonly<{ rolledBack: boolean }>>;
+  getFullReplacementUndo(): Promise<FullReplacementUndo>;
+  undoFullReplacement(request: Readonly<{ snapshotId: string }>): Promise<FullReplacementUndoResult>;
+  hasFullReplacementUndoReceipt(request: Readonly<{ snapshotId: string }>): Promise<Readonly<{ committed: boolean }>>;
   hasImportReceipt(request: Readonly<{ databaseUri: string; operationKey: string }>): Promise<Readonly<{ committed: boolean }>>;
 };
 
@@ -169,6 +180,15 @@ export const commitFullReplacementArchiveImport = (request: FullReplacementReque
 
 export const recoverInterruptedFullReplacement = (): Promise<boolean> =>
   moduleOrThrow().recoverFullReplacement().then((result) => result.rolledBack);
+
+export const getFullReplacementUndo = (): Promise<FullReplacementUndo> =>
+  moduleOrThrow().getFullReplacementUndo();
+
+export const commitFullReplacementUndo = (snapshotId: string): Promise<FullReplacementUndoResult> =>
+  moduleOrThrow().undoFullReplacement({ snapshotId });
+
+export const hasFullReplacementUndoReceipt = (snapshotId: string): Promise<boolean> =>
+  moduleOrThrow().hasFullReplacementUndoReceipt({ snapshotId }).then((result) => result.committed);
 
 export const hasArchiveImportReceipt = (databaseUri: string, operationKey: string): Promise<boolean> =>
   moduleOrThrow().hasImportReceipt({ databaseUri, operationKey }).then((result) => result.committed);

@@ -43,6 +43,9 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     private const val FOLDER_URI = "folder_uri"
     private const val REPLACEMENT_PREFERENCES = "peacock_notes_full_replacement"
     private const val REPLACEMENT_JOURNAL = "journal"
+    private const val REPLACEMENT_UNDO = "undo"
+    private const val LAST_UNDONE_SNAPSHOT = "last_undone_snapshot"
+    private const val UNDO_WINDOW_MILLIS = 168L * 60 * 60 * 1000
     private val ARCHIVE_NAME = Regex("^peacock-notes-\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z\\.pnbak$")
     private val INCOMPATIBLE_CODES = setOf("UNSUPPORTED_FORMAT_VERSION", "UNSUPPORTED_DATABASE_VERSION")
     private val UNCERTAIN_CODES = setOf("SOURCE_UNAVAILABLE", "STAGING_UNAVAILABLE", "INSUFFICIENT_STORAGE", "ARCHIVE_OPERATION_FAILED")
@@ -106,6 +109,29 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       val rolledBack = recoverReplacementIfNeeded()
       Arguments.createMap().apply { putBoolean("rolledBack", rolledBack) }
     }.onSuccess(promise::resolve).onFailure { promise.reject(errorCode(it), it.message, it) }
+  }
+
+  @ReactMethod
+  fun getFullReplacementUndo(promise: Promise) = executor.execute {
+    runCatching { replacementUndoStatus() }
+      .onSuccess(promise::resolve)
+      .onFailure { promise.reject(errorCode(it), it.message, it) }
+  }
+
+  @ReactMethod
+  fun undoFullReplacement(request: ReadableMap, promise: Promise) = executor.execute {
+    runCatching { undoReplacement(requiredString(request, "snapshotId")) }
+      .onSuccess(promise::resolve)
+      .onFailure { promise.reject(errorCode(it), it.message, it) }
+  }
+
+  @ReactMethod
+  fun hasFullReplacementUndoReceipt(request: ReadableMap, promise: Promise) = executor.execute {
+    val snapshotId = requiredString(request, "snapshotId")
+    val preferences = context.getSharedPreferences(REPLACEMENT_PREFERENCES, android.app.Activity.MODE_PRIVATE)
+    promise.resolve(Arguments.createMap().apply {
+      putBoolean("committed", preferences.getString(LAST_UNDONE_SNAPSHOT, null) == snapshotId)
+    })
   }
 
   @ReactMethod
@@ -532,8 +558,17 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         rollbackReplacement(journal)
         throw ArchiveException("REPLACEMENT_ROLLED_BACK", "Full replacement failed and the prior content was restored", error)
       }
-      context.getSharedPreferences(REPLACEMENT_PREFERENCES, android.app.Activity.MODE_PRIVATE)
-        .edit().remove(REPLACEMENT_JOURNAL).commit()
+      val completedAt = System.currentTimeMillis()
+      val undo = JSONObject()
+        .put("snapshotId", generationId).put("snapshot", snapshot.path)
+        .put("database", databaseFile.path).put("mediaRoot", mediaRoot.path)
+        .put("completedAt", completedAt).put("expiresAt", completedAt + UNDO_WINDOW_MILLIS)
+        .put("fingerprint", snapshotFingerprint(snapshot))
+      val preferences = context.getSharedPreferences(REPLACEMENT_PREFERENCES, android.app.Activity.MODE_PRIVATE)
+      if (!preferences.edit().remove(REPLACEMENT_JOURNAL).putString(REPLACEMENT_UNDO, undo.toString()).commit()) {
+        rollbackReplacement(journal)
+        fail("UNDO_METADATA_FAILED", "Replacement was rolled back because its undo point could not be saved")
+      }
       val count = SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READONLY).useDatabase {
         scalarCount(it, "SELECT COUNT(*) FROM Notes").toInt()
       }
@@ -594,6 +629,139 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         }
       }
     } finally { db.close() }
+  }
+
+  private fun replacementUndoStatus(): com.facebook.react.bridge.WritableMap {
+    val preferences = context.getSharedPreferences(REPLACEMENT_PREFERENCES, android.app.Activity.MODE_PRIVATE)
+    val raw = preferences.getString(REPLACEMENT_UNDO, null)
+      ?: return undoStatus("none")
+    val undo = runCatching { JSONObject(raw) }.getOrNull()
+      ?: return undoStatus("damaged")
+    val snapshotId = undo.optString("snapshotId")
+    val expiresAt = undo.optLong("expiresAt", -1)
+    if (snapshotId.isBlank() || expiresAt < 0) return undoStatus("damaged", snapshotId, expiresAt)
+    if (System.currentTimeMillis() >= expiresAt) {
+      File(undo.optString("snapshot")).deleteRecursively()
+      preferences.edit().remove(REPLACEMENT_UNDO).commit()
+      return undoStatus("expired", snapshotId, expiresAt)
+    }
+    val snapshot = File(undo.optString("snapshot"))
+    if (!snapshot.isDirectory) return undoStatus("unavailable", snapshotId, expiresAt)
+    val valid = runCatching {
+      verifySnapshot(snapshot)
+      snapshotFingerprint(snapshot) == undo.getString("fingerprint")
+    }.getOrDefault(false)
+    return undoStatus(if (valid) "available" else "damaged", snapshotId, expiresAt)
+  }
+
+  private fun undoReplacement(snapshotId: String): com.facebook.react.bridge.WritableMap {
+    recoverReplacementIfNeeded()
+    val preferences = context.getSharedPreferences(REPLACEMENT_PREFERENCES, android.app.Activity.MODE_PRIVATE)
+    if (preferences.getString(LAST_UNDONE_SNAPSHOT, null) == snapshotId) {
+      return Arguments.createMap().apply { putBoolean("alreadyUndone", true) }
+    }
+    val status = replacementUndoStatus()
+    if (status.getString("state") != "available" || status.getString("snapshotId") != snapshotId) {
+      fail("UNDO_UNAVAILABLE", "The full replacement undo point is not available")
+    }
+    val undo = JSONObject(preferences.getString(REPLACEMENT_UNDO, null)!!)
+    val snapshot = File(undo.getString("snapshot"))
+    val database = File(undo.getString("database"))
+    val mediaRoot = File(undo.getString("mediaRoot"))
+    val operationId = UUID.randomUUID()
+    val rollback = File(context.filesDir, "backup-replacement/undo-rollback-$operationId")
+    val staged = File(context.filesDir, "backup-replacement/undo-staged-$operationId")
+    if (!rollback.mkdirs() || !staged.mkdirs()) fail("STAGING_UNAVAILABLE", "Cannot stage undo rollback")
+    try {
+      copyFileVerified(database, File(rollback, "peacocknotes.db"), "SAFETY_SNAPSHOT_FAILED")
+      copyDirectoryVerified(File(mediaRoot, "audio"), File(rollback, "audio"))
+      copyDirectoryVerified(File(mediaRoot, "files"), File(rollback, "files"))
+      val stagedDatabase = File(staged, "peacocknotes.db")
+      copyFileVerified(database, stagedDatabase, "STAGING_UNAVAILABLE")
+      restoreRecoverableDatabase(File(snapshot, "peacocknotes.db"), stagedDatabase)
+      verifySnapshotGeneration(stagedDatabase, File(snapshot, "audio"), File(snapshot, "files"))
+      val journal = JSONObject().put("database", database.path).put("mediaRoot", mediaRoot.path)
+        .put("snapshot", rollback.path).put("staged", staged.path)
+      if (!preferences.edit().putString(REPLACEMENT_JOURNAL, journal.toString()).commit()) {
+        fail("UNDO_FAILED", "Cannot persist the undo commit boundary")
+      }
+      try {
+        replaceFile(stagedDatabase, database)
+        replaceDirectory(File(snapshot, "audio"), File(mediaRoot, "audio"), copy = true)
+        replaceDirectory(File(snapshot, "files"), File(mediaRoot, "files"), copy = true)
+        verifySnapshotGeneration(database, File(mediaRoot, "audio"), File(mediaRoot, "files"))
+      } catch (error: Exception) {
+        rollbackReplacement(journal)
+        throw ArchiveException("UNDO_ROLLED_BACK", "Undo failed and replacement content was restored", error)
+      }
+      if (!preferences.edit().remove(REPLACEMENT_JOURNAL).remove(REPLACEMENT_UNDO)
+          .putString(LAST_UNDONE_SNAPSHOT, snapshotId).commit()) {
+        rollbackReplacement(journal)
+        fail("UNDO_FAILED", "Undo completion could not be recorded")
+      }
+      snapshot.deleteRecursively()
+      return Arguments.createMap().apply { putBoolean("alreadyUndone", false) }
+    } finally { rollback.deleteRecursively(); staged.deleteRecursively() }
+  }
+
+  private fun restoreRecoverableDatabase(prior: File, staged: File) {
+    val db = SQLiteDatabase.openDatabase(staged.path, null, SQLiteDatabase.OPEN_READWRITE)
+    try {
+      db.execSQL("ATTACH DATABASE ? AS prior", arrayOf(prior.path))
+      db.beginTransaction()
+      try {
+        db.execSQL("PRAGMA foreign_keys=OFF")
+        listOf("RecoveryProvenance", "NoteAudios", "NoteFiles", "Notes", "Folders").forEach { db.execSQL("DELETE FROM $it") }
+        db.execSQL("DELETE FROM sqlite_sequence WHERE name IN ('Folders','Notes','NoteAudios','NoteFiles')")
+        db.execSQL("INSERT INTO Folders SELECT * FROM prior.Folders")
+        db.execSQL("INSERT INTO Notes SELECT * FROM prior.Notes")
+        db.execSQL("INSERT INTO NoteAudios SELECT * FROM prior.NoteAudios")
+        db.execSQL("INSERT INTO NoteFiles SELECT * FROM prior.NoteFiles")
+        db.execSQL("INSERT INTO RecoveryProvenance SELECT * FROM prior.RecoveryProvenance")
+        db.execSQL("UPDATE ContentMetadata SET revision=revision+1 WHERE id=1")
+        db.setTransactionSuccessful()
+      } finally { db.endTransaction() }
+    } finally {
+      runCatching { db.execSQL("DETACH DATABASE prior") }
+      db.close()
+    }
+  }
+
+  private fun undoStatus(state: String, snapshotId: String? = null, expiresAt: Long = -1) = Arguments.createMap().apply {
+    putString("state", state)
+    if (!snapshotId.isNullOrBlank()) putString("snapshotId", snapshotId) else putNull("snapshotId")
+    if (expiresAt >= 0) putDouble("expiresAt", expiresAt.toDouble()) else putNull("expiresAt")
+  }
+
+  private fun verifySnapshot(snapshot: File) = verifySnapshotGeneration(
+    File(snapshot, "peacocknotes.db"), File(snapshot, "audio"), File(snapshot, "files")
+  )
+
+  private fun verifySnapshotGeneration(database: File, audio: File, files: File) {
+    val db = SQLiteDatabase.openDatabase(database.path, null, SQLiteDatabase.OPEN_READONLY)
+    try {
+      val integrity = db.rawQuery("PRAGMA integrity_check", null).use { it.moveToFirst() && it.getString(0) == "ok" }
+      if (!integrity) fail("UNDO_DAMAGED", "Undo database is damaged")
+      listOf("NoteAudios" to audio, "NoteFiles" to files).forEach { (table, root) ->
+        db.rawQuery("SELECT uri FROM $table", null).use { cursor ->
+          while (cursor.moveToNext()) if (!File(root, File(Uri.parse(cursor.getString(0)).path ?: "").name).isFile) {
+            fail("UNDO_DAMAGED", "Undo media is missing")
+          }
+        }
+      }
+    } finally { db.close() }
+  }
+
+  private fun snapshotFingerprint(snapshot: File): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    snapshot.walkTopDown().filter { it.isFile }.sortedBy { it.relativeTo(snapshot).path }.forEach { file ->
+      digest.update(file.relativeTo(snapshot).path.toByteArray(Charsets.UTF_8))
+      FileInputStream(file).use { input ->
+        val buffer = ByteArray(BUFFER_SIZE)
+        while (true) { val count = input.read(buffer); if (count < 0) break; digest.update(buffer, 0, count) }
+      }
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }
   }
 
   private fun recoverReplacementIfNeeded(): Boolean {

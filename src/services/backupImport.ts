@@ -1,19 +1,25 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
 import { BackupOperationCoordinator, SqliteBackupOperationStore, type BackupOperationHandler } from '../backup';
+import { isWithinFullReplacementUndoWindow } from '../backup/undoPolicy';
 import { closeDb, getDb, initDb } from '../database/schema';
 import {
   commitFullReplacementArchiveImport,
+  commitFullReplacementUndo,
   commitSelectiveArchiveImport,
+  getFullReplacementUndo,
   hasArchiveImportReceipt,
+  hasFullReplacementUndoReceipt,
   previewArchiveImport,
   recoverInterruptedFullReplacement,
   type FullReplacementResult,
+  type FullReplacementUndo,
+  type FullReplacementUndoResult,
   type ImportPreview,
   type ImportResult,
 } from './archive';
 
-type ImportMode = 'selective' | 'additive' | 'replacement';
+type ImportMode = 'selective' | 'additive' | 'replacement' | 'undo';
 
 type ImportPayload = Readonly<{
   version: 1;
@@ -33,7 +39,7 @@ const parsePayload = (value: string): ImportPayload => {
     typeof parsed !== 'object' || parsed === null ||
     !('version' in parsed) || parsed.version !== 1 ||
     !('mode' in parsed) ||
-      (parsed.mode !== 'selective' && parsed.mode !== 'additive' && parsed.mode !== 'replacement') ||
+      (parsed.mode !== 'selective' && parsed.mode !== 'additive' && parsed.mode !== 'replacement' && parsed.mode !== 'undo') ||
     !('archiveUri' in parsed) || typeof parsed.archiveUri !== 'string' ||
     !('archiveSha256' in parsed) || typeof parsed.archiveSha256 !== 'string' ||
     !('selectedNoteIds' in parsed) || !Array.isArray(parsed.selectedNoteIds) ||
@@ -53,15 +59,17 @@ const parsePayload = (value: string): ImportPayload => {
 const liveDatabaseUri = async () => `file://${(await getDb()).databasePath}`;
 
 class ImportOperationHandler implements BackupOperationHandler {
-  result: ImportResult | FullReplacementResult | null = null;
+  result: ImportResult | FullReplacementResult | FullReplacementUndoResult | null = null;
 
   async nextStep(operation: Parameters<BackupOperationHandler['nextStep']>[0]) {
     if (operation.checkpoint) return null;
     const payload = parsePayload(operation.payload);
     return {
-      name: payload.mode === 'replacement'
-        ? 'validate_snapshot_and_replace'
-        : payload.mode === 'additive' ? 'validate_and_commit_additive' : 'validate_and_commit_selected',
+      name: payload.mode === 'undo'
+        ? 'verify_and_undo_replacement'
+        : payload.mode === 'replacement'
+          ? 'validate_snapshot_and_replace'
+          : payload.mode === 'additive' ? 'validate_and_commit_additive' : 'validate_and_commit_selected',
     };
   }
 
@@ -72,6 +80,16 @@ class ImportOperationHandler implements BackupOperationHandler {
     }
     try {
       const payload = parsePayload(operation.payload);
+      if (payload.mode === 'undo') {
+        const snapshotId = payload.archiveSha256;
+        await closeDb();
+        try {
+          this.result = await commitFullReplacementUndo(snapshotId);
+        } finally {
+          await initDb();
+        }
+        return { outcome: 'committed', checkpoint: 'full_replacement_undone', done: true } as const;
+      }
       if (payload.mode === 'replacement') {
         const databaseUri = await liveDatabaseUri();
         await closeDb();
@@ -108,7 +126,7 @@ class ImportOperationHandler implements BackupOperationHandler {
 
   async recoverInterruptedStep({ operation, idempotencyKey }: Parameters<BackupOperationHandler['recoverInterruptedStep']>[0]) {
     const payload = parsePayload(operation.payload);
-    if (payload.mode === 'replacement') {
+    if (payload.mode === 'replacement' || payload.mode === 'undo') {
       await closeDb();
       try {
         await recoverInterruptedFullReplacement();
@@ -116,11 +134,15 @@ class ImportOperationHandler implements BackupOperationHandler {
         await initDb();
       }
     }
-    const committed = await hasArchiveImportReceipt(await liveDatabaseUri(), idempotencyKey);
+    const committed = payload.mode === 'undo'
+      ? await hasFullReplacementUndoReceipt(payload.archiveSha256)
+      : await hasArchiveImportReceipt(await liveDatabaseUri(), idempotencyKey);
     if (committed) {
       return {
         outcome: 'committed',
-        checkpoint: payload.mode === 'replacement' ? 'full_replacement_committed' : 'selected_batch_committed',
+        checkpoint: payload.mode === 'undo'
+          ? 'full_replacement_undone'
+          : payload.mode === 'replacement' ? 'full_replacement_committed' : 'selected_batch_committed',
         done: true,
       } as const;
     }
@@ -161,7 +183,7 @@ const importNotes = async (
   preview: ImportPreview,
   selectedNoteIds: readonly string[],
   mode: ImportMode,
-): Promise<ImportResult | FullReplacementResult> => {
+): Promise<ImportResult | FullReplacementResult | FullReplacementUndoResult> => {
   const active = await store.getActive();
   if (active?.kind === 'import') await coordinator.resume();
   importHandler.result = null;
@@ -174,7 +196,8 @@ const importNotes = async (
   };
   const id = mode === 'additive'
     ? additiveOperationId(preview.archiveSha256)
-    : mode === 'replacement' ? replacementOperationId(preview.archiveSha256) : selectiveOperationId();
+    : mode === 'replacement' ? replacementOperationId(preview.archiveSha256)
+      : mode === 'undo' ? `undo-replacement-${preview.archiveSha256}` : selectiveOperationId();
   const existing = await store.get(id);
   const operation = existing?.state === 'failed' || existing?.state === 'interrupted'
     ? await coordinator.retry(id)
@@ -186,6 +209,7 @@ const importNotes = async (
   }
   if (importHandler.result) return importHandler.result;
 
+  if (mode === 'undo') return commitFullReplacementUndo(payload.archiveSha256);
   if (mode === 'replacement') {
     const databaseUri = await liveDatabaseUri();
     await closeDb();
@@ -214,7 +238,7 @@ const importNotes = async (
   return { alreadyCommitted: true, importedCount: 0, recoveredCount: 0, skippedCount: 0 };
 };
 
-const requireNonDestructiveResult = (result: ImportResult | FullReplacementResult): ImportResult => {
+const requireNonDestructiveResult = (result: ImportResult | FullReplacementResult | FullReplacementUndoResult): ImportResult => {
   if (!('importedCount' in result)) throw new Error('IMPORT_RESULT_MISSING');
   return result;
 };
@@ -228,5 +252,20 @@ export const importAllNotesAdditively = async (preview: ImportPreview): Promise<
 export const importAllNotesByReplacement = async (preview: ImportPreview): Promise<FullReplacementResult> => {
   const result = await importNotes(preview, [], 'replacement');
   if (!('restoredNoteCount' in result)) throw new Error('FULL_REPLACEMENT_RESULT_MISSING');
+  return result;
+};
+
+export const loadFullReplacementUndo = (): Promise<FullReplacementUndo> => getFullReplacementUndo();
+
+export const isFullReplacementUndoAvailable = (undo: FullReplacementUndo, now: number): boolean =>
+  undo.state === 'available' && undo.expiresAt !== null && isWithinFullReplacementUndoWindow(undo.expiresAt, now);
+
+export const undoFullReplacement = async (undo: FullReplacementUndo): Promise<FullReplacementUndoResult> => {
+  if (!undo.snapshotId || !isFullReplacementUndoAvailable(undo, Date.now())) throw new Error('UNDO_UNAVAILABLE');
+  const syntheticPreview = {
+    archiveUri: '', archiveSha256: undo.snapshotId, createdAt: '', notes: [],
+  } satisfies ImportPreview;
+  const result = await importNotes(syntheticPreview, [], 'undo');
+  if (!('alreadyUndone' in result)) throw new Error('UNDO_RESULT_MISSING');
   return result;
 };

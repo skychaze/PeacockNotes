@@ -1,4 +1,5 @@
 import { BackupOperationCoordinator } from './coordinator';
+import { isWithinFullReplacementUndoWindow } from './undoPolicy';
 import type {
   BackupOperation,
   BackupOperationHandler,
@@ -179,6 +180,13 @@ export async function testInterruptedReplacementRollsBackBeforeRetry() {
   );
 }
 
+export function testUndoWindowExactBoundary() {
+  const expiresAt = 168 * 60 * 60 * 1000;
+  assert(isWithinFullReplacementUndoWindow(expiresAt, expiresAt - 1), 'undo expired before 168 hours');
+  assert(!isWithinFullReplacementUndoWindow(expiresAt, expiresAt), 'undo remained available at 168-hour boundary');
+  assert(!isWithinFullReplacementUndoWindow(expiresAt, expiresAt + 1), 'undo remained available after expiry');
+}
+
 export async function runCoordinatorTests() {
   await testSerializedOperations();
   await testRetriesReuseIdempotencyKey();
@@ -186,4 +194,5 @@ export async function runCoordinatorTests() {
   await testCancellationWaitsForBoundary();
   await testRestartRecoversWithoutRepeatingStep();
   await testInterruptedReplacementRollsBackBeforeRetry();
+  testUndoWindowExactBoundary();
 }

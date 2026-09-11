@@ -24,7 +24,9 @@ import {
   importAllNotesAdditively,
   importAllNotesByReplacement,
   importSelectedNotes,
+  loadFullReplacementUndo,
   previewNewestArchive,
+  undoFullReplacement,
 } from '../services/backupImport';
 import {
   scanBackupCollection,
@@ -32,6 +34,7 @@ import {
   type BackupCollectionScan,
   type ImportPreview,
   type FullReplacementResult,
+  type FullReplacementUndo,
   type ImportResult,
 } from '../services/archive';
 import { ui } from '../theme/ui';
@@ -62,6 +65,21 @@ export const BackupScreen = () => {
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [replacementResult, setReplacementResult] = useState<FullReplacementResult | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  const [undo, setUndo] = useState<FullReplacementUndo | null>(null);
+  const [undoState, setUndoState] = useState<'idle' | 'loading' | 'committing'>('loading');
+  const [undoMessage, setUndoMessage] = useState<'success' | 'failed' | null>(null);
+
+  const loadUndo = useCallback(async () => {
+    setUndoState('loading');
+    try {
+      setUndo(await loadFullReplacementUndo());
+    } catch (error) {
+      console.warn('Failed to inspect full replacement undo:', error);
+      setUndo({ state: 'unavailable', snapshotId: null, expiresAt: null });
+    } finally {
+      setUndoState('idle');
+    }
+  }, []);
 
   const scanCollection = useCallback(async () => {
     setScanState('loading');
@@ -97,7 +115,8 @@ export const BackupScreen = () => {
   useFocusEffect(
     useCallback(() => {
       void loadFolder();
-    }, [loadFolder])
+      void loadUndo();
+    }, [loadFolder, loadUndo])
   );
 
   const chooseFolder = async () => {
@@ -200,6 +219,8 @@ export const BackupScreen = () => {
           setImportError(null);
           try {
             setReplacementResult(await importAllNotesByReplacement(importPreview));
+            setUndoMessage(null);
+            await loadUndo();
             setImportPreview(null);
             setImportMode(null);
             setSelectedNoteIds(new Set());
@@ -208,6 +229,30 @@ export const BackupScreen = () => {
             setImportError(t('backup.import.replacementFailed'));
           } finally {
             setImportState('idle');
+          }
+        },
+      },
+    ]);
+  };
+
+  const confirmUndo = () => {
+    if (undo?.state !== 'available' || undoState !== 'idle') return;
+    Alert.alert(t('backup.undo.confirmTitle'), t('backup.undo.confirmBody'), [
+      { text: t('common.cancel'), style: 'cancel' },
+      {
+        text: t('backup.undo.action'),
+        style: 'destructive',
+        onPress: async () => {
+          setUndoState('committing');
+          setUndoMessage(null);
+          try {
+            await undoFullReplacement(undo);
+            setUndoMessage('success');
+          } catch (error) {
+            console.warn('Failed to undo full replacement:', error);
+            setUndoMessage('failed');
+          } finally {
+            await loadUndo();
           }
         },
       },
@@ -313,6 +358,30 @@ export const BackupScreen = () => {
           ) : null}
           {exportError ? <AppText variant="body" color={colors.error}>{exportError}</AppText> : null}
         </Card>
+
+        {undoState === 'loading' || undo?.state !== 'none' || undoMessage ? (
+          <Card style={{ gap: ui.space.md }}>
+            <AppText variant="headline">{t('backup.undo.title')}</AppText>
+            <AppText variant="body" color={undo?.state === 'available' ? colors.primary : undoMessage === 'success' ? colors.primary : colors.error}>
+              {undoMessage === 'success'
+                ? t('backup.undo.success')
+                : undoMessage === 'failed'
+                  ? t('backup.undo.failed')
+                  : undoState === 'loading'
+                    ? t('common.loading')
+                    : t(`backup.undo.state.${undo?.state ?? 'unavailable'}`, {
+                        time: undo?.expiresAt
+                          ? new Intl.DateTimeFormat(language === 'bn' ? 'bn-BD' : 'en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(undo.expiresAt))
+                          : '',
+                      })}
+            </AppText>
+            {undo?.state === 'available' ? (
+              <PrimaryButton disabled={undoState !== 'idle'} onPress={confirmUndo}>
+                {undoState === 'committing' ? t('backup.undo.committing') : t('backup.undo.action')}
+              </PrimaryButton>
+            ) : null}
+          </Card>
+        ) : null}
 
         {isConnected ? (
           <Card style={{ gap: ui.space.md }}>
