@@ -296,3 +296,12 @@
 - Replacement from any archive other than the protected newest collection archive triggers immediate automatic backup when enabled, or offers Export Backup now when disabled.
 - Posted these decisions to GitHub issue #10.
 - Next: settle destructive confirmation, undo semantics, open-editor handling, and replacement failure recovery.
+
+## 2026-09-11 14:07 UTC
+
+- Settled replacement confirmation, pending-edit handling, one-way undo, safety-snapshot expiry, and double-failure recovery with the product owner.
+- Full replacement requires an explicit loss summary and Replace all current notes action. It saves pending edits first, stops media activity for commit, clears stale editor state, and returns to the folder list.
+- One verified local snapshot remains for 168 hours unless explicitly discarded. Undo is one-way and uses a temporary rollback copy only for technical failure.
+- A replacement plus rollback failure enters restricted recovery instead of reopening uncertain data or initializing an empty database.
+- Posted these decisions to GitHub issue #10.
+- Next: settle damaged-current-data recovery, per-mode disk admission, empty-backup replacement, and no-op behavior.
