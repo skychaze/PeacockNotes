@@ -337,3 +337,11 @@
 - The export and import interaction prototype in issue #12 is now fully unblocked. It blocks final guarantees in issue #13, which also remains blocked by the assigned ZIP64 review in issue #18.
 - Command: GitHub GraphQL query over open issues and their `blockedBy` and `blocking` relationships.
 - Next: claim issue #12 and follow the prototype workflow using the confirmed product contracts.
+
+## 2026-09-11 14:27 UTC
+
+- Claimed interaction prototype issue #12 and selected the UI-prototype branch because the unresolved question is information hierarchy and interaction flow, not backend state logic.
+- Inspected the current Backup & Restore placeholder, theme tokens, spacing, and available scripts. No production backup screen exists, so the prototype will be a standalone mobile-width HTML surface on a throwaway branch.
+- Planned three structurally different variants: action-first guidance, history-first collection browsing, and status-first timeline. Each will use simulated state and a URL-persisted variant switcher.
+- The untracked `docs/ui-redesign-plan.md` remains outside this work.
+- Next: create and push the throwaway prototype branch, then build the three variants.
