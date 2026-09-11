@@ -141,3 +141,10 @@
 - Two unclaimed decisions are now available: automatic backup lifecycle for the authorized folder, and full import validation, replacement, and rollback. Collection retention remains blocked by the lifecycle decision. The ZIP64 research review remains assigned and open.
 - The next ticket is automatic backup lifecycle for the authorized folder because the map was just redrawn around automatic collection growth and retention depends on it.
 - Next session: claim and grill that lifecycle decision.
+
+## 2026-09-11 12:52 UTC
+
+- Started a new Wayfinder session for automatic backup lifecycle and claimed the ticket before investigation.
+- Reloaded the parent map, prior Android scheduling research, folder contract, and canonical recovery terms.
+- Corrected stale map text that still said automatic backup was out of scope. Automatic work now means writing to the authorized folder without claiming that its document provider completed remote cloud synchronization.
+- Next: settle enablement, due-time, and network policy.
