@@ -380,3 +380,10 @@
 - While inspecting issue #13, detected an accidental untracked root file named `\` containing a copy of the subagent routing skill. It was not part of the project or requested output, so removed it after inspecting its contents and filesystem metadata.
 - The fallback reviewer remains active and has not reported findings yet. The unrelated untracked `docs/` directory remains untouched.
 - Next: preserve this cleanup checkpoint and continue local review while waiting for the independent result.
+
+## 2026-09-11 15:15 UTC
+
+- Product owner instructed the agent to stop the Terra high-effort review and use medium effort instead.
+- Cancelled fallback subagent `sa-1` before it produced a result. It made no repository or GitHub changes.
+- Local inspection independently confirmed that the installed DocumentPicker uses `ACTION_OPEN_DOCUMENT`, while Expo FileSystem's legacy folder picker uses `ACTION_OPEN_DOCUMENT_TREE`, persists the offered permission, and can create child documents. This exposes a stale create-document assumption in the original research after the product moved to a managed folder.
+- Next: checkpoint the cancellation, then rerun the independent review with Terra at medium effort and an explicit check of the managed-folder mismatch.
