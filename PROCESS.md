@@ -368,3 +368,11 @@
 - Posted the runnable throwaway-branch link, command, variant descriptions, and scenario coverage to GitHub issue #12.
 - The branch remains clean except for the unrelated untracked `docs/` directory.
 - Next: commit and push the validation checkpoint, then ask the product owner to compare the three variants.
+
+## 2026-09-11 14:51 UTC
+
+- Product owner asked the agent to launch the prototype in a browser rather than requiring manual commands.
+- No Helium process or CDP shim was running. Updated the Chrome DevTools MCP configuration from attach mode to an isolated `/opt/helium/helium` launch, preserving the remaining MCP configuration.
+- The active Pi session retained the old `--browserUrl http://127.0.0.1:9223` server arguments even after reconnect and one clean MCP process restart. Browser launch therefore still requires a Pi extension reload before the updated configuration can take effect.
+- The prototype HTTP server remains active on port 4173.
+- Next: ask the product owner to reload Pi extensions once, then launch Helium and open the prototype through Chrome DevTools MCP.
