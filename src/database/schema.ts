@@ -87,6 +87,26 @@ export const initDb = async () => {
       id INTEGER PRIMARY KEY CHECK (id = 1),
       revision INTEGER NOT NULL CHECK (revision >= 0)
     );
+    CREATE TABLE IF NOT EXISTS BackupOperations (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL CHECK (kind IN ('export', 'import', 'managed_retention', 'automatic_backup')),
+      state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'succeeded', 'failed', 'cancelled', 'interrupted')),
+      payload TEXT NOT NULL,
+      checkpoint TEXT,
+      activeStep TEXT,
+      activeStepKey TEXT,
+      attempt INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
+      cancelRequested INTEGER NOT NULL DEFAULT 0 CHECK (cancelRequested IN (0, 1)),
+      errorCode TEXT,
+      errorMessage TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      finishedAt TEXT,
+      version INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_backup_operations_one_active
+      ON BackupOperations((1))
+      WHERE state IN ('pending', 'running');
     INSERT OR IGNORE INTO ContentMetadata (id, revision) VALUES (1, 0);
   `);
 
