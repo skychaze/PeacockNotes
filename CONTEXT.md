@@ -16,6 +16,14 @@ _Avoid_: Backup database, cloud history
 The Android document-provider folder the user has authorized Peacock Notes to read and write.
 _Avoid_: Drive account, cloud database
 
+**Automatic backup**:
+Explicitly enabled, opportunistic creation of an export archive when changed recoverable content is due. It is not an exact daily schedule or proof of remote cloud synchronization.
+_Avoid_: Scheduled backup, cloud sync
+
+**Due backup**:
+Changed recoverable content whose last verified archive is at least 24 hours old.
+_Avoid_: Missed backup, failed backup
+
 **Full import**:
 Replacement of all current recoverable content with the contents of one export archive.
 _Avoid_: Restore, sync

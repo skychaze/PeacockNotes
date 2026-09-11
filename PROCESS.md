@@ -177,3 +177,10 @@
 - Durable state covers enablement, folder permission, verified time and revision, due revision, active operation, retries, and failure. Launch and upgrade reconcile one worker; app open catches up after force-stop. Empty content waits without creating an automatic archive.
 - The automatic-backup lifecycle decision tree has no remaining open branch.
 - Next: present the consolidated contract for confirmation before resolving the GitHub ticket.
+
+## 2026-09-11 13:07 UTC
+
+- Product owner confirmed the consolidated automatic-backup lifecycle.
+- Posted the resolution, closed the lifecycle decision, and appended its context pointer to the parent map.
+- Updated `CONTEXT.md` with automatic backup and due backup, explicitly separating them from exact scheduling and cloud synchronization claims.
+- Next: recompute the frontier, including the now-unblocked collection-retention decision.
