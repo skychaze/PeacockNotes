@@ -241,3 +241,9 @@
 - Successful cleanup remains quiet but records its time and removal count. Existing action-required notifications apply only when pruning prevents a new backup.
 - Posted these decisions to GitHub issue #9. The retention decision tree now has no open branch.
 - Next: present the consolidated retention contract for product-owner confirmation before resolving the ticket.
+
+## 2026-09-11 13:34 UTC
+
+- Product owner confirmed the consolidated backup-retention contract without revisions.
+- Attempted to close issue #9 with `gh issue close --comment-file`, but this installed GitHub CLI version does not support that flag. The issue remains open and no remote state changed.
+- Next: post the prepared resolution with `gh issue comment`, then close the issue using supported flags.
