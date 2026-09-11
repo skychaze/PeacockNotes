@@ -373,3 +373,10 @@
 - Research subagent `sa-1` failed before producing output because the configured GLM provider returned HTTP 401 for insufficient account balance.
 - No repository or GitHub state changed. The local command that copied the research document to `/tmp` succeeded; the concurrent issue inspection was interrupted when the failure surfaced.
 - Next: preserve this failure checkpoint, then retry the same read-only mandate with the configured general fallback model at reasoning effort below the orchestrator.
+
+## 2026-09-11 15:12 UTC
+
+- Started fallback reviewer `sa-1` with the configured general model and the same read-only, primary-source mandate.
+- While inspecting issue #13, detected an accidental untracked root file named `\` containing a copy of the subagent routing skill. It was not part of the project or requested output, so removed it after inspecting its contents and filesystem metadata.
+- The fallback reviewer remains active and has not reported findings yet. The unrelated untracked `docs/` directory remains untouched.
+- Next: preserve this cleanup checkpoint and continue local review while waiting for the independent result.
