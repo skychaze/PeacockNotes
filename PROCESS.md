@@ -361,3 +361,10 @@
 - Added a distinct export verification flow, latest/browse/outside archive source choices, and a selective review screen showing missing, changed, and already-present notes.
 - The first automated copy-coverage check failed because it expected title-case `Media repaired` while the rendered result correctly uses sentence case `media repaired`. JavaScript and JSON syntax still passed, and the updated selective scene served over HTTP.
 - Next: checkpoint the coverage additions and recorded failure, then rerun the check against exact UI copy.
+
+## 2026-09-11 14:46 UTC
+
+- Reran prototype validation against the exact rendered copy. Interaction coverage, extracted JavaScript syntax, `git diff --check`, and all sampled variant and scenario URLs passed.
+- Posted the runnable throwaway-branch link, command, variant descriptions, and scenario coverage to GitHub issue #12.
+- The branch remains clean except for the unrelated untracked `docs/` directory.
+- Next: commit and push the validation checkpoint, then ask the product owner to compare the three variants.
