@@ -345,3 +345,11 @@
 - Planned three structurally different variants: action-first guidance, history-first collection browsing, and status-first timeline. Each will use simulated state and a URL-persisted variant switcher.
 - The untracked `docs/ui-redesign-plan.md` remains outside this work.
 - Next: create and push the throwaway prototype branch, then build the three variants.
+
+## 2026-09-11 15:03 UTC
+
+- Completed the interaction prototype on the throwaway `prototype/export-import-flow` branch and presented all three variants in an isolated Helium window.
+- Product owner selected variant A, Action first. The prototype branch remains the primary source and will not merge into production.
+- Posted the selected hierarchy to issue #12, closed the ticket, and added its decision pointer to parent map issue #1.
+- Stopped the local prototype server, restored Chrome DevTools MCP to its original Helium attach configuration, and returned to main. The unrelated untracked `docs/` directory remains untouched.
+- Next: commit and push the selected prototype decision, then recompute the final-guarantees frontier and ZIP64 review status.
