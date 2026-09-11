@@ -126,3 +126,11 @@
 - Validated archive files and manifests are authoritative; any local SQLite index is a rebuildable cache. Read-only access permits import but pauses export and pruning, while lost read access requires explicit reconnection. Peacock Notes scans only direct child files, ignores unrelated content, and never mutates unknown files.
 - The backup-folder contract decision tree has no remaining open branch.
 - Next: present the consolidated contract for confirmation before resolving the GitHub ticket.
+
+## 2026-09-11 12:47 UTC
+
+- Product owner confirmed the consolidated user-authorized backup-folder contract.
+- Posted the resolution, closed the decision ticket, and appended its context pointer to the parent map.
+- Updated `CONTEXT.md` with backup collection and connected backup folder, while keeping export archive as the internal content term.
+- GitHub: the resolved backup-folder contract and parent map.
+- Next: recompute the frontier after the map redraw.

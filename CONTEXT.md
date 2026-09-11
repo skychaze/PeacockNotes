@@ -5,8 +5,16 @@ Peacock Notes is a local-first note app. This glossary defines its portable reco
 ## Language
 
 **Export archive**:
-A self-contained file containing Peacock Notes content captured at one point in time.
-_Avoid_: Backup, Drive backup
+A self-contained file containing Peacock Notes content captured at one point in time. The interface calls creating one "Export Backup."
+_Avoid_: Database backup, Drive backup
+
+**Backup collection**:
+The validated export archives stored directly inside the connected backup folder.
+_Avoid_: Backup database, cloud history
+
+**Connected backup folder**:
+The Android document-provider folder the user has authorized Peacock Notes to read and write.
+_Avoid_: Drive account, cloud database
 
 **Full import**:
 Replacement of all current recoverable content with the contents of one export archive.
