@@ -314,3 +314,12 @@
 - Neither mode is preselected.
 - Posted these decisions to GitHub issue #10.
 - Next: settle missing-media repair, coexistence with selective import, undo after later edits, and forensic-copy lifetime.
+
+## 2026-09-11 14:18 UTC
+
+- Settled matching-media repair, the three existing-install import choices, undo after later edits, forensic-copy lifetime, and additive import against damaged current data.
+- Matching missing or corrupt media is repaired atomically from verified archived bytes. Logical or digest conflicts still produce recovered copies.
+- Existing installations offer selective, additive-all, and full replacement choices. Undo warns about post-replacement changes and offers export first.
+- Damaged-data forensic copies remain for 168 hours after success and indefinitely while recovery remains incomplete. Failed current integrity disables additive and selective commit but leaves verified full replacement available in restricted recovery.
+- Posted these decisions to GitHub issue #10. The additive and full replacement import decision tree now has no open branch.
+- Next: present the consolidated import contract for product-owner confirmation before resolving the ticket.
