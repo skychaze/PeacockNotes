@@ -191,3 +191,10 @@
 - Backup collection retention and pruning is now unblocked alongside full import validation. The prototype and final guarantees remain blocked. ZIP64 research review remains assigned and open.
 - The next ticket is backup collection retention and pruning because it directly follows the lifecycle decision and owns the requested roughly 20-archive history.
 - Next session: claim and grill the retention decision.
+
+## 2026-09-11 13:09 UTC
+
+- Started a new Wayfinder session for backup collection retention and pruning and claimed the ticket before investigation.
+- Reloaded the parent map, automatic lifecycle decision, connected-folder contract, and canonical terms.
+- The requested "about 20" archive limit does not itself guarantee seven days of history because manual exports may create many archives in one day. Count limit and time coverage must be decided together.
+- Next: settle the count and time policy, treatment of manual archives, and safe pruning trigger.
