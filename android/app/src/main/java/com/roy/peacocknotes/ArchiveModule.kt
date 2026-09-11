@@ -372,7 +372,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       val source = SQLiteDatabase.openDatabase(File(extracted, DATABASE_PATH).path, null, SQLiteDatabase.OPEN_READONLY)
       val live = SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READWRITE)
       try {
-        if (importReceiptExists(live, operationKey)) return importResult(true, 0, 0)
+        importReceiptResult(live, operationKey)?.let { return it }
         val available = mutableSetOf<String>()
         source.rawQuery("SELECT portableId FROM Notes", null).use { while (it.moveToNext()) available.add(it.getString(0)) }
         if (!available.containsAll(selected)) fail("INVALID_SELECTION", "The selection contains a note absent from the archive")
@@ -394,12 +394,13 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
               } else {
                 FileInputStream(staged).use { input -> FileOutputStream(target).use { output -> copyBounded(input, output, staged.length()) } }
               }
-              mediaUris[path] = Uri.fromFile(target).toString()
+              mediaUris[mediaKey(table, path)] = Uri.fromFile(target).toString()
             }
           }
         }
 
-        var imported = 0; var recovered = 0
+        val archiveCreatedAt = summary.getString("createdAt") ?: fail("MALFORMED_MANIFEST", "Archive creation time is missing")
+        var imported = 0; var recovered = 0; var skipped = 0
         live.beginTransaction()
         try {
           selected.sorted().forEach { noteId ->
@@ -408,11 +409,11 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
               List(cursor.columnCount) { index -> if (cursor.isNull(index)) null else cursor.getString(index) }
             }
             val folderId = ensureImportedFolder(live, note[1]!!, note[7]!!, note[8]!!, note[9]!!.toInt())
-            val existing = live.rawQuery("SELECT id,folderId,title,content,createdAt,updatedAt,sortOrder FROM Notes WHERE portableId=?", arrayOf(noteId)).use { cursor ->
+            val existing = live.rawQuery("SELECT n.id,f.portableId,n.title,n.content,n.createdAt,n.updatedAt,n.sortOrder FROM Notes n JOIN Folders f ON f.id=n.folderId WHERE n.portableId=?", arrayOf(noteId)).use { cursor ->
               if (!cursor.moveToFirst()) null else List(cursor.columnCount) { index -> if (cursor.isNull(index)) null else cursor.getString(index) }
             }
-            val unchanged = existing != null && existing[1]!!.toLong() == folderId && existing[2] == note[2] && (existing[3] ?: "") == (note[3] ?: "") && existing[4] == note[4] && existing[5] == note[5] && mediaIdentitiesMatch(source, live, noteId, existing[0]!!.toLong())
-            if (unchanged) return@forEach
+            val unchanged = existing != null && existing[1] == note[1] && existing[2] == note[2] && (existing[3] ?: "") == (note[3] ?: "") && existing[4] == note[4] && existing[5] == note[5] && existing[6] == note[6] && mediaMatches(source, live, noteId, existing[0]!!.toLong())
+            if (unchanged) { skipped++; return@forEach }
             val targetPortableId = if (existing == null) noteId else UUID.randomUUID().toString()
             val targetTitle = if (existing == null) note[2]!! else "${note[2]} (Recovered copy)"
             val statement = live.compileStatement("INSERT INTO Notes(portableId,folderId,title,content,audioUri,createdAt,updatedAt,sortOrder) VALUES(?,?,?,?,NULL,?,?,?)")
@@ -423,15 +424,15 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
             copyImportedMedia(source, live, "NoteAudios", noteId, liveNoteId, mediaUris, existing != null)
             copyImportedMedia(source, live, "NoteFiles", noteId, liveNoteId, mediaUris, existing != null)
             if (existing != null) {
-              live.execSQL("INSERT INTO RecoveryProvenance(noteId,sourcePortableId,archiveSha256,recoveredAt) VALUES(?,?,?,?)", arrayOf<Any>(liveNoteId, noteId, expectedHash, java.time.Instant.now().toString()))
+              live.execSQL("INSERT INTO RecoveryProvenance(noteId,sourcePortableId,archiveSha256,archiveCreatedAt,archivedUpdatedAt,recoveredAt) VALUES(?,?,?,?,?,?)", arrayOf<Any>(liveNoteId, noteId, expectedHash, archiveCreatedAt, note[5]!!, java.time.Instant.now().toString()))
             }
             imported++; if (existing != null) recovered++
           }
-          live.execSQL("INSERT INTO BackupImportReceipts(operationKey,archiveSha256,selectedNoteIds,importedCount,recoveredCount,committedAt) VALUES(?,?,?,?,?,?)", arrayOf<Any>(operationKey, expectedHash, selected.sorted().joinToString(","), imported, recovered, java.time.Instant.now().toString()))
+          live.execSQL("INSERT INTO BackupImportReceipts(operationKey,archiveSha256,selectedNoteIds,importedCount,recoveredCount,skippedCount,committedAt) VALUES(?,?,?,?,?,?,?)", arrayOf<Any>(operationKey, expectedHash, selected.sorted().joinToString(","), imported, recovered, skipped, java.time.Instant.now().toString()))
           if (imported > 0) live.execSQL("UPDATE ContentMetadata SET revision=revision+1 WHERE id=1")
           live.setTransactionSuccessful()
         } finally { live.endTransaction() }
-        return importResult(false, imported, recovered)
+        return importResult(false, imported, recovered, skipped)
       } finally { source.close(); live.close() }
     } finally { work.deleteRecursively() }
   }
@@ -440,8 +441,14 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     return try { db.rawQuery("SELECT 1 FROM BackupImportReceipts WHERE operationKey=?", arrayOf(key)).use { it.moveToFirst() } } catch (_: Exception) { false }
   }
 
-  private fun importResult(alreadyCommitted: Boolean, imported: Int, recovered: Int) = Arguments.createMap().apply {
-    putBoolean("alreadyCommitted", alreadyCommitted); putInt("importedCount", imported); putInt("recoveredCount", recovered)
+  private fun importReceiptResult(db: SQLiteDatabase, key: String): com.facebook.react.bridge.WritableMap? {
+    return db.rawQuery("SELECT importedCount,recoveredCount,skippedCount FROM BackupImportReceipts WHERE operationKey=?", arrayOf(key)).use {
+      if (it.moveToFirst()) importResult(true, it.getInt(0), it.getInt(1), it.getInt(2)) else null
+    }
+  }
+
+  private fun importResult(alreadyCommitted: Boolean, imported: Int, recovered: Int, skipped: Int = 0) = Arguments.createMap().apply {
+    putBoolean("alreadyCommitted", alreadyCommitted); putInt("importedCount", imported); putInt("recoveredCount", recovered); putInt("skippedCount", skipped)
   }
 
   private fun ensureImportedFolder(db: SQLiteDatabase, portableId: String, name: String, createdAt: String, sortOrder: Int): Long {
@@ -451,15 +458,43 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     return statement.executeInsert()
   }
 
-  private fun mediaIdentitiesMatch(source: SQLiteDatabase, live: SQLiteDatabase, sourceNoteId: String, liveNoteId: Long): Boolean {
+  private fun mediaMatches(source: SQLiteDatabase, live: SQLiteDatabase, sourceNoteId: String, liveNoteId: Long): Boolean {
     return listOf("NoteAudios", "NoteFiles").all { table ->
-      val archived = mutableSetOf<String>()
-      source.rawQuery("SELECT portableId FROM $table WHERE notePortableId=?", arrayOf(sourceNoteId)).use { while (it.moveToNext()) archived.add(it.getString(0)) }
-      val current = mutableSetOf<String>()
-      live.rawQuery("SELECT portableId FROM $table WHERE noteId=?", arrayOf(liveNoteId.toString())).use { while (it.moveToNext()) current.add(it.getString(0)) }
-      archived == current
+      val audio = table == "NoteAudios"
+      val archivedColumns = if (audio) "portableId,mediaPath,displayName,groupId,segmentIndex,orderIndex,createdAt" else "portableId,mediaPath,displayName,mimeType,orderIndex,createdAt"
+      val currentColumns = if (audio) "portableId,uri,displayName,groupId,segmentIndex,orderIndex,createdAt" else "portableId,uri,displayName,mimeType,orderIndex,createdAt"
+      source.rawQuery("SELECT $archivedColumns FROM $table WHERE notePortableId=? ORDER BY portableId", arrayOf(sourceNoteId)).use { archived ->
+        live.rawQuery("SELECT $currentColumns FROM $table WHERE noteId=? ORDER BY portableId", arrayOf(liveNoteId.toString())).use { current ->
+          while (true) {
+            val hasArchived = archived.moveToNext()
+            val hasCurrent = current.moveToNext()
+            if (hasArchived != hasCurrent) return@all false
+            if (!hasArchived) return@all true
+            if (archived.getString(0) != current.getString(0)) return@all false
+            val expectedHash = archived.getString(1).substringAfterLast('/')
+            val currentHash = runCatching { open(current.getString(1)).use(::sha256).hex }.getOrNull()
+            if (currentHash != expectedHash) return@all false
+            for (index in 2 until archived.columnCount) {
+              if (!cursorValuesEqual(archived, current, index)) return@all false
+            }
+          }
+          @Suppress("UNREACHABLE_CODE") true
+        }
+      }
     }
   }
+
+  private fun cursorValuesEqual(first: Cursor, second: Cursor, index: Int): Boolean {
+    if (first.isNull(index) || second.isNull(index)) return first.isNull(index) && second.isNull(index)
+    return when (first.getType(index)) {
+      Cursor.FIELD_TYPE_INTEGER -> second.getType(index) == Cursor.FIELD_TYPE_INTEGER && first.getLong(index) == second.getLong(index)
+      Cursor.FIELD_TYPE_FLOAT -> second.getType(index) == Cursor.FIELD_TYPE_FLOAT && first.getDouble(index) == second.getDouble(index)
+      Cursor.FIELD_TYPE_BLOB -> second.getType(index) == Cursor.FIELD_TYPE_BLOB && first.getBlob(index).contentEquals(second.getBlob(index))
+      else -> first.getString(index) == second.getString(index)
+    }
+  }
+
+  private fun mediaKey(table: String, path: String) = "$table:$path"
 
   private fun copyImportedMedia(source: SQLiteDatabase, live: SQLiteDatabase, table: String, sourceNoteId: String, liveNoteId: Long, mediaUris: Map<String, String>, recovered: Boolean) {
     val audio = table == "NoteAudios"
@@ -467,7 +502,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     source.rawQuery("SELECT $columns FROM $table WHERE notePortableId=? ORDER BY orderIndex", arrayOf(sourceNoteId)).use { cursor ->
       while (cursor.moveToNext()) {
         val portableId = if (recovered) UUID.randomUUID().toString() else cursor.getString(0)
-        val uri = mediaUris[cursor.getString(1)] ?: fail("MISSING_MEDIA", "Validated media was not staged")
+        val uri = mediaUris[mediaKey(table, cursor.getString(1))] ?: fail("MISSING_MEDIA", "Validated media was not staged")
         val sql = if (audio) "INSERT INTO NoteAudios(portableId,noteId,uri,displayName,groupId,segmentIndex,orderIndex,createdAt) VALUES(?,?,?,?,?,?,?,?)" else "INSERT INTO NoteFiles(portableId,noteId,uri,displayName,mimeType,orderIndex,createdAt) VALUES(?,?,?,?,?,?,?)"
         val statement = live.compileStatement(sql); statement.bindString(1, portableId); statement.bindLong(2, liveNoteId); statement.bindString(3, uri)
         for (index in 2 until cursor.columnCount) {

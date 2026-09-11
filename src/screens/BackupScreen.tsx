@@ -294,7 +294,11 @@ export const BackupScreen = () => {
             {importError ? <AppText variant="body" color={colors.error}>{importError}</AppText> : null}
             {importResult ? (
               <AppText variant="body" color={colors.primary}>
-                {t('backup.import.success', { count: importResult.importedCount })}
+                {t('backup.import.success', {
+                  imported: importResult.importedCount - importResult.recoveredCount,
+                  recovered: importResult.recoveredCount,
+                  skipped: importResult.skippedCount,
+                })}
               </AppText>
             ) : null}
           </Card>

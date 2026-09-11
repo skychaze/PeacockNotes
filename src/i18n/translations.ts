@@ -239,7 +239,7 @@ export const translations: Record<Language, Translations> = {
     'backup.import.committing': 'নোট ইম্পোর্ট হচ্ছে...',
     'backup.import.invalid': 'আর্কাইভটি সম্পূর্ণ, সামঞ্জস্যপূর্ণ ও অক্ষত হিসেবে যাচাই করা যায়নি। কোনো নোট বদলানো হয়নি।',
     'backup.import.failed': 'নির্বাচিত নোট ইম্পোর্ট করা যায়নি। বর্তমান নোট অপরিবর্তিত আছে।',
-    'backup.import.success': '{count}টি নোট ইম্পোর্ট হয়েছে।',
+    'backup.import.success': '{imported}টি নোট পুনরুদ্ধার হয়েছে, {recovered}টি রিকভার্ড কপি তৈরি হয়েছে, এবং {skipped}টি অপরিবর্তিত নোট বাদ দেওয়া হয়েছে।',
 
     'drawer.quickMenu': 'কুইক মেনু',
     'drawer.storage': 'Storage',
@@ -488,7 +488,7 @@ export const translations: Record<Language, Translations> = {
     'backup.import.committing': 'Importing notes...',
     'backup.import.invalid': 'The archive could not be verified as complete, compatible, and intact. No notes were changed.',
     'backup.import.failed': 'The selected notes could not be imported. Current notes are unchanged.',
-    'backup.import.success': 'Imported {count} notes.',
+    'backup.import.success': 'Restored {imported} notes, created {recovered} recovered copies, and skipped {skipped} unchanged notes.',
 
     'drawer.quickMenu': 'Quick Menu',
     'drawer.storage': 'Storage',

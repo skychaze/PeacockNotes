@@ -93,12 +93,15 @@ export const initDb = async () => {
       selectedNoteIds TEXT NOT NULL,
       importedCount INTEGER NOT NULL,
       recoveredCount INTEGER NOT NULL,
+      skippedCount INTEGER NOT NULL,
       committedAt TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS RecoveryProvenance (
       noteId INTEGER PRIMARY KEY,
       sourcePortableId TEXT NOT NULL,
       archiveSha256 TEXT NOT NULL,
+      archiveCreatedAt TEXT NOT NULL,
+      archivedUpdatedAt TEXT NOT NULL,
       recoveredAt TEXT NOT NULL,
       FOREIGN KEY (noteId) REFERENCES Notes(id) ON DELETE CASCADE
     );
@@ -124,6 +127,19 @@ export const initDb = async () => {
       WHERE state IN ('pending', 'running');
     INSERT OR IGNORE INTO ContentMetadata (id, revision) VALUES (1, 0);
   `);
+
+  const receiptColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(BackupImportReceipts);');
+  if (!receiptColumns.some((column) => column.name === 'skippedCount')) {
+    await db.execAsync('ALTER TABLE BackupImportReceipts ADD COLUMN skippedCount INTEGER NOT NULL DEFAULT 0;');
+  }
+
+  const provenanceColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(RecoveryProvenance);');
+  if (!provenanceColumns.some((column) => column.name === 'archiveCreatedAt')) {
+    await db.execAsync('ALTER TABLE RecoveryProvenance ADD COLUMN archiveCreatedAt TEXT;');
+  }
+  if (!provenanceColumns.some((column) => column.name === 'archivedUpdatedAt')) {
+    await db.execAsync('ALTER TABLE RecoveryProvenance ADD COLUMN archivedUpdatedAt TEXT;');
+  }
 
   const noteColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(Notes);');
   const hasUpdatedAt = noteColumns.some((column) => column.name === 'updatedAt');

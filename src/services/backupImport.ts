@@ -129,5 +129,5 @@ export const importSelectedNotes = async (
     Object.assign(error, { code: operation.errorCode ?? 'IMPORT_FAILED' });
     throw error;
   }
-  return importHandler.result ?? { alreadyCommitted: true, importedCount: 0, recoveredCount: 0 };
+  return importHandler.result ?? { alreadyCommitted: true, importedCount: 0, recoveredCount: 0, skippedCount: 0 };
 };

@@ -108,6 +108,7 @@ export type ImportResult = Readonly<{
   alreadyCommitted: boolean;
   importedCount: number;
   recoveredCount: number;
+  skippedCount: number;
 }>;
 
 type NativeArchiveModule = {
