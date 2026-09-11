@@ -162,3 +162,10 @@
 - Waiting conditions do not consume retries. Transient failures receive up to three exponential-backoff retries; permission, storage, and configuration failures require user action. Unsuccessful work remains due and never triggers pruning.
 - Large or slow backups use foreground-capable native WorkManager with a cancellable progress notification. One durable operation lease serializes automatic export, manual export, import, folder changes, and automation changes.
 - Next: decide battery gating, app-open execution, and user notification thresholds.
+
+## 2026-09-11 13:04 UTC
+
+- Settled battery gating, app-open behavior, and notification policy with the product owner.
+- Automatic backup waits for a non-low battery but does not require charging. A due check on app open starts non-blocking work without another confirmation. Manual export ignores automatic battery gating.
+- Ordinary transient errors remain in the feature screen. Peacock Notes sends one non-repeating notification for action-required failures or when no verified backup succeeds within 48 hours after becoming due, then clears it after success.
+- Next: decide disablement, retry idempotency, and lifecycle reconciliation after reboot or force-stop.
