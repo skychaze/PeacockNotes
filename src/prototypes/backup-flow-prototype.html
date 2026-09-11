@@ -256,6 +256,15 @@
 
     .meta-row strong { color: var(--ink); font-weight: 700; }
 
+    .source-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin: 16px 0;
+    }
+
+    .source-actions button:first-child { grid-column: 1 / -1; }
+
     .choice {
       width: 100%;
       display: flex;
@@ -289,6 +298,21 @@
     .dangerous.selected .choice-mark { border-color: var(--red); background: var(--red); }
     .choice strong { display: block; margin-bottom: 4px; font-size: 14px; }
     .choice small { display: block; color: var(--muted); font-size: 12px; line-height: 1.4; }
+
+    .note-choice {
+      display: grid;
+      grid-template-columns: 24px 1fr auto;
+      gap: 10px;
+      align-items: start;
+      padding: 14px 0;
+    }
+
+    .note-choice + .note-choice { border-top: 1px solid var(--line); }
+    .note-choice input { width: 18px; height: 18px; accent-color: var(--green); }
+    .note-choice strong { display: block; font-size: 13px; }
+    .note-choice small { color: var(--muted); font-size: 11px; }
+    .note-state { border-radius: 99px; padding: 5px 8px; color: var(--green); background: var(--green-pale); font-size: 10px; font-weight: 750; }
+    .note-state.changed { color: #865300; background: var(--orange-pale); }
 
     .bottom-action {
       position: absolute;
@@ -646,8 +670,10 @@
     const scenes = {
       overview: 'Overview',
       choose: 'Import choices',
+      selective: 'Selective review',
       replace: 'Replacement warning',
-      progress: 'Progress',
+      export: 'Export progress',
+      progress: 'Import progress',
       problem: 'Problem',
       done: 'Result',
     };
@@ -711,21 +737,36 @@
 
     const continueButton = () => {
       if (!selectedMode) return '<button class="secondary full" disabled>Choose an import mode</button>';
-      const target = selectedMode === 'replace' ? 'replace' : 'progress';
+      const target = selectedMode === 'replace' ? 'replace' : selectedMode === 'selective' ? 'selective' : 'progress';
       return `<button class="primary full" data-go="${target}">Continue</button>`;
     };
 
     const sharedScene = (layout) => {
       if (scene === 'choose') {
         const inner = `
-          <p class="eyebrow">Verified backup</p>
-          <h3 class="headline">Today, 8:42 PM</h3>
+          <p class="eyebrow">Import Backup</p>
+          <h3 class="headline">Choose a verified backup</h3>
+          <div class="source-actions"><button class="primary">Latest: Today, 8:42 PM</button><button class="secondary">Browse all</button><button class="secondary">Choose another file</button></div>
           <p class="body-copy">18 folders, 246 notes, 39 recordings, 12 files. 84 MB.</p>
           <div class="summary-strip"><div><strong>31</strong><span>missing</span></div><div><strong>4</strong><span>changed</span></div><div><strong>211</strong><span>same</span></div></div>
           ${choices()}`;
         if (layout === 'A') return `<div class="sheet"><div class="grabber"></div>${inner}</div><div class="bottom-action">${continueButton()}</div>`;
         if (layout === 'B') return `<div class="import-panel">${inner}</div><div class="bottom-action">${continueButton()}</div>`;
         return `<div class="status-hero"><p class="eyebrow">Archive verified</p><h3 class="headline">How should this backup be used?</h3></div>${choices()}<div class="bottom-action">${continueButton()}</div>`;
+      }
+
+      if (scene === 'selective') {
+        return `
+          <p class="eyebrow">Choose what to add</p>
+          <h3 class="headline">2 notes selected</h3>
+          <p class="body-copy">Recordings and attachments come with each selected note.</p>
+          <div class="card" style="margin-top:18px">
+            <label class="note-choice"><input type="checkbox" checked><span><strong>Field observations</strong><small>Research / edited 11 Sep</small></span><span class="note-state">Missing</span></label>
+            <label class="note-choice"><input type="checkbox" checked><span><strong>Reading list</strong><small>Personal / edited 9 Sep</small></span><span class="note-state changed">Changed</span></label>
+            <label class="note-choice"><input type="checkbox"><span><strong>Project outline</strong><small>Work / already matches</small></span><span class="note-state">Already here</span></label>
+          </div>
+          <div class="card" style="margin-top:12px"><p class="body-copy" style="margin:0">The changed archived note becomes a recovered copy. Your current note stays unchanged.</p></div>
+          <div class="bottom-action"><button class="primary full" data-go="progress">Import 2 notes</button></div>`;
       }
 
       if (scene === 'replace') {
@@ -741,6 +782,22 @@
             <p class="body-copy">The undo backup stays on this device. Uninstalling Peacock Notes removes it.</p>
           </div>
           <div class="bottom-action"><button class="danger full" data-go="progress">Replace all current notes</button></div>`;
+      }
+
+      if (scene === 'export') {
+        return `
+          <p class="eyebrow">Export Backup</p>
+          <h3 class="headline">Writing to your selected folder</h3>
+          <p class="body-copy">The document provider controls when remote synchronization finishes.</p>
+          <div style="margin: 24px 0 10px" class="progress-track"><span></span></div>
+          <div class="meta-row"><span>62%</span><strong>52 of 84 MB</strong></div>
+          <div class="card" style="margin-top:22px">
+            <div class="step done"><span class="step-dot"></span><span>Content captured</span></div>
+            <div class="step done"><span class="step-dot"></span><span>Local archive verified</span></div>
+            <div class="step active"><span class="step-dot"></span><span>Writing to selected folder</span></div>
+            <div class="step"><span class="step-dot"></span><span>Read-back verification</span></div>
+          </div>
+          <div class="bottom-action"><button class="text-action full" data-go="overview">Cancel export</button></div>`;
       }
 
       if (scene === 'progress') {
@@ -798,7 +855,7 @@
           <p class="body-copy">18 backups. Automatic backup is on.</p>
         </div>
         <div class="action-pair">
-          <button class="action-tile" data-go="progress">${icon('upload')}<strong>Export Backup</strong></button>
+          <button class="action-tile" data-go="export">${icon('upload')}<strong>Export Backup</strong></button>
           <button class="action-tile import" data-go="choose">${icon('download')}<strong>Import Backup</strong></button>
         </div>
         <div class="card">${folderLine()}</div>
@@ -811,7 +868,7 @@
       const overview = `
         <div class="collection-header">
           ${folderLine()}
-          <div class="compact-actions"><button class="primary" data-go="progress">Export Backup</button><button class="secondary" data-go="choose">Import Backup</button></div>
+          <div class="compact-actions"><button class="primary" data-go="export">Export Backup</button><button class="secondary" data-go="choose">Import Backup</button></div>
         </div>
         <p class="date-label">Today</p>
         <div class="ledger-item"><div class="ledger-time">8:42 PM</div><div class="ledger-copy"><strong>Automatic backup</strong><span>246 notes and 51 media files</span></div><span class="verified-dot"></span></div>
@@ -835,7 +892,7 @@
           <div class="timeline-card"><h3>Automatic backup on</h3><p>Nothing is due. Peacock Notes checks again when content changes.</p></div>
           <div class="timeline-card"><h3>18 verified backups</h3><p>Two expired backups were removed during the last reconciliation.</p><button class="text-action" data-go="choose">Choose a backup</button></div>
         </div>
-        <div class="bottom-action"><div class="compact-actions"><button class="secondary" data-go="progress">Export Backup</button><button class="primary" data-go="choose">Import Backup</button></div></div>`;
+        <div class="bottom-action"><div class="compact-actions"><button class="secondary" data-go="export">Export Backup</button><button class="primary" data-go="choose">Import Backup</button></div></div>`;
       return shell('variant-c', scene === 'overview' ? overview : sharedScene('C'));
     };
 

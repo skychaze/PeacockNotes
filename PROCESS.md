@@ -354,3 +354,10 @@
 - Passed extracted JavaScript syntax checking, `package.json` parsing, `git diff --check`, HTTP serving, and direct fetch. Chrome DevTools had no attached browser and no standalone Chrome binary was installed, so screenshot review was unavailable.
 - Commands: `node --check`, Node JSON parse, `git diff --check`, background prototype server, `curl`, Chrome DevTools connection attempt, and browser-binary lookup.
 - Next: commit and push the runnable prototype, then inspect its interaction coverage against issue #12.
+
+## 2026-09-11 14:43 UTC
+
+- Reviewed the first prototype pass against issue #12 and found two real coverage gaps: export actions reused import-progress copy, and selective comparison lacked an inspectable note-selection state.
+- Added a distinct export verification flow, latest/browse/outside archive source choices, and a selective review screen showing missing, changed, and already-present notes.
+- The first automated copy-coverage check failed because it expected title-case `Media repaired` while the rendered result correctly uses sentence case `media repaired`. JavaScript and JSON syntax still passed, and the updated selective scene served over HTTP.
+- Next: checkpoint the coverage additions and recorded failure, then rerun the check against exact UI copy.
