@@ -19,10 +19,13 @@ import {
   type BackupFolderState,
 } from '../services/backupFolder';
 import { exportBackup, type ExportProgress, type VerifiedBackup } from '../services/backupExport';
+import { browseArchiveForImport, importSelectedNotes, previewNewestArchive } from '../services/backupImport';
 import {
   scanBackupCollection,
   type BackupCollectionArchive,
   type BackupCollectionScan,
+  type ImportPreview,
+  type ImportResult,
 } from '../services/archive';
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
@@ -45,6 +48,11 @@ export const BackupScreen = () => {
   const [exportError, setExportError] = useState<string | null>(null);
   const [collection, setCollection] = useState<BackupCollectionScan | null>(null);
   const [scanState, setScanState] = useState<'idle' | 'loading' | 'failed'>('idle');
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [selectedNoteIds, setSelectedNoteIds] = useState<ReadonlySet<string>>(new Set());
+  const [importState, setImportState] = useState<'idle' | 'previewing' | 'committing'>('idle');
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
 
   const scanCollection = useCallback(async () => {
     setScanState('loading');
@@ -117,6 +125,51 @@ export const BackupScreen = () => {
       setExportError(t(`backup.export.error.${known}`));
     } finally {
       setExportProgress(null);
+    }
+  };
+
+  const openImportPreview = async (archiveUri?: string) => {
+    setImportState('previewing');
+    setImportError(null);
+    setImportResult(null);
+    try {
+      const preview = archiveUri
+        ? await previewNewestArchive(archiveUri)
+        : await browseArchiveForImport();
+      if (!preview) return;
+      setImportPreview(preview);
+      setSelectedNoteIds(new Set(preview.notes.map((note) => note.portableId)));
+    } catch (error) {
+      console.warn('Failed to preview backup archive:', error);
+      setImportError(t('backup.import.invalid'));
+    } finally {
+      setImportState('idle');
+    }
+  };
+
+  const toggleSelectedNote = (portableId: string) => {
+    setSelectedNoteIds((current) => {
+      const next = new Set(current);
+      if (next.has(portableId)) next.delete(portableId);
+      else next.add(portableId);
+      return next;
+    });
+  };
+
+  const commitImport = async () => {
+    if (!importPreview || selectedNoteIds.size === 0) return;
+    setImportState('committing');
+    setImportError(null);
+    try {
+      const result = await importSelectedNotes(importPreview, [...selectedNoteIds]);
+      setImportResult(result);
+      setImportPreview(null);
+      setSelectedNoteIds(new Set());
+    } catch (error) {
+      console.warn('Failed to import selected notes:', error);
+      setImportError(t('backup.import.failed'));
+    } finally {
+      setImportState('idle');
     }
   };
 
@@ -219,6 +272,70 @@ export const BackupScreen = () => {
           ) : null}
           {exportError ? <AppText variant="body" color={colors.error}>{exportError}</AppText> : null}
         </Card>
+
+        {isConnected ? (
+          <Card style={{ gap: ui.space.md }}>
+            <AppText variant="headline">{t('backup.import.title')}</AppText>
+            <AppText variant="bodySmall" color={colors.textSecondary}>{t('backup.import.help')}</AppText>
+            <PrimaryButton
+              disabled={!newestValid || importState !== 'idle'}
+              onPress={() => newestValid && void openImportPreview(newestValid.uri)}
+            >
+              {importState === 'previewing' ? t('backup.import.validating') : t('backup.import.newest')}
+            </PrimaryButton>
+            <PressableScale
+              accessibilityRole="button"
+              disabled={importState !== 'idle'}
+              onPress={() => void openImportPreview()}
+              style={{ alignSelf: 'center', padding: ui.space.sm }}
+            >
+              <AppText variant="headline" color={colors.primary}>{t('backup.import.browse')}</AppText>
+            </PressableScale>
+            {importError ? <AppText variant="body" color={colors.error}>{importError}</AppText> : null}
+            {importResult ? (
+              <AppText variant="body" color={colors.primary}>
+                {t('backup.import.success', { count: importResult.importedCount })}
+              </AppText>
+            ) : null}
+          </Card>
+        ) : null}
+
+        {importPreview ? (
+          <Card style={{ gap: ui.space.md }}>
+            <AppText variant="headline">{t('backup.import.preview')}</AppText>
+            <AppText variant="bodySmall" color={colors.textSecondary}>{t('backup.import.noOverwrite')}</AppText>
+            {importPreview.notes.map((note) => {
+              const selected = selectedNoteIds.has(note.portableId);
+              return (
+                <PressableScale
+                  key={note.portableId}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: selected }}
+                  onPress={() => toggleSelectedNote(note.portableId)}
+                  style={{ paddingVertical: ui.space.sm, borderTopWidth: 1, borderTopColor: colors.border, gap: ui.space.xs }}
+                >
+                  <View style={{ flexDirection: 'row', gap: ui.space.sm, alignItems: 'center' }}>
+                    <MaterialCommunityIcons name={selected ? 'checkbox-marked' : 'checkbox-blank-outline'} size={24} color={selected ? colors.primary : colors.textSecondary} />
+                    <View style={{ flex: 1 }}>
+                      <AppText variant="headline">{note.title}</AppText>
+                      <AppText variant="bodySmall" color={colors.textSecondary}>{note.folderName}</AppText>
+                    </View>
+                  </View>
+                  {note.contentPreview ? <AppText variant="bodySmall" color={colors.textSecondary} numberOfLines={2}>{note.contentPreview}</AppText> : null}
+                  <AppText variant="caption" color={colors.textSecondary}>
+                    {t('backup.import.media', { audio: note.audioCount, files: note.fileCount })}
+                  </AppText>
+                </PressableScale>
+              );
+            })}
+            <PrimaryButton disabled={selectedNoteIds.size === 0 || importState !== 'idle'} onPress={() => void commitImport()}>
+              {importState === 'committing' ? t('backup.import.committing') : t('backup.import.selected', { count: selectedNoteIds.size })}
+            </PrimaryButton>
+            <PressableScale onPress={() => setImportPreview(null)} style={{ alignSelf: 'center', padding: ui.space.sm }}>
+              <AppText variant="headline" color={colors.textSecondary}>{t('common.cancel')}</AppText>
+            </PressableScale>
+          </Card>
+        ) : null}
 
         {isConnected ? (
           <Card style={{ gap: ui.space.md }}>

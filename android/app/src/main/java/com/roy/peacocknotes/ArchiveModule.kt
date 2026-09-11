@@ -77,6 +77,30 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       .onFailure { promise.reject("PROVIDER_SCAN_FAILED", it.message, it) }
   }
 
+  @ReactMethod
+  fun previewImport(request: ReadableMap, promise: Promise) = executor.execute {
+    runCatching { preview(request) }
+      .onSuccess(promise::resolve)
+      .onFailure { promise.reject(errorCode(it), it.message, it) }
+  }
+
+  @ReactMethod
+  fun commitSelectiveImport(request: ReadableMap, promise: Promise) = executor.execute {
+    runCatching { commitImport(request) }
+      .onSuccess(promise::resolve)
+      .onFailure { promise.reject(errorCode(it), it.message, it) }
+  }
+
+  @ReactMethod
+  fun hasImportReceipt(request: ReadableMap, promise: Promise) = executor.execute {
+    runCatching {
+      val db = SQLiteDatabase.openDatabase(fileFromUri(requiredString(request, "databaseUri")).path, null, SQLiteDatabase.OPEN_READONLY)
+      try {
+        Arguments.createMap().apply { putBoolean("committed", importReceiptExists(db, requiredString(request, "operationKey"))) }
+      } finally { db.close() }
+    }.onSuccess(promise::resolve).onFailure { promise.reject(errorCode(it), it.message, it) }
+  }
+
   private fun scanFolder(): com.facebook.react.bridge.WritableMap {
     val folder = context.getSharedPreferences(FOLDER_PREFERENCES, android.app.Activity.MODE_PRIVATE)
       .getString(FOLDER_URI, null)?.let(Uri::parse)
@@ -290,10 +314,168 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         expanded = checkedAdd(expanded, actual.bytes, limits.maxExpandedBytes)
       }
       validateDatabase(File(extracted, DATABASE_PATH), inventory, limits)
+      File(extracted, MANIFEST_PATH).writeText(manifest.toString(), Charsets.UTF_8)
       return summary(manifest, archiveDigest, expanded)
     } finally {
       archive.delete()
       if (ownsWork) work.deleteRecursively()
+    }
+  }
+
+  private fun preview(request: ReadableMap): com.facebook.react.bridge.WritableMap {
+    val archiveUri = requiredString(request, "archiveUri")
+    val work = newWorkDirectory("preview")
+    try {
+      val validationRequest = Arguments.createMap().apply {
+        putString("archiveUri", archiveUri)
+        putString("stagingDirectoryUri", Uri.fromFile(work).toString())
+      }
+      val summary = validate(validationRequest)
+      val extracted = work.listFiles()?.singleOrNull { it.isDirectory && it.name.startsWith("validated-") }
+        ?: fail("STAGING_UNAVAILABLE", "Validated import staging is missing")
+      val db = SQLiteDatabase.openDatabase(File(extracted, DATABASE_PATH).path, null, SQLiteDatabase.OPEN_READONLY)
+      val notes = Arguments.createArray()
+      try {
+        db.rawQuery("SELECT n.portableId,n.title,substr(n.content,1,180),n.updatedAt,f.name,(SELECT COUNT(*) FROM NoteAudios a WHERE a.notePortableId=n.portableId),(SELECT COUNT(*) FROM NoteFiles x WHERE x.notePortableId=n.portableId) FROM Notes n JOIN Folders f ON f.portableId=n.folderPortableId ORDER BY n.updatedAt DESC,n.portableId", null).use { cursor ->
+          while (cursor.moveToNext()) notes.pushMap(Arguments.createMap().apply {
+            putString("portableId", cursor.getString(0)); putString("title", cursor.getString(1))
+            putString("contentPreview", cursor.getString(2)?.take(180) ?: ""); putString("updatedAt", cursor.getString(3))
+            putString("folderName", cursor.getString(4)); putInt("audioCount", cursor.getInt(5)); putInt("fileCount", cursor.getInt(6))
+          })
+        }
+      } finally { db.close() }
+      return Arguments.createMap().apply {
+        putString("archiveUri", archiveUri); putString("archiveSha256", summary.getString("archiveSha256"))
+        putString("createdAt", summary.getString("createdAt")); putArray("notes", notes)
+      }
+    } finally { work.deleteRecursively() }
+  }
+
+  private fun commitImport(request: ReadableMap): com.facebook.react.bridge.WritableMap {
+    val archiveUri = requiredString(request, "archiveUri")
+    val expectedHash = requiredString(request, "archiveSha256")
+    val databaseFile = fileFromUri(requiredString(request, "databaseUri"))
+    val mediaRoot = fileFromUri(requiredString(request, "mediaDirectoryUri"))
+    val operationKey = requiredString(request, "operationKey")
+    val selectedArray = request.getArray("selectedNoteIds") ?: fail("INVALID_REQUEST", "selectedNoteIds is required")
+    val selected = (0 until selectedArray.size()).map { requireUuid(selectedArray.getString(it) ?: fail("INVALID_REQUEST", "Invalid selected note identity")) }.toSet()
+    if (selected.isEmpty()) fail("EMPTY_SELECTION", "Select at least one note")
+    val work = newWorkDirectory("import")
+    try {
+      val validationRequest = Arguments.createMap().apply {
+        putString("archiveUri", archiveUri); putString("stagingDirectoryUri", Uri.fromFile(work).toString())
+      }
+      val summary = validate(validationRequest)
+      if (summary.getString("archiveSha256") != expectedHash) fail("ARCHIVE_CHANGED", "The selected archive changed after preview")
+      val extracted = work.listFiles()?.singleOrNull { it.isDirectory && it.name.startsWith("validated-") }
+        ?: fail("STAGING_UNAVAILABLE", "Validated import staging is missing")
+      val source = SQLiteDatabase.openDatabase(File(extracted, DATABASE_PATH).path, null, SQLiteDatabase.OPEN_READONLY)
+      val live = SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READWRITE)
+      try {
+        if (importReceiptExists(live, operationKey)) return importResult(true, 0, 0)
+        val available = mutableSetOf<String>()
+        source.rawQuery("SELECT portableId FROM Notes", null).use { while (it.moveToNext()) available.add(it.getString(0)) }
+        if (!available.containsAll(selected)) fail("INVALID_SELECTION", "The selection contains a note absent from the archive")
+
+        if (!mediaRoot.exists() && !mediaRoot.mkdirs()) fail("STAGING_UNAVAILABLE", "Cannot create media directory")
+        ensureSpace(mediaRoot, summary.getDouble("expandedBytes").toLong())
+
+        val mediaUris = mutableMapOf<String, String>()
+        listOf("NoteAudios", "NoteFiles").forEach { table ->
+          source.rawQuery("SELECT DISTINCT mediaPath FROM $table WHERE notePortableId IN (${selected.joinToString(",") { "?" }})", selected.toTypedArray()).use { cursor ->
+            while (cursor.moveToNext()) {
+              val path = cursor.getString(0); val staged = File(extracted, path)
+              val kind = if (table == "NoteAudios") "audio" else "files"
+              val target = File(File(mediaRoot, kind), path.substringAfterLast('/'))
+              target.parentFile?.mkdirs()
+              if (target.exists()) {
+                val existingDigest = FileInputStream(target).use(::sha256)
+                if (existingDigest.hex != path.substringAfterLast('/')) fail("CURRENT_MEDIA_DAMAGED", "Existing app media does not match its content address")
+              } else {
+                FileInputStream(staged).use { input -> FileOutputStream(target).use { output -> copyBounded(input, output, staged.length()) } }
+              }
+              mediaUris[path] = Uri.fromFile(target).toString()
+            }
+          }
+        }
+
+        var imported = 0; var recovered = 0
+        live.beginTransaction()
+        try {
+          selected.sorted().forEach { noteId ->
+            val note = source.rawQuery("SELECT n.portableId,n.folderPortableId,n.title,n.content,n.createdAt,n.updatedAt,n.sortOrder,f.name,f.createdAt,f.sortOrder FROM Notes n JOIN Folders f ON f.portableId=n.folderPortableId WHERE n.portableId=?", arrayOf(noteId)).use { cursor ->
+              if (!cursor.moveToFirst()) fail("INVALID_SELECTION", "Selected note is missing")
+              List(cursor.columnCount) { index -> if (cursor.isNull(index)) null else cursor.getString(index) }
+            }
+            val folderId = ensureImportedFolder(live, note[1]!!, note[7]!!, note[8]!!, note[9]!!.toInt())
+            val existing = live.rawQuery("SELECT id,folderId,title,content,createdAt,updatedAt,sortOrder FROM Notes WHERE portableId=?", arrayOf(noteId)).use { cursor ->
+              if (!cursor.moveToFirst()) null else List(cursor.columnCount) { index -> if (cursor.isNull(index)) null else cursor.getString(index) }
+            }
+            val unchanged = existing != null && existing[1]!!.toLong() == folderId && existing[2] == note[2] && (existing[3] ?: "") == (note[3] ?: "") && existing[4] == note[4] && existing[5] == note[5] && mediaIdentitiesMatch(source, live, noteId, existing[0]!!.toLong())
+            if (unchanged) return@forEach
+            val targetPortableId = if (existing == null) noteId else UUID.randomUUID().toString()
+            val targetTitle = if (existing == null) note[2]!! else "${note[2]} (Recovered copy)"
+            val statement = live.compileStatement("INSERT INTO Notes(portableId,folderId,title,content,audioUri,createdAt,updatedAt,sortOrder) VALUES(?,?,?,?,NULL,?,?,?)")
+            statement.bindString(1, targetPortableId); statement.bindLong(2, folderId); statement.bindString(3, targetTitle)
+            if (note[3] == null) statement.bindNull(4) else statement.bindString(4, note[3]!!)
+            statement.bindString(5, note[4]!!); statement.bindString(6, note[5]!!); statement.bindLong(7, note[6]!!.toLong())
+            val liveNoteId = statement.executeInsert()
+            copyImportedMedia(source, live, "NoteAudios", noteId, liveNoteId, mediaUris, existing != null)
+            copyImportedMedia(source, live, "NoteFiles", noteId, liveNoteId, mediaUris, existing != null)
+            if (existing != null) {
+              live.execSQL("INSERT INTO RecoveryProvenance(noteId,sourcePortableId,archiveSha256,recoveredAt) VALUES(?,?,?,?)", arrayOf<Any>(liveNoteId, noteId, expectedHash, java.time.Instant.now().toString()))
+            }
+            imported++; if (existing != null) recovered++
+          }
+          live.execSQL("INSERT INTO BackupImportReceipts(operationKey,archiveSha256,selectedNoteIds,importedCount,recoveredCount,committedAt) VALUES(?,?,?,?,?,?)", arrayOf<Any>(operationKey, expectedHash, selected.sorted().joinToString(","), imported, recovered, java.time.Instant.now().toString()))
+          if (imported > 0) live.execSQL("UPDATE ContentMetadata SET revision=revision+1 WHERE id=1")
+          live.setTransactionSuccessful()
+        } finally { live.endTransaction() }
+        return importResult(false, imported, recovered)
+      } finally { source.close(); live.close() }
+    } finally { work.deleteRecursively() }
+  }
+
+  private fun importReceiptExists(db: SQLiteDatabase, key: String): Boolean {
+    return try { db.rawQuery("SELECT 1 FROM BackupImportReceipts WHERE operationKey=?", arrayOf(key)).use { it.moveToFirst() } } catch (_: Exception) { false }
+  }
+
+  private fun importResult(alreadyCommitted: Boolean, imported: Int, recovered: Int) = Arguments.createMap().apply {
+    putBoolean("alreadyCommitted", alreadyCommitted); putInt("importedCount", imported); putInt("recoveredCount", recovered)
+  }
+
+  private fun ensureImportedFolder(db: SQLiteDatabase, portableId: String, name: String, createdAt: String, sortOrder: Int): Long {
+    db.rawQuery("SELECT id FROM Folders WHERE portableId=?", arrayOf(portableId)).use { if (it.moveToFirst()) return it.getLong(0) }
+    val statement = db.compileStatement("INSERT INTO Folders(portableId,name,createdAt,sortOrder) VALUES(?,?,?,?)")
+    statement.bindString(1, portableId); statement.bindString(2, name); statement.bindString(3, createdAt); statement.bindLong(4, sortOrder.toLong())
+    return statement.executeInsert()
+  }
+
+  private fun mediaIdentitiesMatch(source: SQLiteDatabase, live: SQLiteDatabase, sourceNoteId: String, liveNoteId: Long): Boolean {
+    return listOf("NoteAudios", "NoteFiles").all { table ->
+      val archived = mutableSetOf<String>()
+      source.rawQuery("SELECT portableId FROM $table WHERE notePortableId=?", arrayOf(sourceNoteId)).use { while (it.moveToNext()) archived.add(it.getString(0)) }
+      val current = mutableSetOf<String>()
+      live.rawQuery("SELECT portableId FROM $table WHERE noteId=?", arrayOf(liveNoteId.toString())).use { while (it.moveToNext()) current.add(it.getString(0)) }
+      archived == current
+    }
+  }
+
+  private fun copyImportedMedia(source: SQLiteDatabase, live: SQLiteDatabase, table: String, sourceNoteId: String, liveNoteId: Long, mediaUris: Map<String, String>, recovered: Boolean) {
+    val audio = table == "NoteAudios"
+    val columns = if (audio) "portableId,mediaPath,displayName,groupId,segmentIndex,orderIndex,createdAt" else "portableId,mediaPath,displayName,mimeType,orderIndex,createdAt"
+    source.rawQuery("SELECT $columns FROM $table WHERE notePortableId=? ORDER BY orderIndex", arrayOf(sourceNoteId)).use { cursor ->
+      while (cursor.moveToNext()) {
+        val portableId = if (recovered) UUID.randomUUID().toString() else cursor.getString(0)
+        val uri = mediaUris[cursor.getString(1)] ?: fail("MISSING_MEDIA", "Validated media was not staged")
+        val sql = if (audio) "INSERT INTO NoteAudios(portableId,noteId,uri,displayName,groupId,segmentIndex,orderIndex,createdAt) VALUES(?,?,?,?,?,?,?,?)" else "INSERT INTO NoteFiles(portableId,noteId,uri,displayName,mimeType,orderIndex,createdAt) VALUES(?,?,?,?,?,?,?)"
+        val statement = live.compileStatement(sql); statement.bindString(1, portableId); statement.bindLong(2, liveNoteId); statement.bindString(3, uri)
+        for (index in 2 until cursor.columnCount) {
+          val bindIndex = index + 2
+          if (cursor.isNull(index)) statement.bindNull(bindIndex) else if (cursor.getType(index) == Cursor.FIELD_TYPE_INTEGER) statement.bindLong(bindIndex, cursor.getLong(index)) else statement.bindString(bindIndex, cursor.getString(index))
+        }
+        statement.executeInsert()
+      }
     }
   }
 

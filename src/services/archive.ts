@@ -78,11 +78,46 @@ export type BackupCollectionScan = Readonly<{
   archives: readonly BackupCollectionArchive[];
 }>;
 
+export type ArchivedNotePreview = Readonly<{
+  portableId: string;
+  title: string;
+  contentPreview: string;
+  updatedAt: string;
+  folderName: string;
+  audioCount: number;
+  fileCount: number;
+}>;
+
+export type ImportPreview = Readonly<{
+  archiveUri: string;
+  archiveSha256: string;
+  createdAt: string;
+  notes: readonly ArchivedNotePreview[];
+}>;
+
+export type CommitSelectiveImportRequest = Readonly<{
+  archiveUri: string;
+  archiveSha256: string;
+  databaseUri: string;
+  mediaDirectoryUri: string;
+  operationKey: string;
+  selectedNoteIds: readonly string[];
+}>;
+
+export type ImportResult = Readonly<{
+  alreadyCommitted: boolean;
+  importedCount: number;
+  recoveredCount: number;
+}>;
+
 type NativeArchiveModule = {
   pinMedia(request: PinMediaRequest): Promise<readonly ArchiveMediaSource[]>;
   createArchive(request: CreateArchiveRequest): Promise<ArchiveSummary>;
   validateArchive(request: ValidateArchiveRequest): Promise<ArchiveSummary>;
   scanConnectedFolder(): Promise<BackupCollectionScan>;
+  previewImport(request: Readonly<{ archiveUri: string }>): Promise<ImportPreview>;
+  commitSelectiveImport(request: CommitSelectiveImportRequest): Promise<ImportResult>;
+  hasImportReceipt(request: Readonly<{ databaseUri: string; operationKey: string }>): Promise<Readonly<{ committed: boolean }>>;
 };
 
 const nativeArchive = NativeModules.Archive as NativeArchiveModule | undefined;
@@ -105,3 +140,12 @@ export const validateArchive = (request: ValidateArchiveRequest): Promise<Archiv
 
 export const scanBackupCollection = (): Promise<BackupCollectionScan> =>
   moduleOrThrow().scanConnectedFolder();
+
+export const previewArchiveImport = (archiveUri: string): Promise<ImportPreview> =>
+  moduleOrThrow().previewImport({ archiveUri });
+
+export const commitSelectiveArchiveImport = (request: CommitSelectiveImportRequest): Promise<ImportResult> =>
+  moduleOrThrow().commitSelectiveImport(request);
+
+export const hasArchiveImportReceipt = (databaseUri: string, operationKey: string): Promise<boolean> =>
+  moduleOrThrow().hasImportReceipt({ databaseUri, operationKey }).then((result) => result.committed);

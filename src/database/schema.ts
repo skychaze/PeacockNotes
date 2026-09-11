@@ -87,6 +87,21 @@ export const initDb = async () => {
       id INTEGER PRIMARY KEY CHECK (id = 1),
       revision INTEGER NOT NULL CHECK (revision >= 0)
     );
+    CREATE TABLE IF NOT EXISTS BackupImportReceipts (
+      operationKey TEXT PRIMARY KEY,
+      archiveSha256 TEXT NOT NULL,
+      selectedNoteIds TEXT NOT NULL,
+      importedCount INTEGER NOT NULL,
+      recoveredCount INTEGER NOT NULL,
+      committedAt TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS RecoveryProvenance (
+      noteId INTEGER PRIMARY KEY,
+      sourcePortableId TEXT NOT NULL,
+      archiveSha256 TEXT NOT NULL,
+      recoveredAt TEXT NOT NULL,
+      FOREIGN KEY (noteId) REFERENCES Notes(id) ON DELETE CASCADE
+    );
     CREATE TABLE IF NOT EXISTS BackupOperations (
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL CHECK (kind IN ('export', 'import', 'managed_retention', 'automatic_backup')),
