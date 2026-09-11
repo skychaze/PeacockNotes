@@ -400,3 +400,10 @@
 - The reviewer accepted Zip4j 2.11.6 plus a small Android Expo module after four required corrections: use persisted tree access and child-document creation for the managed collection, set `ZipParameters.entrySize` for streamed entries over 4 GiB, describe provider cancellation as best effort through cancellable descriptors and stream closure, and reserve simultaneous staged-archive plus expanded-output space.
 - It also narrowed the library survey claim to inspected candidates and corrected manifest wording from authentication to structural consistency.
 - Next: checkpoint the review result, apply these corrections on the research branch, rerun document checks, and post the independently verified resolution.
+
+## 2026-09-11 15:25 UTC
+
+- Applied the independent corrections to `docs/research/streaming-zip64-expo-android.md` on its research branch and pushed commit `87b6233`.
+- Document checks passed. Posted the reviewed resolution to GitHub issue #18 and closed it as completed.
+- Added the corrected native-module decision to parent map issue #1, then returned to main. The research branch remains the primary source and the unrelated untracked `docs/` directory remains untouched.
+- Next: commit and push this checkpoint, recompute the now-unblocked final-guarantees decision, and begin its human grilling round.
