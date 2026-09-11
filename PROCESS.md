@@ -367,3 +367,9 @@
 - The reviewer has a read-only mandate to treat commit `52bf898` as untrusted, verify every material claim against primary sources, identify corrections and caveats, and judge whether the recommendation is safe to accept.
 - No file ownership conflict exists because the reviewer will not modify the repository or GitHub.
 - Next: inspect the research document and final-guarantees ticket locally while the independent review runs.
+
+## 2026-09-11 15:10 UTC
+
+- Research subagent `sa-1` failed before producing output because the configured GLM provider returned HTTP 401 for insufficient account balance.
+- No repository or GitHub state changed. The local command that copied the research document to `/tmp` succeeded; the concurrent issue inspection was interrupted when the failure surfaced.
+- Next: preserve this failure checkpoint, then retry the same read-only mandate with the configured general fallback model at reasoning effort below the orchestrator.
