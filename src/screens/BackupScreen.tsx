@@ -2,7 +2,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, Alert, ScrollView, View } from 'react-native';
+import { ActivityIndicator, Alert, ScrollView, Switch, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppText } from '../components/AppText';
 import { Card } from '../components/Card';
@@ -18,7 +18,19 @@ import {
   getBackupFolderState,
   type BackupFolderState,
 } from '../services/backupFolder';
-import { exportBackup, type ExportProgress, type VerifiedBackup } from '../services/backupExport';
+import {
+  exportBackup,
+  getManagedRetentionState,
+  type ExportProgress,
+  type ManagedRetentionState,
+  type VerifiedBackup,
+} from '../services/backupExport';
+import {
+  attemptAutomaticBackup,
+  getAutomaticBackupState,
+  setAutomaticBackupEnabled,
+  type AutomaticBackupState,
+} from '../services/automaticBackup';
 import {
   browseArchiveForImport,
   importAllNotesAdditively,
@@ -68,6 +80,21 @@ export const BackupScreen = () => {
   const [undo, setUndo] = useState<FullReplacementUndo | null>(null);
   const [undoState, setUndoState] = useState<'idle' | 'loading' | 'committing'>('loading');
   const [undoMessage, setUndoMessage] = useState<'success' | 'failed' | null>(null);
+  const [automatic, setAutomatic] = useState<AutomaticBackupState | null>(null);
+  const [isChangingAutomatic, setIsChangingAutomatic] = useState(false);
+  const [retention, setRetention] = useState<ManagedRetentionState | null>(null);
+
+  const loadRetention = useCallback(async () => {
+    setRetention(await getManagedRetentionState());
+  }, []);
+
+  const loadAutomatic = useCallback(async () => {
+    try {
+      setAutomatic(await getAutomaticBackupState());
+    } catch (error) {
+      console.warn('Failed to read Automatic backup state:', error);
+    }
+  }, []);
 
   const loadUndo = useCallback(async () => {
     setUndoState('loading');
@@ -116,8 +143,25 @@ export const BackupScreen = () => {
     useCallback(() => {
       void loadFolder();
       void loadUndo();
-    }, [loadFolder, loadUndo])
+      void loadAutomatic();
+      void loadRetention();
+    }, [loadAutomatic, loadFolder, loadRetention, loadUndo])
   );
+
+  const changeAutomatic = async (enabled: boolean) => {
+    setIsChangingAutomatic(true);
+    try {
+      const next = await setAutomaticBackupEnabled(enabled);
+      setAutomatic(next);
+      if (enabled) setAutomatic(await attemptAutomaticBackup());
+    } catch (error) {
+      console.warn('Failed to change Automatic backup:', error);
+      Alert.alert(t('common.error'), t('backup.automatic.changeError'));
+      await loadAutomatic();
+    } finally {
+      setIsChangingAutomatic(false);
+    }
+  };
 
   const chooseFolder = async () => {
     try {
@@ -140,8 +184,10 @@ export const BackupScreen = () => {
     try {
       const result = await exportBackup(setExportProgress);
       setVerifiedBackup(result);
+      await loadRetention();
       await scanCollection();
     } catch (error: unknown) {
+      console.warn('Backup export failed:', error);
       const code = typeof error === 'object' && error !== null && 'code' in error
         ? String(error.code)
         : error instanceof Error ? error.message : 'EXPORT_FAILED';
@@ -328,6 +374,29 @@ export const BackupScreen = () => {
             {t('backup.intro')}
           </AppText>
         </View>
+
+        <Card style={{ gap: ui.space.md }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: ui.space.md }}>
+            <View style={{ flex: 1, gap: ui.space.xs }}>
+              <AppText variant="headline">{t('backup.automatic.title')}</AppText>
+              <AppText variant="bodySmall" color={colors.textSecondary}>{t('backup.automatic.help')}</AppText>
+            </View>
+            <Switch
+              accessibilityLabel={t('backup.automatic.title')}
+              disabled={automatic === null || isChangingAutomatic}
+              value={automatic?.enabled ?? false}
+              onValueChange={(enabled) => void changeAutomatic(enabled)}
+            />
+          </View>
+          <AppText
+            variant="body"
+            color={automatic?.phase === 'failed' || automatic?.phase === 'permission' || automatic?.phase === 'provider'
+              ? colors.error
+              : automatic?.phase === 'verified' ? colors.primary : colors.textSecondary}
+          >
+            {automatic ? t(`backup.automatic.status.${automatic.phase}`) : t('common.loading')}
+          </AppText>
+        </Card>
 
         <Card style={{ gap: ui.space.lg }}>
           <View style={{ gap: ui.space.xs }}>
@@ -522,6 +591,16 @@ export const BackupScreen = () => {
               <AppText variant="body" color={colors.error}>{t('backup.collection.failed')}</AppText>
             ) : collection && !collection.complete ? (
               <AppText variant="body" color={colors.error}>{t('backup.collection.incomplete')}</AppText>
+            ) : null}
+            {retention ? (
+              <AppText
+                variant="bodySmall"
+                color={retention.status === 'applied' || retention.status === 'nothing_to_prune'
+                  ? colors.textSecondary
+                  : colors.error}
+              >
+                {t(`backup.retention.status.${retention.status}`, { count: retention.deletedCount })}
+              </AppText>
             ) : null}
             {scanState !== 'loading' && collection && archives.length === 0 ? (
               <AppText variant="body" color={colors.textSecondary}>{t('backup.collection.empty')}</AppText>

@@ -27,6 +27,7 @@ class MainApplication : Application(), ReactApplication {
               // add(MyReactNativePackage())
               add(BackupFolderPackage())
               add(ArchivePackage())
+              add(AutomaticBackupPackage())
             }
 
           override fun getJSMainModuleName(): String = ".expo/.virtual-metro-entry"

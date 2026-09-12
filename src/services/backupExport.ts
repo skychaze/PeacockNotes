@@ -3,7 +3,15 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { backupDatabaseAsync, deleteDatabaseAsync, openDatabaseAsync } from 'expo-sqlite';
 import { BackupOperationCoordinator, SqliteBackupOperationStore, type BackupOperationHandler } from '../backup';
 import { getDb } from '../database/schema';
-import { createArchive, pinMedia, validateArchive, type ArchiveMediaSource, type ArchiveSummary } from './archive';
+import {
+  applyManagedArchiveRetention,
+  createArchive,
+  pinMedia,
+  validateArchive,
+  type ArchiveMediaSource,
+  type ArchiveSummary,
+  type ManagedRetentionResult,
+} from './archive';
 import { publishBackupArchive, type PublishedBackup } from './backupFolder';
 
 export type ExportProgress =
@@ -30,6 +38,7 @@ type Capture = Readonly<{
 }>;
 
 const safeTimestamp = (value: string) => value.replace(/[:.]/g, '-');
+const safeIdentity = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '-');
 const operationId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 const captureContent = async (directoryUri: string): Promise<Capture> => {
@@ -77,14 +86,16 @@ const sameInventory = (left: ArchiveSummary, right: ArchiveSummary) =>
   });
 
 const executeExport = async (
-  onProgress: (progress: ExportProgress) => void,
+  onProgress: (progress: ExportProgress) => void = () => {},
+  identity?: Readonly<{ key: string; createdAt: string }>,
 ): Promise<VerifiedBackup> => {
   const root = FileSystem.cacheDirectory;
   if (!root) throw new Error('STAGING_UNAVAILABLE');
   const work = `${root}backup-export-${operationId()}/`;
   const archiveUri = `${work}staged.pnbak`;
-  const createdAt = new Date().toISOString();
-  const name = `peacock-notes-${safeTimestamp(createdAt)}.pnbak`;
+  const createdAt = identity?.createdAt ?? new Date().toISOString();
+  const identitySuffix = identity ? `-${safeIdentity(identity.key)}` : '';
+  const name = `peacock-notes-${safeTimestamp(createdAt)}${identitySuffix}.pnbak`;
   await FileSystem.makeDirectoryAsync(work, { intermediates: true });
   let capture: Capture | null = null;
   try {
@@ -123,6 +134,11 @@ const executeExport = async (
 };
 
 class ExportOperationHandler implements BackupOperationHandler {
+  constructor(
+    private readonly requiresForegroundContext: boolean,
+    private readonly retryTransientFailures = false,
+  ) {}
+
   progress: ((progress: ExportProgress) => void) | null = null;
   verified: VerifiedBackup | null = null;
 
@@ -130,17 +146,25 @@ class ExportOperationHandler implements BackupOperationHandler {
     return operation.checkpoint ? null : { name: 'export_and_verify' };
   }
 
-  async runStep() {
-    if (!this.progress) return { outcome: 'failed', code: 'EXPORT_INTERRUPTED', message: 'Export context was lost.' } as const;
+  async runStep({ operation, idempotencyKey }: Parameters<BackupOperationHandler['runStep']>[0]) {
+    if (this.requiresForegroundContext && !this.progress) {
+      return { outcome: 'failed', code: 'EXPORT_INTERRUPTED', message: 'Export context was lost.' } as const;
+    }
     try {
-      this.verified = await executeExport(this.progress);
+      this.verified = await executeExport(this.progress ?? undefined, {
+        key: idempotencyKey,
+        createdAt: operation.createdAt,
+      });
       return { outcome: 'committed', checkpoint: 'verified', done: true } as const;
     } catch (error: unknown) {
       const code = typeof error === 'object' && error !== null && 'code' in error
         ? String(error.code)
         : error instanceof Error ? error.message : 'EXPORT_FAILED';
       const message = error instanceof Error ? error.message : 'Backup export failed.';
-      return { outcome: 'failed', code, message } as const;
+      const transient = code === 'BACKUP_OFFLINE';
+      return this.retryTransientFailures && transient
+        ? { outcome: 'retry', code, message } as const
+        : { outcome: 'failed', code, message } as const;
     }
   }
 
@@ -153,7 +177,35 @@ class ExportOperationHandler implements BackupOperationHandler {
   }
 }
 
-const exportHandler = new ExportOperationHandler();
+const exportHandler = new ExportOperationHandler(true);
+const automaticExportHandler = new ExportOperationHandler(false);
+class ManagedRetentionHandler implements BackupOperationHandler {
+  result: ManagedRetentionResult | null = null;
+
+  async nextStep(operation: Parameters<BackupOperationHandler['nextStep']>[0]) {
+    return operation.checkpoint ? null : { name: 'scan_and_prune' };
+  }
+
+  async runStep() {
+    try {
+      this.result = await applyManagedArchiveRetention();
+      return { outcome: 'committed', checkpoint: 'retention_applied', done: true } as const;
+    } catch (error: unknown) {
+      const code = typeof error === 'object' && error !== null && 'code' in error
+        ? String(error.code)
+        : error instanceof Error ? error.message : 'RETENTION_FAILED';
+      const message = error instanceof Error ? error.message : 'Managed retention failed.';
+      return { outcome: 'failed', code, message } as const;
+    }
+  }
+
+  async recoverInterruptedStep() {
+    // Archive deletion is idempotent. A fresh complete scan safely identifies
+    // only the expired verified archives that still remain.
+    return { outcome: 'not_committed' } as const;
+  }
+}
+const managedRetentionHandler = new ManagedRetentionHandler();
 const unavailableHandler: BackupOperationHandler = {
   async nextStep() { return null; },
   async runStep() { return { outcome: 'failed', code: 'UNAVAILABLE', message: 'Operation is unavailable.' }; },
@@ -162,9 +214,70 @@ const unavailableHandler: BackupOperationHandler = {
 const coordinator = new BackupOperationCoordinator(new SqliteBackupOperationStore(), {
   export: exportHandler,
   import: unavailableHandler,
-  managed_retention: unavailableHandler,
-  automatic_backup: unavailableHandler,
-}, { maxAttemptsPerStep: 1 });
+  managed_retention: managedRetentionHandler,
+  automatic_backup: automaticExportHandler,
+}, { maxAttemptsPerStep: 3 });
+
+export type ManagedRetentionState = Readonly<{
+  status: 'applied' | 'nothing_to_prune' | 'scan_incomplete' | 'policy_restricted' | 'provider_failed' | 'failed';
+  deletedCount: number;
+  updatedAt: string;
+}>;
+
+const storeRetentionState = async (state: ManagedRetentionState) => {
+  await AsyncStorage.setItem('backup.retentionState', JSON.stringify(state));
+  return state;
+};
+
+export const getManagedRetentionState = async (): Promise<ManagedRetentionState | null> => {
+  const stored = await AsyncStorage.getItem('backup.retentionState');
+  if (!stored) return null;
+  try {
+    const parsed = JSON.parse(stored) as Partial<ManagedRetentionState>;
+    return typeof parsed.status === 'string' && typeof parsed.deletedCount === 'number' && typeof parsed.updatedAt === 'string'
+      ? parsed as ManagedRetentionState
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+export const runManagedRetention = async (): Promise<ManagedRetentionState> => {
+  await coordinator.resume();
+  managedRetentionHandler.result = null;
+  const operation = await coordinator.start(operationId(), 'managed_retention', '{"version":1}');
+  const result = managedRetentionHandler.result as ManagedRetentionResult | null;
+  const updatedAt = new Date().toISOString();
+  if (operation.state === 'succeeded' && result) {
+    return storeRetentionState({
+      status: result.status,
+      deletedCount: result.deletedCount,
+      updatedAt,
+    });
+  }
+  const status = operation.errorCode === 'RETENTION_SCAN_INCOMPLETE'
+    ? 'scan_incomplete'
+    : operation.errorCode === 'RETENTION_POLICY_RESTRICTED'
+      ? 'policy_restricted'
+      : operation.errorCode === 'PROVIDER_DELETE_FAILED'
+        ? 'provider_failed'
+        : 'failed';
+  return storeRetentionState({ status, deletedCount: 0, updatedAt });
+};
+
+export const runAutomaticExport = async (): Promise<VerifiedBackup> => {
+  await coordinator.resume();
+  automaticExportHandler.verified = null;
+  const operation = await coordinator.start(operationId(), 'automatic_backup', '{"version":1}');
+  if (operation.state !== 'succeeded' || !automaticExportHandler.verified) {
+    const error = new Error(operation.errorMessage ?? 'EXPORT_FAILED');
+    Object.assign(error, { code: operation.errorCode ?? 'EXPORT_FAILED' });
+    throw error;
+  }
+  const verified = automaticExportHandler.verified;
+  await runManagedRetention();
+  return verified;
+};
 
 export const exportBackup = async (
   onProgress: (progress: ExportProgress) => void,
@@ -179,7 +292,9 @@ export const exportBackup = async (
       Object.assign(error, { code: operation.errorCode ?? 'EXPORT_FAILED' });
       throw error;
     }
-    return exportHandler.verified;
+    const verified = exportHandler.verified;
+    await runManagedRetention();
+    return verified;
   } finally {
     exportHandler.progress = null;
   }

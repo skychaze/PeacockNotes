@@ -88,7 +88,7 @@ class BackupFolderModule(
         document = DocumentsContract.createDocument(
           reactContext.contentResolver,
           parent,
-          "application/zip",
+          "application/octet-stream",
           requestedName
         ) ?: throw PublishException("PROVIDER_INTERRUPTED", "The provider did not create the backup document.")
 
@@ -112,7 +112,7 @@ class BackupFolderModule(
         }
         val actualName = displayName(document)
         if (actualName != requestedName) {
-          throw PublishException("OUTPUT_RENAMED", "The provider renamed the backup document.")
+          throw PublishException("OUTPUT_RENAMED", "The provider stored '$actualName' instead of '$requestedName'.")
         }
         val actualBytes = reactContext.contentResolver.openAssetFileDescriptor(document, "r").use { it?.length ?: -1L }
         if (actualBytes != expectedBytes) {
@@ -188,10 +188,11 @@ class BackupFolderModule(
     val persistedPermission = reactContext.contentResolver.persistedUriPermissions.firstOrNull {
       it.uri == uri && it.isReadPermission && it.isWritePermission
     }
-    if (persistedPermission == null) return state("revoked", uri, displayName(uri))
+    if (persistedPermission == null) return state("revoked", uri, displayName(uri, resolveTreeRoot = true))
 
     return try {
-      reactContext.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+      val document = DocumentsContract.buildDocumentUriUsingTree(uri, DocumentsContract.getTreeDocumentId(uri))
+      reactContext.contentResolver.query(document, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
         .use { cursor ->
           if (cursor == null || !cursor.moveToFirst()) {
             state("unavailable", uri, null)
@@ -221,8 +222,11 @@ class BackupFolderModule(
     return value.toLong()
   }
 
-  private fun displayName(uri: Uri): String? = try {
-    reactContext.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+  private fun displayName(uri: Uri, resolveTreeRoot: Boolean = false): String? = try {
+    val document = if (resolveTreeRoot && DocumentsContract.isTreeUri(uri)) {
+      DocumentsContract.buildDocumentUriUsingTree(uri, DocumentsContract.getTreeDocumentId(uri))
+    } else uri
+    reactContext.contentResolver.query(document, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
       .use { cursor ->
         if (cursor != null && cursor.moveToFirst()) cursor.stringOrNull(OpenableColumns.DISPLAY_NAME) else null
       }

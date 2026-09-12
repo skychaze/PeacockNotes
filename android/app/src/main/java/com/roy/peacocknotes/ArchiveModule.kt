@@ -27,6 +27,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.security.MessageDigest
 import java.text.Normalizer
+import java.time.Instant
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -46,7 +47,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     private const val REPLACEMENT_UNDO = "undo"
     private const val LAST_UNDONE_SNAPSHOT = "last_undone_snapshot"
     private const val UNDO_WINDOW_MILLIS = 168L * 60 * 60 * 1000
-    private val ARCHIVE_NAME = Regex("^peacock-notes-\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z\\.pnbak$")
+    private val ARCHIVE_NAME = Regex("^peacock-notes-\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z(?:-[a-zA-Z0-9_-]+)?\\.pnbak$")
     private val INCOMPATIBLE_CODES = setOf("UNSUPPORTED_FORMAT_VERSION", "UNSUPPORTED_DATABASE_VERSION")
     private val UNCERTAIN_CODES = setOf("SOURCE_UNAVAILABLE", "STAGING_UNAVAILABLE", "INSUFFICIENT_STORAGE", "ARCHIVE_OPERATION_FAILED")
   }
@@ -80,6 +81,13 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     runCatching { scanFolder() }
       .onSuccess(promise::resolve)
       .onFailure { promise.reject("PROVIDER_SCAN_FAILED", it.message, it) }
+  }
+
+  @ReactMethod
+  fun applyManagedRetention(promise: Promise) = executor.execute {
+    runCatching { applyRetention() }
+      .onSuccess(promise::resolve)
+      .onFailure { promise.reject(errorCode(it), it.message, it) }
   }
 
   @ReactMethod
@@ -212,6 +220,59 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       putString("verification", if (state == "damaged") "failed" else "not_verified")
       putString("compatibility", if (state == "incompatible") "incompatible" else "unknown")
       putNull("createdAt")
+    }
+  }
+
+  private fun applyRetention(): com.facebook.react.bridge.WritableMap {
+    val scan = scanFolder()
+    if (!scan.getBoolean("complete")) {
+      fail("RETENTION_SCAN_INCOMPLETE", "Managed retention requires a complete trustworthy folder scan")
+    }
+    val archives = scan.getArray("archives") ?: fail("RETENTION_SCAN_INCOMPLETE", "The folder scan did not return archives")
+    val retentionArchives = (0 until archives.size()).mapNotNull { index ->
+      val archive = archives.getMap(index) ?: return@mapNotNull null
+      val uri = archive.getString("uri") ?: return@mapNotNull null
+      val createdAt = archive.getString("createdAt")?.let {
+        try { Instant.parse(it).toEpochMilli() } catch (_: Exception) { null }
+      }
+      RetentionArchiveCandidate(uri, archive.getString("state") ?: "uncertain", createdAt)
+    }
+    val candidates = ArchiveRetentionPolicy.expiredVerifiedArchiveKeys(
+      retentionArchives,
+      System.currentTimeMillis(),
+      UNDO_WINDOW_MILLIS,
+    ).map(Uri::parse)
+
+    // Establish policy support for every candidate before deleting any recovery point.
+    candidates.forEach { candidate ->
+      val flags = context.contentResolver.query(
+        candidate,
+        arrayOf(DocumentsContract.Document.COLUMN_FLAGS),
+        null,
+        null,
+        null,
+      )?.use { cursor ->
+        if (!cursor.moveToFirst()) null else cursor.longOrNull(DocumentsContract.Document.COLUMN_FLAGS)
+      } ?: fail("RETENTION_POLICY_RESTRICTED", "The provider did not report whether an archive can be deleted")
+      if (flags and DocumentsContract.Document.FLAG_SUPPORTS_DELETE.toLong() == 0L) {
+        fail("RETENTION_POLICY_RESTRICTED", "The connected folder does not permit managed archive deletion")
+      }
+    }
+
+    var deleted = 0
+    candidates.forEach { candidate ->
+      val removed = try {
+        DocumentsContract.deleteDocument(context.contentResolver, candidate)
+      } catch (error: Exception) {
+        fail("PROVIDER_DELETE_FAILED", "The provider failed while applying managed retention", error)
+      }
+      if (!removed) fail("PROVIDER_DELETE_FAILED", "The provider refused to delete an expired archive")
+      deleted += 1
+    }
+    return Arguments.createMap().apply {
+      putString("status", if (candidates.isEmpty()) "nothing_to_prune" else "applied")
+      putInt("deletedCount", deleted)
+      putInt("retainedVerifiedCount", retentionArchives.count { it.state == "valid" && it.createdAt != null } - deleted)
     }
   }
 
@@ -414,6 +475,8 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         ?: fail("STAGING_UNAVAILABLE", "Validated import staging is missing")
       val source = SQLiteDatabase.openDatabase(File(extracted, DATABASE_PATH).path, null, SQLiteDatabase.OPEN_READONLY)
       val live = SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READWRITE)
+      val createdMedia = mutableSetOf<File>()
+      var mediaCommitted = false
       try {
         importReceiptResult(live, operationKey)?.let { return it }
         val available = mutableSetOf<String>()
@@ -438,7 +501,10 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
                 val keyHash = MessageDigest.getInstance("SHA-256").digest(operationKey.toByteArray()).joinToString("") { "%02x".format(it) }.take(12)
                 File(addressedTarget.parentFile, "$hash.recovered-$keyHash")
               } else addressedTarget
-              if (!target.exists()) copyFileVerified(staged, target, "STAGING_VERIFICATION_FAILED")
+              if (!target.exists()) {
+                createdMedia.add(target)
+                copyFileVerified(staged, target, "STAGING_VERIFICATION_FAILED")
+              }
               mediaUris[mediaKey(table, path)] = Uri.fromFile(target).toString()
             }
           }
@@ -478,8 +544,13 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
           if (imported > 0) live.execSQL("UPDATE ContentMetadata SET revision=revision+1 WHERE id=1")
           live.setTransactionSuccessful()
         } finally { live.endTransaction() }
+        mediaCommitted = true
         return importResult(false, imported, recovered, skipped, restrictions.audioIds.size, restrictions.fileIds.size)
-      } finally { source.close(); live.close() }
+      } finally {
+        if (!mediaCommitted) createdMedia.forEach { it.delete() }
+        source.close()
+        live.close()
+      }
     } finally { work.deleteRecursively() }
   }
 
@@ -704,7 +775,12 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       }
       snapshot.deleteRecursively()
       return Arguments.createMap().apply { putBoolean("alreadyUndone", false) }
-    } finally { rollback.deleteRecursively(); staged.deleteRecursively() }
+    } finally {
+      // A persisted journal owns the rollback generation. Keep it until startup
+      // recovery has either restored it or removed the journal successfully.
+      if (!preferences.contains(REPLACEMENT_JOURNAL)) rollback.deleteRecursively()
+      staged.deleteRecursively()
+    }
   }
 
   private fun restoreRecoverableDatabase(prior: File, staged: File) {
@@ -793,7 +869,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   private fun inspectCurrentMedia(db: SQLiteDatabase, mediaRoot: File): MediaRestrictions {
     fun invalidIds(table: String, directory: String): Set<Long> {
       val root = File(mediaRoot, directory)
-      val rootPath = runCatching { root.canonicalPath }.getOrElse { return emptySet() }
+      val rootPath = runCatching { root.canonicalPath }.getOrNull()
       val invalid = mutableSetOf<Long>()
       db.rawQuery("SELECT id,uri FROM $table", null).use { cursor ->
         while (cursor.moveToNext()) {
@@ -801,7 +877,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
             val uri = Uri.parse(cursor.getString(1))
             if (uri.scheme != "file" || uri.path.isNullOrBlank()) null else File(uri.path!!)
           }.getOrNull()
-          val safe = file != null && runCatching {
+          val safe = rootPath != null && file != null && runCatching {
             val path = file.canonicalPath
             path.startsWith("$rootPath${File.separator}") && file.isFile && file.canRead() &&
               FileInputStream(file).use { input ->

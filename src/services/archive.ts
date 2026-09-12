@@ -78,6 +78,12 @@ export type BackupCollectionScan = Readonly<{
   archives: readonly BackupCollectionArchive[];
 }>;
 
+export type ManagedRetentionResult = Readonly<{
+  status: 'applied' | 'nothing_to_prune';
+  deletedCount: number;
+  retainedVerifiedCount: number;
+}>;
+
 export type ArchivedNotePreview = Readonly<{
   portableId: string;
   title: string;
@@ -144,6 +150,7 @@ type NativeArchiveModule = {
   createArchive(request: CreateArchiveRequest): Promise<ArchiveSummary>;
   validateArchive(request: ValidateArchiveRequest): Promise<ArchiveSummary>;
   scanConnectedFolder(): Promise<BackupCollectionScan>;
+  applyManagedRetention(): Promise<ManagedRetentionResult>;
   previewImport(request: Readonly<{ archiveUri: string }>): Promise<ImportPreview>;
   commitSelectiveImport(request: CommitSelectiveImportRequest): Promise<ImportResult>;
   commitFullReplacement(request: FullReplacementRequest): Promise<FullReplacementResult>;
@@ -174,6 +181,9 @@ export const validateArchive = (request: ValidateArchiveRequest): Promise<Archiv
 
 export const scanBackupCollection = (): Promise<BackupCollectionScan> =>
   moduleOrThrow().scanConnectedFolder();
+
+export const applyManagedArchiveRetention = (): Promise<ManagedRetentionResult> =>
+  moduleOrThrow().applyManagedRetention();
 
 export const previewArchiveImport = (archiveUri: string): Promise<ImportPreview> =>
   moduleOrThrow().previewImport({ archiveUri });

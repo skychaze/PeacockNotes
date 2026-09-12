@@ -196,3 +196,8 @@ export async function runCoordinatorTests() {
   await testInterruptedReplacementRollsBackBeforeRetry();
   testUndoWindowExactBoundary();
 }
+
+void runCoordinatorTests().catch((error: unknown) => {
+  console.error(error);
+  process.exitCode = 1;
+});

@@ -1,0 +1,35 @@
+name: Recovery checks
+
+on:
+  pull_request:
+    paths:
+      - 'App.tsx'
+      - 'index.ts'
+      - 'src/backup/**'
+      - 'src/services/archive.ts'
+      - 'src/services/automaticBackup.ts'
+      - 'src/services/backupExport.ts'
+      - 'src/services/backupFolder.ts'
+      - 'src/services/backupImport.ts'
+      - 'src/database/schema.ts'
+      - 'android/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/recovery-checks.yml'
+  workflow_dispatch:
+
+jobs:
+  verify-recovery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npm run verify:recovery

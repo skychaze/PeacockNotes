@@ -29,7 +29,8 @@ type ImportPayload = Readonly<{
   selectedNoteIds: readonly string[];
 }>;
 
-const selectiveOperationId = () => `import-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const selectiveOperationId = (archiveSha256: string, selectedNoteIds: readonly string[]) =>
+  `import-selective-${archiveSha256}-${selectedNoteIds.join('.')}`;
 const additiveOperationId = (archiveSha256: string) => `import-additive-${archiveSha256}`;
 const replacementOperationId = (archiveSha256: string) => `import-replacement-${archiveSha256}`;
 
@@ -197,7 +198,9 @@ const importNotes = async (
   const id = mode === 'additive'
     ? additiveOperationId(preview.archiveSha256)
     : mode === 'replacement' ? replacementOperationId(preview.archiveSha256)
-      : mode === 'undo' ? `undo-replacement-${preview.archiveSha256}` : selectiveOperationId();
+      : mode === 'undo'
+        ? `undo-replacement-${preview.archiveSha256}`
+        : selectiveOperationId(preview.archiveSha256, payload.selectedNoteIds);
   const existing = await store.get(id);
   const operation = existing?.state === 'failed' || existing?.state === 'interrupted'
     ? await coordinator.retry(id)

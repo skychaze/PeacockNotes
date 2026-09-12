@@ -28,6 +28,7 @@ import { StorageUsageScreen } from './src/screens/StorageUsageScreen';
 import { BackupScreen } from './src/screens/BackupScreen';
 import { LanguageProvider, useLanguage } from './src/i18n/LanguageContext';
 import { recoverInterruptedFullReplacement } from './src/services/archive';
+import { installAutomaticBackupCatchUp } from './src/services/automaticBackup';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const navigationRef = createNavigationContainerRef<RootStackParamList>();
@@ -61,6 +62,11 @@ const AppNavigator = () => {
     }
     setup();
   }, []);
+
+  useEffect(() => {
+    if (!isReady || hasSetupError) return;
+    return installAutomaticBackupCatchUp();
+  }, [hasSetupError, isReady]);
 
   useEffect(() => {
     if (!isNavReady || !isShareReady || !hasShareIntent || sharedFiles.length === 0) {
