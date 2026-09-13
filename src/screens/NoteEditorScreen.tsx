@@ -8,10 +8,9 @@ import * as Sharing from 'expo-sharing';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
-  Animated as RNAnimated,
   Image,
   Modal,
   Platform,
@@ -20,24 +19,21 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import Animated from 'react-native-reanimated';
 import type { ViewStyle } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ActionSheet } from '../components/ActionSheet';
 import type { ActionSheetRow } from '../components/ActionSheet';
-import { AnimatedBars } from '../components/AnimatedBars';
-import { AnimatedRing } from '../components/AnimatedRing';
 import { AppText, getFontFamily } from '../components/AppText';
 import { BottomSheet } from '../components/BottomSheet';
+import { EditorAttachments, type AudioAttachmentHandle, type AudioGroup } from '../components/EditorAttachments';
+import { EditorRecordingBar } from '../components/EditorRecordingBar';
 import { GlassSurface } from '../components/GlassSurface';
 import { IconButton } from '../components/IconButton';
 import { LanguageToggleButton } from '../components/LanguageToggleButton';
 import { PressableScale } from '../components/PressableScale';
 import { PrimaryButton } from '../components/PrimaryButton';
-import { ProgressFill } from '../components/ProgressFill';
 import { ScreenContainer } from '../components/ScreenContainer';
 import { TOP_BAR_HEIGHT, TopBar } from '../components/TopBar';
-import { useEntrance } from '../components/entrance';
 import { createNote, getNoteById, updateNote } from '../database/schema';
 import { useLanguage } from '../i18n/LanguageContext';
 import { ui } from '../theme/ui';
@@ -50,7 +46,7 @@ import {
   getPreferredShareExtension,
   isShareFriendlyAudioExtension,
 } from '../utils/audioFormat';
-import { getFileExtension, getFileMimeType, isImageFile, getFileIcon } from '../utils/fileFormat';
+import { getFileExtension, getFileMimeType, isImageFile } from '../utils/fileFormat';
 import { deleteMediaFiles } from '../utils/mediaFiles';
 
 type Route = RouteProp<RootStackParamList, 'NoteEditor'>;
@@ -93,15 +89,6 @@ const ensureFileFolder = async () => {
   return path;
 };
 
-const formatDuration = (seconds: number) => {
-  const safeSeconds = Math.max(0, Math.floor(seconds));
-  const minutes = Math.floor(safeSeconds / 60)
-    .toString()
-    .padStart(2, '0');
-  const remainingSeconds = (safeSeconds % 60).toString().padStart(2, '0');
-  return `${minutes}:${remainingSeconds}`;
-};
-
 const createAudioGroupId = () => `audio_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 const FLAG_GRANT_READ_URI_PERMISSION = 1;
@@ -114,16 +101,6 @@ const barShadow: ViewStyle = {
   elevation: 6,
 };
 
-const formatDurationMillis = (millis: number) => formatDuration(Math.floor(Math.max(0, millis) / 1000));
-
-type AudioGroup = {
-  groupId: string;
-  displayName: string;
-  segments: NoteAudioDraft[];
-};
-
-
-
 export const NoteEditorScreen = () => {
   const route = useRoute<Route>();
   const navigation = useNavigation<Navigation>();
@@ -131,7 +108,6 @@ export const NoteEditorScreen = () => {
   const insets = useSafeAreaInsets();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const { t, language } = useLanguage();
-  const entrance = useEntrance();
 
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
@@ -140,39 +116,25 @@ export const NoteEditorScreen = () => {
   const [viewingFileUri, setViewingFileUri] = useState<string | null>(null);
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [isRecordingPaused, setIsRecordingPaused] = useState(false);
-  const [recordSeconds, setRecordSeconds] = useState(0);
   const [appendTargetGroupId, setAppendTargetGroupId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(Boolean(route.params.noteId));
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [playingGroupId, setPlayingGroupId] = useState<string | null>(null);
-  const [playbackPositionMillis, setPlaybackPositionMillis] = useState(0);
-  const [playbackDurationMillis, setPlaybackDurationMillis] = useState(0);
   const [contentInputHeight, setContentInputHeight] = useState(230);
   const [activeSheet, setActiveSheet] = useState<EditorSheet>('none');
   const [actionsGroupId, setActionsGroupId] = useState<string | null>(null);
-  const [actionsFileIndex, setActionsFileIndex] = useState<number | null>(null);
+  const [actionsFile, setActionsFile] = useState<NoteFileDraft | null>(null);
   const [renameTargetGroupId, setRenameTargetGroupId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [detailsTargetGroupId, setDetailsTargetGroupId] = useState<string | null>(null);
 
-  const soundRef = useRef<Audio.Sound | null>(null);
   const recordingRef = useRef<Audio.Recording | null>(null);
   const isFinalizingRecordingRef = useRef(false);
-  const playbackQueueRef = useRef<{ segments: NoteAudioDraft[]; nextIndex: number; startedAtMillis: number } | null>(
-    null
-  );
-  const isPlaybackStoppingRef = useRef(false);
-  const pulseAnim = useRef(new RNAnimated.Value(1)).current;
-  const equalizerA = useRef(new RNAnimated.Value(0.35)).current;
-  const equalizerB = useRef(new RNAnimated.Value(0.65)).current;
-  const equalizerC = useRef(new RNAnimated.Value(0.45)).current;
+  const editorAttachmentsRef = useRef<AudioAttachmentHandle>(null);
   const initialDraftRef = useRef<NoteDraft>({ title: '', content: '', audios: [], files: [] });
   const skipUnsavedWarningRef = useRef(false);
   const isAutoSavingRef = useRef(false);
 
   const { folderId, noteId } = route.params;
-  const isEditMode = Boolean(noteId);
   const createDefaultAudioName = (order: number) => t('editor.audioDefaultName', { index: order });
 
   const closeSheet = () => setActiveSheet('none');
@@ -191,6 +153,7 @@ export const NoteEditorScreen = () => {
         }
 
         const loadedAudios = (note.audios ?? []).map((audio, index) => ({
+          portableId: audio.portableId,
           uri: audio.uri,
           displayName:
             audio.displayName?.trim() || createDefaultAudioName(audio.orderIndex || index + 1),
@@ -199,6 +162,7 @@ export const NoteEditorScreen = () => {
         }));
 
         const loadedFiles = (note.files ?? []).map((file) => ({
+          portableId: file.portableId,
           uri: file.uri,
           displayName: file.displayName,
           mimeType: file.mimeType,
@@ -232,98 +196,6 @@ export const NoteEditorScreen = () => {
   }, [noteId]);
 
   useEffect(() => {
-    if (!recording) {
-      pulseAnim.stopAnimation();
-      pulseAnim.setValue(1);
-      return;
-    }
-
-    if (isRecordingPaused) {
-      pulseAnim.stopAnimation();
-      pulseAnim.setValue(1);
-      return;
-    }
-
-    const pulseLoop = RNAnimated.loop(
-      RNAnimated.sequence([
-        RNAnimated.timing(pulseAnim, {
-          toValue: 1.45,
-          duration: 650,
-          useNativeDriver: true,
-        }),
-        RNAnimated.timing(pulseAnim, {
-          toValue: 1,
-          duration: 650,
-          useNativeDriver: true,
-        }),
-      ])
-    );
-    pulseLoop.start();
-
-    const timer = setInterval(() => {
-      setRecordSeconds((prev) => prev + 1);
-    }, 1000);
-
-    return () => {
-      pulseLoop.stop();
-      clearInterval(timer);
-    };
-  }, [isRecordingPaused, recording, pulseAnim]);
-
-  useEffect(() => {
-    if (!isPlaying) {
-      equalizerA.stopAnimation();
-      equalizerB.stopAnimation();
-      equalizerC.stopAnimation();
-      equalizerA.setValue(0.35);
-      equalizerB.setValue(0.65);
-      equalizerC.setValue(0.45);
-      return;
-    }
-
-    const animateBar = (value: RNAnimated.Value, firstPeak: number, secondPeak: number, delay: number) =>
-      RNAnimated.loop(
-        RNAnimated.sequence([
-          RNAnimated.delay(delay),
-          RNAnimated.timing(value, {
-            toValue: firstPeak,
-            duration: 220,
-            useNativeDriver: false,
-          }),
-          RNAnimated.timing(value, {
-            toValue: 0.25,
-            duration: 180,
-            useNativeDriver: false,
-          }),
-          RNAnimated.timing(value, {
-            toValue: secondPeak,
-            duration: 250,
-            useNativeDriver: false,
-          }),
-          RNAnimated.timing(value, {
-            toValue: 0.38,
-            duration: 180,
-            useNativeDriver: false,
-          }),
-        ])
-      );
-
-    const loopA = animateBar(equalizerA, 1, 0.8, 0);
-    const loopB = animateBar(equalizerB, 0.88, 1, 70);
-    const loopC = animateBar(equalizerC, 0.75, 0.92, 140);
-
-    loopA.start();
-    loopB.start();
-    loopC.start();
-
-    return () => {
-      loopA.stop();
-      loopB.stop();
-      loopC.stop();
-    };
-  }, [equalizerA, equalizerB, equalizerC, isPlaying]);
-
-  useEffect(() => {
     recordingRef.current = recording;
   }, [recording]);
 
@@ -332,9 +204,6 @@ export const NoteEditorScreen = () => {
       const activeRecording = recordingRef.current;
       if (activeRecording) {
         activeRecording.stopAndUnloadAsync().catch(() => undefined);
-      }
-      if (soundRef.current) {
-        soundRef.current.unloadAsync().catch(() => undefined);
       }
       void Audio.setAudioModeAsync({
         allowsRecordingIOS: false,
@@ -433,6 +302,31 @@ export const NoteEditorScreen = () => {
     );
   }, [audios, content, files, title]);
 
+  const persistDraft = async (draft: NoteDraft, errorMessage: string): Promise<boolean> => {
+    try {
+      setIsSaving(true);
+      if (noteId) {
+        await updateNote(noteId, draft);
+      } else {
+        await createNote(folderId, draft);
+      }
+
+      initialDraftRef.current = {
+        title: draft.title,
+        content: draft.content,
+        audios: draft.audios.map((audio) => ({ ...audio })),
+        files: draft.files.map((file) => ({ ...file })),
+      };
+      return true;
+    } catch (error) {
+      console.warn('Failed to persist note:', error);
+      Alert.alert(t('common.error'), errorMessage);
+      return false;
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const saveNote = async () => {
     const audiosForSave = await flushActiveRecordingForSave();
     if (!audiosForSave) {
@@ -451,28 +345,10 @@ export const NoteEditorScreen = () => {
       files,
     };
 
-    try {
-      setIsSaving(true);
-      if (noteId) {
-        await updateNote(noteId, draft);
-      } else {
-        await createNote(folderId, draft);
-      }
-
-      initialDraftRef.current = {
-        title: draft.title,
-        content: draft.content,
-        audios: draft.audios.map((audio) => ({ ...audio })),
-        files: draft.files.map((file) => ({ ...file })),
-      };
-
+    const didSave = await persistDraft(draft, t('editor.saveError'));
+    if (didSave) {
       skipUnsavedWarningRef.current = true;
       navigation.goBack();
-    } catch (error) {
-      console.warn('Failed to save note:', error);
-      Alert.alert(t('common.error'), t('editor.saveError'));
-    } finally {
-      setIsSaving(false);
     }
   };
 
@@ -497,28 +373,7 @@ export const NoteEditorScreen = () => {
       files,
     };
 
-    try {
-      setIsSaving(true);
-      if (noteId) {
-        await updateNote(noteId, draft);
-      } else {
-        await createNote(folderId, draft);
-      }
-
-      initialDraftRef.current = {
-        title: draft.title,
-        content: draft.content,
-        audios: draft.audios.map((audio) => ({ ...audio })),
-        files: draft.files.map((file) => ({ ...file })),
-      };
-      return true;
-    } catch (error) {
-      console.warn('Failed to auto-save note before exit:', error);
-      Alert.alert(t('common.error'), t('editor.autoSaveError'));
-      return false;
-    } finally {
-      setIsSaving(false);
-    }
+    return persistDraft(draft, t('editor.autoSaveError'));
   };
 
   useEffect(() => {
@@ -593,16 +448,15 @@ export const NoteEditorScreen = () => {
     }
   };
 
-  const removeFile = (index: number) => {
-    const file = files[index];
+  const removeFile = (file: NoteFileDraft) => {
     const wasPersisted = initialDraftRef.current.files.some((item) => item.uri === file?.uri);
     if (file && !wasPersisted) {
       void deleteMediaFiles([file.uri]);
     }
-    setFiles((prev) => prev.filter((_, i) => i !== index));
+    setFiles((prev) => prev.filter((item) => item !== file));
   };
 
-  const shareSpecificFile = async (file: NoteFileDraft) => {
+  const shareSpecificFile = useCallback(async (file: NoteFileDraft) => {
     try {
       if (!(await Sharing.isAvailableAsync())) {
         Alert.alert(t('editor.shareUnavailableTitle'), t('editor.shareUnavailableBody'));
@@ -617,9 +471,9 @@ export const NoteEditorScreen = () => {
       console.warn('Failed to share file:', error);
       Alert.alert(t('common.error'), t('editor.shareFileError'));
     }
-  };
+  }, [t]);
 
-  const openFile = async (file: NoteFileDraft) => {
+  const openFile = useCallback(async (file: NoteFileDraft) => {
     const isImage = isImageFile(file.mimeType, file.displayName, file.uri);
     if (isImage) {
       setViewingFileUri(file.uri);
@@ -639,7 +493,17 @@ export const NoteEditorScreen = () => {
       console.warn('No app could open the file directly, falling back to share:', error);
       await shareSpecificFile(file);
     }
-  };
+  }, [shareSpecificFile]);
+
+  const openGroupActions = useCallback((groupId: string) => {
+    setActionsGroupId(groupId);
+    setActiveSheet('groupActions');
+  }, []);
+
+  const openFileActions = useCallback((file: NoteFileDraft) => {
+    setActionsFile(file);
+    setActiveSheet('fileActions');
+  }, []);
 
   const importAudio = async () => {
     try {
@@ -704,7 +568,6 @@ export const NoteEditorScreen = () => {
       const appendGroupId = appendTargetGroupId;
       setRecording(null);
       setIsRecordingPaused(false);
-      setRecordSeconds(0);
       setAppendTargetGroupId(null);
       return uri ? { uri, appendGroupId } : null;
     } finally {
@@ -713,15 +576,17 @@ export const NoteEditorScreen = () => {
     }
   };
 
-  const startRecording = async () => {
+  const startRecordingSession = async (groupId: string | null) => {
     if (recording || isFinalizingRecordingRef.current) {
       return;
     }
 
+    if (groupId && !audioGroups.some((group) => group.groupId === groupId)) {
+      return;
+    }
+
     try {
-      if (soundRef.current) {
-        await stopCurrentPlayback();
-      }
+      await editorAttachmentsRef.current?.stopPlayback();
 
       const permission = await Audio.requestPermissionsAsync();
       if (!permission.granted) {
@@ -737,16 +602,17 @@ export const NoteEditorScreen = () => {
       const newRecording = new Audio.Recording();
       await newRecording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
       await newRecording.startAsync();
-      setAppendTargetGroupId(null);
+      setAppendTargetGroupId(groupId);
       setIsRecordingPaused(false);
-      setRecordSeconds(0);
       setRecording(newRecording);
     } catch (error) {
-      console.warn('Failed to start recording:', error);
+      console.warn('Failed to start recording session:', error);
       void resetAudioModeForPlayback();
       Alert.alert(t('common.error'), t('editor.recordStartError'));
     }
   };
+
+  const startRecording = async () => startRecordingSession(null);
 
   const stopRecording = async () => {
     if (!recording || appendTargetGroupId) {
@@ -771,43 +637,7 @@ export const NoteEditorScreen = () => {
   };
 
   const startAppendRecording = async (groupId: string) => {
-    if (recording || isFinalizingRecordingRef.current) {
-      return;
-    }
-
-    const targetGroup = audioGroups.find((group) => group.groupId === groupId);
-    if (!targetGroup) {
-      return;
-    }
-
-    try {
-      if (soundRef.current) {
-        await stopCurrentPlayback();
-      }
-
-      const permission = await Audio.requestPermissionsAsync();
-      if (!permission.granted) {
-        Alert.alert(t('editor.micPermissionTitle'), t('editor.micPermissionBody'));
-        return;
-      }
-
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-      });
-
-      const newRecording = new Audio.Recording();
-      await newRecording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-      await newRecording.startAsync();
-      setAppendTargetGroupId(groupId);
-      setIsRecordingPaused(false);
-      setRecordSeconds(0);
-      setRecording(newRecording);
-    } catch (error) {
-      console.warn('Failed to start append recording:', error);
-      void resetAudioModeForPlayback();
-      Alert.alert(t('common.error'), t('editor.recordStartError'));
-    }
+    return startRecordingSession(groupId);
   };
 
   const stopAppendRecording = async (groupId: string) => {
@@ -912,109 +742,6 @@ export const NoteEditorScreen = () => {
     }
   };
 
-  const resetPlaybackState = () => {
-    playbackQueueRef.current = null;
-    setIsPlaying(false);
-    setPlayingGroupId(null);
-    setPlaybackPositionMillis(0);
-    setPlaybackDurationMillis(0);
-  };
-
-  const stopCurrentPlayback = async () => {
-    isPlaybackStoppingRef.current = true;
-    try {
-      const currentSound = soundRef.current;
-      if (currentSound) {
-        await currentSound.stopAsync();
-        await currentSound.unloadAsync();
-      }
-    } catch {
-      // ignore
-    } finally {
-      soundRef.current = null;
-      resetPlaybackState();
-      isPlaybackStoppingRef.current = false;
-    }
-  };
-
-  const playSegmentQueue = async (groupId: string) => {
-    const queue = playbackQueueRef.current;
-    if (!queue) {
-      return;
-    }
-
-    if (queue.nextIndex >= queue.segments.length) {
-      await stopCurrentPlayback();
-      return;
-    }
-
-    const segment = queue.segments[queue.nextIndex];
-    queue.nextIndex += 1;
-
-    const currentSound = soundRef.current;
-    if (currentSound) {
-      await currentSound.unloadAsync().catch(() => undefined);
-      soundRef.current = null;
-    }
-
-    const { sound } = await Audio.Sound.createAsync({ uri: segment.uri });
-    soundRef.current = sound;
-
-    sound.setOnPlaybackStatusUpdate((status) => {
-      if (!status.isLoaded) {
-        return;
-      }
-
-      const elapsed = queue.startedAtMillis + status.positionMillis;
-      setPlaybackPositionMillis(elapsed);
-      setPlaybackDurationMillis(queue.startedAtMillis + (status.durationMillis ?? 0));
-
-      if (status.didJustFinish && !isPlaybackStoppingRef.current) {
-        queue.startedAtMillis += status.durationMillis ?? 0;
-        void playSegmentQueue(groupId).catch(async (error) => {
-          console.warn('Failed to continue audio queue:', error);
-          await stopCurrentPlayback();
-          Alert.alert(t('common.error'), t('editor.audioPlayError'));
-        });
-      }
-    });
-
-    await sound.playAsync();
-  };
-
-  const togglePlayback = async (groupId: string, segments: NoteAudioDraft[]) => {
-    try {
-      if (soundRef.current && isPlaying && playingGroupId === groupId) {
-        await stopCurrentPlayback();
-        return;
-      }
-
-      if (soundRef.current) {
-        await stopCurrentPlayback();
-      }
-
-      if (segments.length === 0) {
-        return;
-      }
-
-      playbackQueueRef.current = {
-        segments,
-        nextIndex: 0,
-        startedAtMillis: 0,
-      };
-      setIsPlaying(true);
-      setPlayingGroupId(groupId);
-      setPlaybackPositionMillis(0);
-      setPlaybackDurationMillis(0);
-
-      await playSegmentQueue(groupId);
-    } catch (error) {
-      console.warn('Failed to play audio:', error);
-      await stopCurrentPlayback();
-      Alert.alert(t('common.error'), t('editor.audioPlayError'));
-    }
-  };
-
   const removeAudioGroup = (groupId: string) => {
     if (recording && appendTargetGroupId === groupId) {
       return;
@@ -1030,9 +757,6 @@ export const NoteEditorScreen = () => {
 
     setAudios((prev) => prev.filter((audio) => audio.groupId !== groupId));
 
-    if (playingGroupId === groupId) {
-      void stopCurrentPlayback();
-    }
   };
 
   const startRenameAudioGroup = (groupId: string) => {
@@ -1144,11 +868,6 @@ export const NoteEditorScreen = () => {
     setContentInputHeight(Math.max(minHeight, Math.ceil(height)));
   };
 
-  const saveProgressRatio =
-    isPlaying && playbackDurationMillis > 0
-      ? Math.min(1, Math.max(0, playbackPositionMillis / playbackDurationMillis))
-      : 0;
-
   const isAppendRecordingActive = Boolean(recording && appendTargetGroupId);
   const stopRecordingHandler = isAppendRecordingActive
     ? () => void stopAppendRecording(appendTargetGroupId ?? '')
@@ -1197,7 +916,6 @@ export const NoteEditorScreen = () => {
       ]
     : [];
 
-  const actionsFile = actionsFileIndex !== null ? files[actionsFileIndex] : undefined;
   const fileActionRows: ActionSheetRow[] = actionsFile
     ? [
         {
@@ -1210,9 +928,7 @@ export const NoteEditorScreen = () => {
           label: t('editor.remove'),
           destructive: true,
           onPress: () => {
-            if (actionsFileIndex !== null) {
-              removeFile(actionsFileIndex);
-            }
+            removeFile(actionsFile);
           },
         },
       ]
@@ -1254,223 +970,72 @@ export const NoteEditorScreen = () => {
 
   return (
     <ScreenContainer>
-      <ScrollView
+      <EditorAttachments
+        ref={editorAttachmentsRef}
+        audioGroups={audioGroups}
+        files={files}
+        recordingActive={Boolean(recording)}
+        recordingGroupId={appendTargetGroupId}
+        recordingPaused={isRecordingPaused}
+        onOpenGroupActions={openGroupActions}
+        onOpenFile={openFile}
+        onOpenFileActions={openFileActions}
+        header={
+          <>
+            <TextInput
+              value={title}
+              onChangeText={setTitle}
+              placeholder={t('editor.titlePlaceholder')}
+              placeholderTextColor={colors.textSecondary}
+              style={{
+                color: colors.text,
+                fontSize: 28,
+                fontWeight: language === 'bn' ? undefined : '700',
+                fontFamily: getFontFamily(language, '700'),
+                lineHeight: 36,
+                paddingVertical: ui.space.sm,
+              }}
+            />
+            <TextInput
+              value={content}
+              onChangeText={setContent}
+              placeholder={t('editor.contentPlaceholder')}
+              placeholderTextColor={colors.textSecondary}
+              multiline
+              scrollEnabled={false}
+              textAlignVertical="top"
+              onContentSizeChange={(event) => onContentSizeChange(event.nativeEvent.contentSize.height + 24)}
+              style={{
+                minHeight: 230,
+                height: contentInputHeight,
+                color: colors.text,
+                fontFamily: getFontFamily(language, '400'),
+                fontSize: ui.type.headline.size,
+                lineHeight: 26,
+                paddingTop: ui.space.sm,
+              }}
+            />
+          </>
+        }
+        footer={
+          Platform.OS === 'android' ? (
+            <AppText
+              variant="caption"
+              color={colors.textSecondary}
+              style={{ marginTop: ui.space.sm }}
+            >
+              {t('editor.shareHint')}
+            </AppText>
+          ) : (
+            <View />
+          )
+        }
         contentContainerStyle={{
           paddingHorizontal: ui.space.lg,
           paddingTop: insets.top + ui.space.sm + TOP_BAR_HEIGHT + ui.space.md,
           paddingBottom: 140 + Math.max(insets.bottom, 12),
         }}
-        keyboardShouldPersistTaps="handled"
-      >
-        <TextInput
-          value={title}
-          onChangeText={setTitle}
-          placeholder={t('editor.titlePlaceholder')}
-          placeholderTextColor={colors.textSecondary}
-          style={{
-            color: colors.text,
-            fontSize: 28,
-            fontWeight: language === 'bn' ? undefined : '700',
-            fontFamily: getFontFamily(language, '700'),
-            lineHeight: 36,
-            paddingVertical: ui.space.sm,
-          }}
-        />
-
-        <TextInput
-          value={content}
-          onChangeText={setContent}
-          placeholder={t('editor.contentPlaceholder')}
-          placeholderTextColor={colors.textSecondary}
-          multiline
-          scrollEnabled={false}
-          textAlignVertical="top"
-          onContentSizeChange={(event) => onContentSizeChange(event.nativeEvent.contentSize.height + 24)}
-          style={{
-            minHeight: 230,
-            height: contentInputHeight,
-            color: colors.text,
-            fontFamily: getFontFamily(language, '400'),
-            fontSize: ui.type.headline.size,
-            lineHeight: 26,
-            paddingTop: ui.space.sm,
-          }}
-        />
-
-        <AppText variant="headline" style={{ marginTop: ui.space.lg }}>
-          {t('editor.audioSection')}
-        </AppText>
-
-        <View style={{ gap: ui.space.sm, marginTop: ui.space.sm }}>
-          {audioGroups.map((group, index) => {
-            const isCurrent = isPlaying && playingGroupId === group.groupId;
-            const isAppendRecording = recording && appendTargetGroupId === group.groupId;
-            const groupProgress = isCurrent ? saveProgressRatio : 0;
-            return (
-              <Animated.View
-                key={`${group.groupId}-${index}`}
-                entering={entrance(index)}
-                style={{
-                  backgroundColor: colors.surface,
-                  borderRadius: ui.radius.lg,
-                  padding: ui.space.lg,
-                  gap: ui.space.sm,
-                }}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: ui.space.md }}>
-                  <PressableScale
-                    onPress={() => void togglePlayback(group.groupId, group.segments)}
-                    accessibilityRole="button"
-                    accessibilityLabel={isCurrent ? t('editor.audioStop') : t('editor.audioPlay')}
-                    style={{
-                      width: 40,
-                      height: 40,
-                      borderRadius: 20,
-                      backgroundColor: colors.primary,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                  >
-                    <MaterialCommunityIcons
-                      name={isCurrent ? 'stop' : 'play'}
-                      size={22}
-                      color={colors.onPrimary}
-                    />
-                  </PressableScale>
-
-                  <View style={{ flex: 1 }}>
-                    <AppText variant="headline" numberOfLines={1}>
-                      {group.displayName}
-                    </AppText>
-                    <AppText variant="caption" color={colors.textSecondary}>
-                      {isCurrent && playbackDurationMillis > 0
-                        ? t('editor.playingTimer', {
-                            elapsed: formatDurationMillis(playbackPositionMillis),
-                            total: formatDurationMillis(playbackDurationMillis),
-                          })
-                        : t('editor.audioSegments', { count: group.segments.length })}
-                    </AppText>
-                  </View>
-
-                  {isCurrent ? <AnimatedBars playing color={colors.primary} /> : null}
-
-                  <IconButton
-                    icon="dots-vertical"
-                    onPress={() => {
-                      setActionsGroupId(group.groupId);
-                      setActiveSheet('groupActions');
-                    }}
-                    accessibilityLabel={t('editor.audioDetails')}
-                  />
-                </View>
-
-                {isCurrent ? (
-                  <ProgressFill
-                    progress={groupProgress}
-                    trackColor={colors.surfaceVariant}
-                    fillColor={colors.primary}
-                  />
-                ) : null}
-
-                {isAppendRecording && isRecordingPaused ? (
-                  <View
-                    style={{
-                      alignSelf: 'flex-start',
-                      paddingHorizontal: ui.space.sm,
-                      paddingVertical: 3,
-                      borderRadius: ui.radius.pill,
-                      backgroundColor: colors.surfaceVariant,
-                    }}
-                  >
-                    <AppText variant="caption" color={colors.textSecondary}>
-                      {t('editor.pausedBadge')}
-                    </AppText>
-                  </View>
-                ) : null}
-
-                {isAppendRecording ? (
-                  <AppText variant="caption" color={colors.error}>
-                    {isRecordingPaused
-                      ? t('editor.appendingPaused', { time: formatDuration(recordSeconds) })
-                      : t('editor.appending', { time: formatDuration(recordSeconds) })}
-                  </AppText>
-                ) : null}
-              </Animated.View>
-            );
-          })}
-        </View>
-
-        <AppText variant="headline" style={{ marginTop: ui.space.lg }}>
-          {t('editor.fileSection')}
-        </AppText>
-
-        <View style={{ gap: ui.space.sm, marginTop: ui.space.sm }}>
-          {files.map((file, index) => {
-            const iconName = getFileIcon(file.mimeType) as keyof typeof MaterialCommunityIcons.glyphMap;
-            const isImage = isImageFile(file.mimeType, file.displayName, file.uri);
-            return (
-              <Animated.View
-                key={`${file.uri}-${index}`}
-                entering={entrance(index)}
-                style={{
-                  backgroundColor: colors.surfaceVariant,
-                  borderRadius: ui.radius.md,
-                  paddingHorizontal: ui.space.md,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: ui.space.md,
-                }}
-              >
-                <PressableScale
-                  onPress={() => void openFile(file)}
-                  style={{
-                    flex: 1,
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: ui.space.md,
-                    paddingVertical: ui.space.md,
-                  }}
-                >
-                  {isImage ? (
-                    <Image
-                      source={{ uri: file.uri }}
-                      style={{ width: 44, height: 44, borderRadius: ui.radius.sm }}
-                      resizeMode="cover"
-                    />
-                  ) : (
-                    <MaterialCommunityIcons name={iconName} size={22} color={colors.textSecondary} />
-                  )}
-                  <AppText
-                    variant="bodySmall"
-                    numberOfLines={2}
-                    style={{ flex: 1 }}
-                  >
-                    {file.displayName}
-                  </AppText>
-                </PressableScale>
-                <IconButton
-                  icon="dots-vertical"
-                  size={20}
-                  onPress={() => {
-                    setActionsFileIndex(index);
-                    setActiveSheet('fileActions');
-                  }}
-                />
-              </Animated.View>
-            );
-          })}
-        </View>
-
-        {Platform.OS === 'android' ? (
-          <AppText
-            variant="caption"
-            color={colors.textSecondary}
-            style={{ marginTop: ui.space.sm }}
-          >
-            {t('editor.shareHint')}
-          </AppText>
-        ) : null}
-      </ScrollView>
+      />
 
       <TopBar onBack={() => navigation.goBack()}>
         <LanguageToggleButton />
@@ -1494,58 +1059,13 @@ export const NoteEditorScreen = () => {
         }}
       >
         {recording ? (
-          <View style={[barShadow, { flex: 1 }]}>
-            <GlassSurface radius={ui.radius.xl} contentStyle={{ padding: ui.space.sm }}>
-              <View
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: ui.space.md,
-                  paddingHorizontal: ui.space.sm,
-                }}
-              >
-                <AnimatedRing
-                  progress={1}
-                  size={36}
-                  strokeWidth={3}
-                  color={colors.primary}
-                  trackColor={colors.surfaceVariant}
-                >
-                  <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                    <RNAnimated.View
-                      style={{
-                        width: 14,
-                        height: 14,
-                        borderRadius: 7,
-                        backgroundColor: colors.error,
-                        transform: [{ scale: pulseAnim }],
-                      }}
-                    />
-                  </View>
-                </AnimatedRing>
-                <AppText variant="caption" color={colors.textSecondary} style={{ flex: 1 }}>
-                  {isRecordingPaused
-                    ? appendTargetGroupId
-                      ? t('editor.appendingPaused', { time: formatDuration(recordSeconds) })
-                      : t('editor.recordPaused', { time: formatDuration(recordSeconds) })
-                    : appendTargetGroupId
-                      ? t('editor.appending', { time: formatDuration(recordSeconds) })
-                      : t('editor.recording', { time: formatDuration(recordSeconds) })}
-                </AppText>
-                <IconButton
-                  icon={isRecordingPaused ? 'play' : 'pause'}
-                  onPress={() => void toggleRecordingPause()}
-                  accessibilityLabel={isRecordingPaused ? t('editor.recordResume') : t('editor.recordPause')}
-                />
-                <IconButton
-                  icon="stop"
-                  danger
-                  onPress={stopRecordingHandler}
-                  accessibilityLabel={t('editor.recordStop')}
-                />
-              </View>
-            </GlassSurface>
-          </View>
+          <EditorRecordingBar
+            recording={recording}
+            isPaused={isRecordingPaused}
+            appendGroupId={appendTargetGroupId}
+            onTogglePause={() => void toggleRecordingPause()}
+            onStop={stopRecordingHandler}
+          />
         ) : (
           <>
             <View style={barShadow}>
@@ -1619,31 +1139,34 @@ export const NoteEditorScreen = () => {
         )}
       </View>
 
-      <ActionSheet
-        visible={activeSheet === 'overflow'}
-        onClose={closeSheet}
-        rows={overflowRows}
-      />
+      {activeSheet === 'overflow' ? (
+        <ActionSheet visible onClose={closeSheet} rows={overflowRows} />
+      ) : null}
 
-      <ActionSheet
-        visible={activeSheet === 'groupActions'}
-        onClose={closeSheet}
-        title={audioGroups.find((group) => group.groupId === actionsGroupId)?.displayName}
-        rows={groupActionRows}
-      />
+      {activeSheet === 'groupActions' ? (
+        <ActionSheet
+          visible
+          onClose={closeSheet}
+          title={audioGroups.find((group) => group.groupId === actionsGroupId)?.displayName}
+          rows={groupActionRows}
+        />
+      ) : null}
 
-      <ActionSheet
-        visible={activeSheet === 'fileActions'}
-        onClose={closeSheet}
-        title={actionsFile?.displayName}
-        rows={fileActionRows}
-      />
+      {activeSheet === 'fileActions' ? (
+        <ActionSheet
+          visible
+          onClose={closeSheet}
+          title={actionsFile?.displayName}
+          rows={fileActionRows}
+        />
+      ) : null}
 
-      <BottomSheet
-        visible={activeSheet === 'rename'}
-        onClose={closeSheet}
-        title={t('editor.renameTitle')}
-      >
+      {activeSheet === 'rename' ? (
+        <BottomSheet
+          visible
+          onClose={closeSheet}
+          title={t('editor.renameTitle')}
+        >
         <View style={{ paddingHorizontal: ui.space.lg, gap: ui.space.md }}>
           <TextInput
             value={renameValue}
@@ -1684,19 +1207,21 @@ export const NoteEditorScreen = () => {
             </View>
           </View>
         </View>
-      </BottomSheet>
+        </BottomSheet>
+      ) : null}
 
-      <BottomSheet
-        visible={activeSheet === 'sharePicker'}
-        onClose={closeSheet}
-        title={t('editor.shareAudioPickerTitle')}
-      >
+      {activeSheet === 'sharePicker' ? (
+        <BottomSheet
+          visible
+          onClose={closeSheet}
+          title={t('editor.shareAudioPickerTitle')}
+        >
         <ScrollView style={{ maxHeight: 360 }}>
           <View style={{ paddingHorizontal: ui.space.lg, gap: ui.space.sm }}>
             {audioGroups.flatMap((group, groupIndex) =>
               group.segments.map((segment, segmentIndex) => (
                 <PressableScale
-                  key={`${group.groupId}-${segmentIndex}`}
+                  key={`${group.groupId}:${segment.portableId ?? segment.uri}`}
                   onPress={() => void shareSpecificAudio(segment)}
                   style={{
                     backgroundColor: colors.surfaceVariant,
@@ -1715,19 +1240,21 @@ export const NoteEditorScreen = () => {
             )}
           </View>
         </ScrollView>
-      </BottomSheet>
+        </BottomSheet>
+      ) : null}
 
-      <BottomSheet
-        visible={activeSheet === 'details'}
-        onClose={closeSheet}
-        title={t('editor.audioLocationTitle')}
-      >
+      {activeSheet === 'details' ? (
+        <BottomSheet
+          visible
+          onClose={closeSheet}
+          title={t('editor.audioLocationTitle')}
+        >
         <ScrollView style={{ maxHeight: 360 }}>
           <View style={{ paddingHorizontal: ui.space.lg, gap: ui.space.sm }}>
             {(audioGroups.find((group) => group.groupId === detailsTargetGroupId)?.segments ?? []).map(
               (segment, index) => (
                 <View
-                  key={`${segment.uri}-${index}`}
+                  key={segment.portableId ?? segment.uri}
                   style={{
                     backgroundColor: colors.surfaceVariant,
                     borderRadius: ui.radius.md,
@@ -1750,7 +1277,8 @@ export const NoteEditorScreen = () => {
             </AppText>
           </PressableScale>
         </View>
-      </BottomSheet>
+        </BottomSheet>
+      ) : null}
 
       <Modal
         animationType="fade"

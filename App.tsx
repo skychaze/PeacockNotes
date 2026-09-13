@@ -1,6 +1,6 @@
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useEffect, useMemo, useState } from 'react';
-import { View, useColorScheme } from 'react-native';
+import { Platform, View, useColorScheme } from 'react-native';
 import {
   NavigationContainer,
   DarkTheme,
@@ -25,7 +25,13 @@ import {
 } from 'expo-share-intent';
 import { ShareImportScreen } from './src/screens/ShareImportScreen';
 import { StorageUsageScreen } from './src/screens/StorageUsageScreen';
+import { BackupScreen } from './src/screens/BackupScreen';
 import { LanguageProvider, useLanguage } from './src/i18n/LanguageContext';
+import { recoverInterruptedFullReplacement } from './src/services/archive';
+import { installAutomaticBackupCatchUp } from './src/services/automaticBackup';
+import { initializeBackupDiscovery } from './src/services/backupDiscovery';
+import { finishBackupNotification } from './src/services/backupFolder';
+import { resumePendingBackupOperation } from './src/services/backupBackground';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const navigationRef = createNavigationContainerRef<RootStackParamList>();
@@ -43,11 +49,15 @@ const AppNavigator = () => {
   useEffect(() => {
     async function setup() {
       try {
-        await Font.loadAsync({
+        const loadFonts = Font.loadAsync({
           'NotoSansBengali': require('./assets/fonts/NotoSansBengali-Regular.ttf'),
           'NotoSansBengali-SemiBold': require('./assets/fonts/NotoSansBengali-SemiBold.ttf'),
         });
-        await initDb();
+        const initializeDatabase = async () => {
+          if (Platform.OS === 'android') await recoverInterruptedFullReplacement();
+          await initDb();
+        };
+        await Promise.all([loadFonts, initializeDatabase()]);
         setHasSetupError(false);
       } catch (e) {
         console.warn('Error during setup:', e);
@@ -58,6 +68,40 @@ const AppNavigator = () => {
     }
     setup();
   }, []);
+
+  useEffect(() => {
+    if (!isReady || hasSetupError) return;
+    let cancelled = false;
+    let uninstallAutomaticCatchUp: (() => void) | null = null;
+
+    // Discovery and durable-operation recovery both touch the same Drive and
+    // operation state.  Complete them in a deterministic order before
+    // installing the AppState catch-up listener; otherwise a due automatic
+    // attempt can race recovery during a cold start and observe a stale
+    // operation row or half-populated discovery cache.
+    const bootstrapBackupRuntime = async () => {
+      try {
+        await initializeBackupDiscovery();
+      } catch (error: unknown) {
+        console.warn('Initial backup discovery failed:', error);
+      }
+      try {
+        const operation = await resumePendingBackupOperation();
+        if (!cancelled && operation && Platform.OS === 'android') {
+          finishBackupNotification(operation.state === 'succeeded');
+        }
+      } catch (error: unknown) {
+        console.warn('Pending backup recovery failed:', error);
+        if (!cancelled && Platform.OS === 'android') finishBackupNotification(false);
+      }
+      if (!cancelled) uninstallAutomaticCatchUp = installAutomaticBackupCatchUp();
+    };
+    void bootstrapBackupRuntime();
+    return () => {
+      cancelled = true;
+      uninstallAutomaticCatchUp?.();
+    };
+  }, [hasSetupError, isReady]);
 
   useEffect(() => {
     if (!isNavReady || !isShareReady || !hasShareIntent || sharedFiles.length === 0) {
@@ -144,6 +188,7 @@ const AppNavigator = () => {
           <Stack.Screen name="ShareImport" component={ShareImportScreen} />
           <Stack.Screen name="Folders" component={FoldersScreen} />
           <Stack.Screen name="StorageUsage" component={StorageUsageScreen} />
+          <Stack.Screen name="Backup" component={BackupScreen} />
           <Stack.Screen name="NotesList" component={NotesListScreen} />
           <Stack.Screen name="NoteEditor" component={NoteEditorScreen} />
         </Stack.Navigator>

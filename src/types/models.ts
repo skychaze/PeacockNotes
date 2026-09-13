@@ -1,5 +1,6 @@
 export type Folder = {
   id: number;
+  portableId: string;
   name: string;
   createdAt: string;
 };
@@ -8,8 +9,21 @@ export type FolderListItem = Folder & {
   noteCount: number;
 };
 
+export type NoteListItem = {
+  id: number;
+  portableId: string;
+  folderId: number;
+  title: string;
+  contentPreview: string;
+  audioCount: number;
+  fileCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type Note = {
   id: number;
+  portableId: string;
   folderId: number;
   title: string;
   content: string;
@@ -23,6 +37,7 @@ export type Note = {
 
 export type NoteAudio = {
   id: number;
+  portableId: string;
   noteId: number;
   uri: string;
   displayName: string;
@@ -33,6 +48,7 @@ export type NoteAudio = {
 };
 
 export type NoteAudioDraft = {
+  portableId?: string;
   uri: string;
   displayName: string;
   groupId?: string;
@@ -41,6 +57,7 @@ export type NoteAudioDraft = {
 
 export type NoteFile = {
   id: number;
+  portableId: string;
   noteId: number;
   uri: string;
   displayName: string;
@@ -50,6 +67,7 @@ export type NoteFile = {
 };
 
 export type NoteFileDraft = {
+  portableId?: string;
   uri: string;
   displayName: string;
   mimeType: string;

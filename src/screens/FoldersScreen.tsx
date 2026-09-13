@@ -86,19 +86,9 @@ export const FoldersScreen = () => {
         onPress: () => navigation.navigate('StorageUsage'),
       },
       {
-        icon: 'cloud-outline',
-        label: t('drawer.cloudSync'),
-        onPress: () => Alert.alert(t('drawer.comingSoonTitle'), t('drawer.futureMessage')),
-      },
-      {
-        icon: 'tag-multiple-outline',
-        label: t('drawer.tagsFilters'),
-        onPress: () => Alert.alert(t('drawer.comingSoonTitle'), t('drawer.futureMessage')),
-      },
-      {
         icon: 'backup-restore',
         label: t('drawer.backupRestore'),
-        onPress: () => Alert.alert(t('drawer.comingSoonTitle'), t('drawer.futureMessage')),
+        onPress: () => navigation.navigate('Backup'),
       },
     ],
     [navigation, t]

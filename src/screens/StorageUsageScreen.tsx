@@ -52,68 +52,127 @@ const formatBytes = (bytes: number) => {
   return `${value} ${unit}`;
 };
 
-const getDirectorySize = async (directoryUri: string, visited: Set<string>): Promise<number> => {
-  if (!directoryUri || visited.has(directoryUri)) {
-    return 0;
-  }
-
-  visited.add(directoryUri);
-
-  let entries: string[] = [];
-  try {
-    entries = await FileSystem.readDirectoryAsync(directoryUri);
-  } catch {
-    return 0;
-  }
-
-  let total = 0;
-  for (const entry of entries) {
-    const childUri = directoryUri.endsWith('/') ? `${directoryUri}${entry}` : `${directoryUri}/${entry}`;
-    try {
-      const info = await FileSystem.getInfoAsync(childUri);
-      if (!info.exists) {
-        continue;
-      }
-      if (info.isDirectory) {
-        total += await getDirectorySize(childUri, visited);
-        continue;
-      }
-      total += Number(info.size ?? 0);
-    } catch {
-      continue;
-    }
-  }
-
-  return total;
+type FileMetadata = {
+  exists: boolean;
+  isDirectory?: boolean;
+  size?: number;
 };
 
-const getUrisSize = async (uris: string[]) => {
-  let total = 0;
-  for (const uri of new Set(uris)) {
-    try {
-      const info = await FileSystem.getInfoAsync(uri);
-      if (!info.exists || info.isDirectory) {
-        continue;
+const FILE_SCAN_CONCURRENCY = 8;
+
+const mapWithConcurrency = async <T, R>(
+  items: readonly T[],
+  worker: (item: T) => Promise<R>,
+  concurrency = FILE_SCAN_CONCURRENCY,
+): Promise<R[]> => {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await worker(items[index]);
       }
-      total += Number(info.size ?? 0);
+    })
+  );
+
+  return results;
+};
+
+const getCachedFileInfo = async (
+  uri: string,
+  metadata: Map<string, FileMetadata>,
+): Promise<FileMetadata> => {
+  const cached = metadata.get(uri);
+  if (cached) {
+    return cached;
+  }
+
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    const value: FileMetadata = {
+      exists: info.exists,
+      isDirectory: info.isDirectory,
+      size: 'size' in info ? Number(info.size ?? 0) : 0,
+    };
+    metadata.set(uri, value);
+    return value;
+  } catch {
+    const value: FileMetadata = { exists: false };
+    metadata.set(uri, value);
+    return value;
+  }
+};
+
+const scanDirectory = async (
+  rootUri: string,
+  metadata: Map<string, FileMetadata>,
+  visitedDirectories: Set<string>,
+  scannedFiles: Set<string>,
+): Promise<void> => {
+  if (!rootUri) {
+    return;
+  }
+  const pendingDirectories = [rootUri];
+
+  while (pendingDirectories.length > 0) {
+    const directoryUri = pendingDirectories.shift();
+    if (!directoryUri || visitedDirectories.has(directoryUri)) {
+      continue;
+    }
+    visitedDirectories.add(directoryUri);
+
+    let entries: string[];
+    try {
+      entries = await FileSystem.readDirectoryAsync(directoryUri);
     } catch {
       continue;
     }
+
+    await mapWithConcurrency(entries, async (entry) => {
+      const childUri = directoryUri.endsWith('/') ? `${directoryUri}${entry}` : `${directoryUri}/${entry}`;
+      const info = await getCachedFileInfo(childUri, metadata);
+      if (!info.exists) {
+        return;
+      }
+      if (info.isDirectory) {
+        pendingDirectories.push(childUri);
+      } else {
+        scannedFiles.add(childUri);
+      }
+    });
   }
-  return total;
+};
+
+const sumUris = async (uris: readonly string[], metadata: Map<string, FileMetadata>) => {
+  const sizes = await mapWithConcurrency([...new Set(uris)], async (uri) => {
+    const info = await getCachedFileInfo(uri, metadata);
+    return info.exists && !info.isDirectory ? Number(info.size ?? 0) : 0;
+  });
+  return sizes.reduce((total, size) => total + size, 0);
 };
 
 const buildStorageViewModel = async (snapshot: StorageSnapshot): Promise<StorageViewModel> => {
-  const audioBytes = await getUrisSize(snapshot.audioUris);
-  const fileBytes = await getUrisSize(snapshot.fileUris);
-  const visited = new Set<string>();
-  const documentBytes = FileSystem.documentDirectory
-    ? await getDirectorySize(FileSystem.documentDirectory, visited)
-    : 0;
-  const cacheBytes = FileSystem.cacheDirectory
-    ? await getDirectorySize(FileSystem.cacheDirectory, visited)
-    : 0;
-  const appDataBytes = documentBytes + cacheBytes;
+  const metadata = new Map<string, FileMetadata>();
+  const visitedDirectories = new Set<string>();
+  const scannedFiles = new Set<string>();
+  const roots = [FileSystem.documentDirectory, FileSystem.cacheDirectory].filter(
+    (uri): uri is string => Boolean(uri)
+  );
+
+  await Promise.all(
+    roots.map((rootUri) => scanDirectory(rootUri, metadata, visitedDirectories, scannedFiles))
+  );
+
+  const audioBytes = await sumUris(snapshot.audioUris, metadata);
+  const fileBytes = await sumUris(snapshot.fileUris, metadata);
+  const appDataBytes = [...scannedFiles].reduce(
+    (total, uri) => total + Number(metadata.get(uri)?.size ?? 0),
+    0
+  );
   const otherBytes = Math.max(0, appDataBytes - audioBytes - fileBytes - snapshot.databaseBytes);
   const totalBytes = audioBytes + fileBytes + snapshot.databaseBytes + otherBytes;
 

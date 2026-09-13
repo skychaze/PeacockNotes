@@ -2,7 +2,7 @@
   "expo": {
     "name": "Peacock Notes",
     "slug": "Note_app",
-    "version": "1.0.6",
+    "version": "1.0.7",
     "scheme": "peacocknotes",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -22,13 +22,16 @@
       "bundleIdentifier": "com.roy.peacocknotes"
     },
     "android": {
+      "permissions": [
+        "android.permission.POST_NOTIFICATIONS"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "versionCode": 7,
+      "versionCode": 8,
       "package": "com.roy.peacocknotes"
     },
     "plugins": [

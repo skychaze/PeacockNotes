@@ -1,5 +1,4 @@
 import type { PropsWithChildren } from 'react';
-import { View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { AppText } from './AppText';
 import { PressableScale } from './PressableScale';
