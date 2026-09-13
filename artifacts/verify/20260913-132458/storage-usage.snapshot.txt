@@ -1,0 +1,9 @@
+Snapshot: 7 visible nodes (8 total)
+Collapsed 1 Android helper node from the agent-facing text snapshot; use --raw or --json for the full hierarchy.
+@e1 [scroll-area] [scrollable]
+@e2 [button] "Back"
+@e3 [text] "󰁍"
+@e4 [button] "বাংলা"
+@e5 [text] "󰗊"
+@e7 [button] "Refresh"
+@e8 [text] "󰑐"

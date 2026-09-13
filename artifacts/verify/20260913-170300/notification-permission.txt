@@ -1,0 +1,14 @@
+320:      android.permission.POST_NOTIFICATIONS
+335:      android.permission.MODIFY_AUDIO_SETTINGS: granted=true
+336:      android.permission.FOREGROUND_SERVICE: granted=true
+337:      android.permission.RECEIVE_BOOT_COMPLETED: granted=true
+338:      android.permission.INTERNET: granted=true
+339:      com.roy.peacocknotes.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION: granted=true
+340:      android.permission.FOREGROUND_SERVICE_DATA_SYNC: granted=true
+341:      android.permission.ACCESS_NETWORK_STATE: granted=true
+342:      android.permission.VIBRATE: granted=true
+343:      android.permission.WAKE_LOCK: granted=true
+360:        android.permission.POST_NOTIFICATIONS: granted=false, flags=[ USER_SET|USER_FIXED|USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+361:        android.permission.READ_EXTERNAL_STORAGE: granted=false, flags=[ USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED|RESTRICTION_INSTALLER_EXEMPT]
+362:        android.permission.WRITE_EXTERNAL_STORAGE: granted=false, flags=[ USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED|RESTRICTION_INSTALLER_EXEMPT]
+363:        android.permission.RECORD_AUDIO: granted=false, flags=[ USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]

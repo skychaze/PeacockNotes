@@ -1,0 +1,12 @@
+Snapshot: 10 visible nodes (16 total)
+Collapsed 6 Android helper nodes from the agent-facing text snapshot; use --raw or --json for the full hierarchy.
+@e1 [scroll-area] [scrollable]
+@e2 [scroll-area] "Folders, 󰉋, VERIFY-issue3-folder, 0 notes" [scrollable]
+@e4 [group] "󰉋, VERIFY-issue3-folder, 0 notes"
+@e8 [button] "বাংলা"
+@e9 [text] "󰗊"
+@e11 [button] "Sort by"
+@e12 [text] "󰒿"
+@e13 [button] "Quick Menu"
+@e14 [text] "󰇙"
+@e15 [button] "󰉗"

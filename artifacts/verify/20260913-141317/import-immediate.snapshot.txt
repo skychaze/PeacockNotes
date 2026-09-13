@@ -1,0 +1,18 @@
+Page: com.roy.peacocknotes
+App: com.roy.peacocknotes
+Snapshot: 12 visible nodes (27 total)
+Collapsed 15 Android helper nodes from the agent-facing text snapshot; use --raw or --json for the full hierarchy.
+@e1 [scroll-area] [scrollable]
+@e2 [scroll-area] "Backup verified, peacock-notes-2026-09-13T08-45-21-525Z-1789289121522-6wz098haoi-start-export_and_verify.pnbak, Import notes, Use the newest valid archive or choose one. The archive and available storage are checked before any content changes., Choose an import mode, Current notes are never deleted or silently changed. A differing note is added as a recovered copy., Add every archived note. No current note is deleted or changed., Destructive full replacement, Deletes all current notes and media, then replaces them with the archive. Language, backup folder, and other device-local settings stay unchanged. A verified safety snapshot is created first., Safely import all 1 notes, Choose specific notes, Additive import, Import a local archive file, Preview newest valid archive" [scrollable]
+  [content above scroll-area hidden]
+  [content below scroll-area hidden]
+@e7 [button] "Preview newest valid archive" [disabled]
+@e9 [button] "Import a local archive file" [disabled]
+@e13 [button] "Additive import" [disabled]
+@e16 [button] "Choose specific notes" [disabled]
+@e18 [button] "Safely import all 1 notes" [disabled]
+@e22 [button] "Replace all current content" [disabled]
+@e23 [button] "Back"
+@e24 [text] "󰁍"
+@e25 [button] "বাংলা"
+@e26 [text] "󰗊"

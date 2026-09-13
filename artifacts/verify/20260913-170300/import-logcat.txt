@@ -1,0 +1,22 @@
+09-13 17:08:21.246 18429 18531 I BackupRuntime: [DEBUG-BR-DRIVE] upload_chunk offset=0 length=1357 status=200
+09-13 17:08:21.248 18429 18531 I BackupRuntime: [DEBUG-BR-DRIVE] upload_committed id=1b-cpZ6JJUEJnSSwwp2amno7pJqtUi0Kx bytes=1357
+09-13 17:08:21.248 18429 18531 I BackupRuntime: [DEBUG-BR-DRIVE] publish_acknowledged id=1b-cpZ6JJUEJnSSwwp2amno7pJqtUi0Kx bytes=1357
+09-13 17:08:23.058 18429 18493 I ReactNativeJS: [BR-EXPORT] verified uri=gdrive://1b-cpZ6JJUEJnSSwwp2amno7pJqtUi0Kx bytes=1357
+09-13 17:08:23.081 18429 18493 I ReactNativeJS: [BR-EXPORT] coordinator committed; retention detached
+09-13 17:08:23.081 18429 18493 I ReactNativeJS: [BR-RETENTION] started
+09-13 17:08:24.691 18429 18525 I BackupRuntime: [DEBUG-BR-DRIVE] list_complete pages=1 items=3
+09-13 17:08:24.691 18429 18525 I BackupRuntime: [DEBUG-BR-SCAN] listed folder=1KAFGLo-ZKr-rxkLERvWt4reXtQbOpJkm candidates=3
+09-13 17:08:24.691 18429 18525 I BackupRuntime: [DEBUG-BR-SCAN] cache_loaded folder=1KAFGLo-ZKr-rxkLERvWt4reXtQbOpJkm entries=2
+09-13 17:08:28.450 18429 18525 I BackupRuntime: [DEBUG-BR-SCAN] folder=1KAFGLo-ZKr-rxkLERvWt4reXtQbOpJkm listed=3 deep=true reuseTrusted=true validated=2 cacheHits=1 elapsedMs=5313
+09-13 17:08:28.463 18429 18493 I ReactNativeJS: [BR-RETENTION] completed deleted=0
+09-13 17:08:29.196 18429 18525 I BackupRuntime: [DEBUG-BR-DRIVE] list_complete pages=1 items=3
+09-13 17:08:29.196 18429 18525 I BackupRuntime: [DEBUG-BR-SCAN] listed folder=1KAFGLo-ZKr-rxkLERvWt4reXtQbOpJkm candidates=3
+09-13 17:08:29.196 18429 18525 I BackupRuntime: [DEBUG-BR-SCAN] cache_loaded folder=1KAFGLo-ZKr-rxkLERvWt4reXtQbOpJkm entries=3
+09-13 17:08:29.197 18429 18525 I BackupRuntime: [DEBUG-BR-SCAN] folder=1KAFGLo-ZKr-rxkLERvWt4reXtQbOpJkm listed=3 deep=false reuseTrusted=false validated=0 cacheHits=3 elapsedMs=746
+09-13 17:08:29.244   703  2335 D ActivityManager: Stop FGS timeout: ServiceRecord{f8f9a3b u0 com.roy.peacocknotes/.ManualBackupForegroundService c:com.roy.peacocknotes}
+09-13 17:10:26.327   703  1284 I ActivityManager: Background started FGS: Allowed [callingPackage: com.roy.peacocknotes; callingUid: 10225; uidState: TOP ; uidBFSL: [BFSL]; intent: Intent { xflg=0x4 cmp=com.roy.peacocknotes/.ManualBackupForegroundService }; code:PROC_STATE_TOP; tempAllowListReason:<null>; allowWiu:12; targetSdkVersion:36; callerTargetSdkVersion:36; startForegroundCount:0; bindFromPackage:null: isBindService:false]
+09-13 17:10:26.343   703  1284 I ActivityManager: Background started FGS: Allowed [callingPackage: com.roy.peacocknotes; callingUid: 10225; uidState: TOP ; uidBFSL: [BFSL]; intent: Intent { cmp=com.roy.peacocknotes/.ManualBackupForegroundService }; code:PROC_STATE_TOP; tempAllowListReason:<null>; allowWiu:12; targetSdkVersion:36; callerTargetSdkVersion:36; startForegroundCount:0; bindFromPackage:null: isBindService:false]
+09-13 17:10:27.599 18429 18525 I BackupRuntime: [DEBUG-BR-IMPORT] note=cd13230f-edf0-4c81-85d6-6995d74380d5 sourceFolder=9cf737f1-b0ac-4ec0-8ab9-e21be60fc35d targetFolderRow=4
+09-13 17:10:27.692 18429 18493 W ReactNativeJS: 'Failed to import selected notes:', { [Error: Call to function 'NativeDatabase.execAsync' has been rejected.
+09-13 17:10:27.692 18429 18493 W ReactNativeJS: → Caused by: cannot change into wal mode from within a transaction] code: 'ERR_INTERNAL_SQLITE_ERROR' }
+09-13 17:10:27.697   703  1284 D ActivityManager: Stop FGS timeout: ServiceRecord{9b8cd49 u0 com.roy.peacocknotes/.ManualBackupForegroundService c:com.roy.peacocknotes}

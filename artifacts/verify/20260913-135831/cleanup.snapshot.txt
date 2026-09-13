@@ -1,0 +1,19 @@
+Page: com.roy.peacocknotes
+App: com.roy.peacocknotes
+Snapshot: 13 visible nodes (37 total)
+Collapsed 24 Android helper nodes from the agent-facing text snapshot; use --raw or --json for the full hierarchy.
+@e1 [scroll-area] [scrollable]
+@e2 [scroll-area] "Import notes, Use the newest valid archive or choose one. The archive and available storage are checked before any content changes., Backup collection, Managed retention completed safely. No verified archive needed pruning., 󱥿, Google Drive connected, Peacock Notes stores backups in its Google Drive collection., Google Drive collection, Peacock Notes Backups, Reconnect Google Drive, 󰄱, Sep 13, 2026, 1:24 AM, Valid, peacock-notes-2026-09-12T19-54-18-277Z-1789242858268-j7okn1nanbs-start-export_and_verify.pnbak, 98.6 KB · Verified · Compatible, Sep 13, 2026, 1:54 AM, peacock-notes-2026-09-12T20-24-46-160Z-1789244686154-u1une7mbg5e-start-export_and_verify.pnbak, 99.1 KB · Verified · Compatible, Scan again, Import a local archive file, Preview newest valid archive" [scrollable]
+  [content above scroll-area hidden]
+  [content below scroll-area hidden]
+@e5 [button] "Preview newest valid archive"
+@e7 [button] "Import a local archive file"
+@e10 [button] "Scan again"
+@e13 [checkbox] "Select archives: peacock-notes-2026-09-12T20-24-46-160Z-1789244686154-u1une7mbg5e-start-export_and_verify.pnbak"
+@e19 [checkbox] "Select archives: peacock-notes-2026-09-12T19-54-18-277Z-1789242858268-j7okn1nanbs-start-export_and_verify.pnbak"
+@e30 [button] "Reconnect Google Drive"
+@e32 [button] "Disconnect"
+@e33 [button] "Back"
+@e34 [text] "󰁍"
+@e35 [button] "বাংলা"
+@e36 [text] "󰗊"

@@ -1,0 +1,5 @@
+folder create visible settle: 1056 ms
+note save visible settle: 1032 ms
+export observation window: 4974 ms
+additive import observation: 2847 ms
+confirmed additive import observation: 2791 ms

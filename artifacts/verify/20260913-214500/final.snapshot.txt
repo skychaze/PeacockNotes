@@ -1,0 +1,13 @@
+Page: com.roy.peacocknotes
+App: com.roy.peacocknotes
+Snapshot: 9 visible nodes (14 total)
+Collapsed 5 Android helper nodes from the agent-facing text snapshot; use --raw or --json for the full hierarchy.
+@e1 [scroll-area] [scrollable]
+@e2 [scroll-area] "Folders, No folders yet, Create a folder using the button below" [scrollable]
+@e6 [button] "বাংলা"
+@e7 [text] "󰗊"
+@e9 [button] "Sort by"
+@e10 [text] "󰒿"
+@e11 [button] "Quick Menu"
+@e12 [text] "󰇙"
+@e13 [button] "󰉗"

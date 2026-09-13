@@ -1,0 +1,3 @@
+device=emulator-5554 booted=1 installed=1.0.7 expected=1.0.7
+metro=up (:8081 serving)
+DOCTOR OK
