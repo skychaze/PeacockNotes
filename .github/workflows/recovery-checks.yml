@@ -32,4 +32,6 @@ jobs:
           node-version: '20'
           cache: npm
       - run: npm ci
+      - run: npx expo prebuild --no-install
+      - run: git restore -- android/app/build.gradle android/app/src/main/AndroidManifest.xml android/app/src/main/java/com/roy/peacocknotes
       - run: npm run verify:recovery
