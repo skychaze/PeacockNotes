@@ -48,6 +48,7 @@ import {
 } from '../utils/audioFormat';
 import { getFileExtension, getFileMimeType, isImageFile } from '../utils/fileFormat';
 import { deleteMediaFiles } from '../utils/mediaFiles';
+import { shouldAutoSaveBeforeHome } from '../utils/editorExit';
 
 type Route = RouteProp<RootStackParamList, 'NoteEditor'>;
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'NoteEditor'>;
@@ -376,11 +377,31 @@ export const NoteEditorScreen = () => {
     return persistDraft(draft, t('editor.autoSaveError'));
   };
 
+  const goHome = async () => {
+    if (isAutoSavingRef.current) return;
+    isAutoSavingRef.current = true;
+    try {
+      const didSave = !shouldAutoSaveBeforeHome(hasUnsavedChanges, recording !== null) || await autoSaveBeforeExit();
+      if (!didSave) return;
+      skipUnsavedWarningRef.current = true;
+      navigation.navigate('Folders');
+    } finally {
+      isAutoSavingRef.current = false;
+    }
+  };
+
   useEffect(() => {
     const unsubscribe = navigation.addListener('beforeRemove', (event) => {
-      if (skipUnsavedWarningRef.current || !hasUnsavedChanges || isAutoSavingRef.current) {
+      if (skipUnsavedWarningRef.current) {
         return;
       }
+
+      if (isAutoSavingRef.current) {
+        event.preventDefault();
+        return;
+      }
+
+      if (!hasUnsavedChanges) return;
 
       event.preventDefault();
 
@@ -1037,7 +1058,19 @@ export const NoteEditorScreen = () => {
         }}
       />
 
-      <TopBar onBack={() => navigation.goBack()}>
+      <TopBar
+        onBack={() => {
+          if (!isAutoSavingRef.current) navigation.goBack();
+        }}
+        leading={
+          <IconButton
+            icon="home-outline"
+            disabled={isSaving}
+            accessibilityLabel="Home"
+            onPress={() => void goHome()}
+          />
+        }
+      >
         <LanguageToggleButton />
         <IconButton
           icon="content-save-outline"

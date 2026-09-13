@@ -10,6 +10,7 @@ import type {
   NoteListItem,
 } from '../types/models';
 import { deleteMediaFiles } from '../utils/mediaFiles';
+import { normalizeFolderIds } from '../utils/folderDeletion';
 
 export type SortField = 'custom' | 'name' | 'createdAt';
 export type SortDirection = 'asc' | 'desc';
@@ -29,10 +30,14 @@ export type StorageSnapshot = {
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 let databaseSuspension: Promise<void> | null = null;
+let activeDatabaseOperations = 0;
+let databaseOperationsDrained: Promise<void> | null = null;
+let releaseDatabaseOperations: (() => void) | null = null;
+let mediaMutationQueue: Promise<void> = Promise.resolve();
 
 const SQLITE_BUSY_TIMEOUT_MS = 5000;
 const SQLITE_BUSY_RETRY_DELAYS_MS = [75, 200, 500] as const;
-const CURRENT_SCHEMA_VERSION = 3;
+const CURRENT_SCHEMA_VERSION = 4;
 
 const normalizeSearchValue = (value: string | null | undefined): string =>
   (value ?? '').toLowerCase();
@@ -47,6 +52,36 @@ const isSqliteBusyError = (error: unknown): boolean => {
 };
 
 const wait = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+
+export const withDatabaseOperation = async <T>(work: () => Promise<T>): Promise<T> => {
+  while (databaseSuspension) await databaseSuspension;
+  if (activeDatabaseOperations === 0) {
+    databaseOperationsDrained = new Promise<void>((resolve) => { releaseDatabaseOperations = resolve; });
+  }
+  activeDatabaseOperations += 1;
+  try {
+    return await work();
+  } finally {
+    activeDatabaseOperations -= 1;
+    if (activeDatabaseOperations === 0) {
+      releaseDatabaseOperations?.();
+      releaseDatabaseOperations = null;
+      databaseOperationsDrained = null;
+    }
+  }
+};
+
+const withMediaMutation = async <T>(work: () => Promise<T>): Promise<T> => {
+  const previous = mediaMutationQueue;
+  let release: () => void = () => {};
+  mediaMutationQueue = new Promise<void>((resolve) => { release = resolve; });
+  await previous;
+  try {
+    return await work();
+  } finally {
+    release();
+  }
+};
 
 /** Retry only transient SQLite lock contention from another connection. */
 export const withSqliteBusyRetry = async <T>(work: () => Promise<T>): Promise<T> => {
@@ -99,6 +134,7 @@ export const withDatabaseSuspended = async <T>(work: () => Promise<T>): Promise<
   while (databaseSuspension) await databaseSuspension;
   let release: () => void = () => {};
   databaseSuspension = new Promise<void>((resolve) => { release = resolve; });
+  await databaseOperationsDrained;
   const pending = dbPromise;
   dbPromise = null;
   try {
@@ -123,15 +159,16 @@ export const closeDb = async (): Promise<void> => {
   await db.closeAsync();
 };
 
-export const initDb = async () => {
+export const initDb = async () => withDatabaseOperation(async () => {
   const db = await getDb();
 
+  await db.execAsync('PRAGMA journal_mode = WAL;');
+  await db.execAsync('PRAGMA foreign_keys = ON;');
   await db.execAsync(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS Folders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       portableId TEXT,
+      parentPortableId TEXT,
       name TEXT NOT NULL,
       createdAt TEXT NOT NULL,
       sortOrder INTEGER NOT NULL
@@ -267,11 +304,15 @@ export const initDb = async () => {
   const folderColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(Folders);');
   const hasFolderSortOrder = folderColumns.some((column) => column.name === 'sortOrder');
   const hasFolderPortableId = folderColumns.some((column) => column.name === 'portableId');
+  const hasFolderParentPortableId = folderColumns.some((column) => column.name === 'parentPortableId');
   if (!hasFolderSortOrder) {
     await db.execAsync('ALTER TABLE Folders ADD COLUMN sortOrder INTEGER;');
   }
   if (!hasFolderPortableId) {
     await db.execAsync('ALTER TABLE Folders ADD COLUMN portableId TEXT;');
+  }
+  if (!hasFolderParentPortableId) {
+    await db.execAsync('ALTER TABLE Folders ADD COLUMN parentPortableId TEXT;');
   }
 
   const noteAudioColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(NoteAudios);');
@@ -451,7 +492,7 @@ export const initDb = async () => {
   }
 
   await db.execAsync(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION};`);
-};
+});
 
 const nowIso = () => new Date().toISOString();
 const createAudioGroupId = () => `audio_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -474,13 +515,13 @@ const advanceContentRevision = async (db: SQLite.SQLiteDatabase): Promise<void> 
   await db.runAsync('UPDATE ContentMetadata SET revision = revision + 1 WHERE id = 1;');
 };
 
-export const getContentRevision = async (): Promise<number> => {
+export const getContentRevision = async (): Promise<number> => withDatabaseOperation(async () => {
   const db = await getDb();
   const row = await db.getFirstAsync<{ revision: number }>(
     'SELECT revision FROM ContentMetadata WHERE id = 1;'
   );
   return Number(row?.revision ?? 0);
-};
+});
 
 const listNoteMediaUris = async (db: SQLite.SQLiteDatabase, noteIds: number[]): Promise<string[]> => {
   if (noteIds.length === 0) {
@@ -502,9 +543,32 @@ const listNoteMediaUris = async (db: SQLite.SQLiteDatabase, noteIds: number[]): 
     .filter((uri) => Boolean(uri));
 };
 
+const deleteUnreferencedMediaFiles = async (
+  db: SQLite.SQLiteDatabase,
+  candidateUris: Iterable<string | null | undefined>,
+): Promise<void> => {
+  const candidates = [...new Set(
+    [...candidateUris].map((uri) => uri?.trim() ?? '').filter((uri) => Boolean(uri))
+  )];
+  if (candidates.length === 0) return;
+
+  const placeholders = candidates.map(() => '?').join(', ');
+  const rows = await db.getAllAsync<{ uri: string }>(
+    `
+    SELECT uri FROM NoteAudios WHERE uri IN (${placeholders})
+    UNION
+    SELECT uri FROM NoteFiles WHERE uri IN (${placeholders});
+    `,
+    [...candidates, ...candidates],
+  );
+  const referenced = new Set(rows.map((row) => row.uri.trim()));
+  await deleteMediaFiles(candidates.filter((uri) => !referenced.has(uri)));
+};
+
 type FolderRow = {
   id: number;
   portableId: string;
+  parentPortableId: string | null;
   name: string;
   createdAt: string;
   sortOrder: number;
@@ -629,13 +693,14 @@ const resolveNoteSortClause = (sort: ListSortOptions): string => {
 
 export const listFolders = async (
   sort: ListSortOptions = { field: 'custom', direction: 'asc' }
-): Promise<FolderListItem[]> => {
+): Promise<FolderListItem[]> => withDatabaseOperation(async () => {
   const db = await getDb();
   const orderBy = resolveFolderSortClause(sort);
   const rows = await db.getAllAsync<FolderRow>(`
     SELECT
       F.id,
       F.portableId,
+      F.parentPortableId,
       F.name,
       F.createdAt,
       F.sortOrder,
@@ -649,13 +714,14 @@ export const listFolders = async (
   return rows.map((row) => ({
     id: row.id,
     portableId: row.portableId,
+    parentPortableId: row.parentPortableId,
     name: row.name,
     createdAt: row.createdAt,
     noteCount: Number(row.noteCount ?? 0),
   }));
-};
+});
 
-export const createFolder = async (name: string): Promise<number> => {
+export const createFolder = async (name: string): Promise<number> => withDatabaseOperation(async () => {
   const db = await getDb();
   const trimmedName = name.trim();
   if (!trimmedName) {
@@ -674,9 +740,9 @@ export const createFolder = async (name: string): Promise<number> => {
     await advanceContentRevision(txn);
   });
   return folderId;
-};
+});
 
-export const updateFolderName = async (folderId: number, name: string): Promise<void> => {
+export const updateFolderName = async (folderId: number, name: string): Promise<void> => withDatabaseOperation(async () => {
   const db = await getDb();
   const trimmedName = name.trim();
   if (!trimmedName) {
@@ -686,12 +752,12 @@ export const updateFolderName = async (folderId: number, name: string): Promise<
     const result = await txn.runAsync('UPDATE Folders SET name = ? WHERE id = ?;', [trimmedName, folderId]);
     if (result.changes > 0) await advanceContentRevision(txn);
   });
-};
+});
 
 export const moveFolderPosition = async (
   folderId: number,
   direction: 'up' | 'down'
-): Promise<boolean> => {
+): Promise<boolean> => withDatabaseOperation(async () => {
   const db = await getDb();
   const rows = await db.getAllAsync<{ id: number; sortOrder: number }>(
     'SELECT id, sortOrder FROM Folders ORDER BY sortOrder ASC, id ASC;'
@@ -713,46 +779,45 @@ export const moveFolderPosition = async (
     await advanceContentRevision(txn);
   });
   return true;
-};
+});
 
-export const deleteFolder = async (folderId: number): Promise<void> => {
-  const db = await getDb();
-  const noteRows = await db.getAllAsync<{ id: number }>('SELECT id FROM Notes WHERE folderId = ?;', [folderId]);
+const deleteFolderRows = async (db: SQLite.SQLiteDatabase, folderIds: readonly number[]): Promise<void> => {
+  const ids = normalizeFolderIds(folderIds);
+  if (ids.length === 0) return;
+  const folderPlaceholders = ids.map(() => '?').join(', ');
+  const noteRows = await db.getAllAsync<{ id: number }>(`SELECT id FROM Notes WHERE folderId IN (${folderPlaceholders});`, ids);
   const noteIds = noteRows.map((row) => row.id);
-  const mediaUris = await listNoteMediaUris(
-    db,
-    noteIds
-  );
-
+  const mediaUris = await listNoteMediaUris(db, noteIds);
   await withWriteTransaction(db, async (txn) => {
-    // Explicitly remove descendants before the folder. New databases enforce
-    // these cascades with foreign keys, but older installs may have been
-    // created before those constraints existed (and can therefore contain
-    // orphaned notes). Keeping the delete ordering explicit makes folder
-    // removal safe for both schemas and prevents stale rows from becoming
-    // import-time portableId conflicts later.
     let changed = 0;
     if (noteIds.length > 0) {
       const placeholders = noteIds.map(() => '?').join(', ');
-      const parameters = [...noteIds];
-      changed += (await txn.runAsync(`DELETE FROM NoteAudios WHERE noteId IN (${placeholders});`, parameters)).changes;
-      changed += (await txn.runAsync(`DELETE FROM NoteFiles WHERE noteId IN (${placeholders});`, parameters)).changes;
-      changed += (await txn.runAsync(`DELETE FROM RecoveryProvenance WHERE noteId IN (${placeholders});`, parameters)).changes;
-      changed += (await txn.runAsync(`DELETE FROM Notes WHERE id IN (${placeholders});`, parameters)).changes;
+      changed += (await txn.runAsync(`DELETE FROM NoteAudios WHERE noteId IN (${placeholders});`, noteIds)).changes;
+      changed += (await txn.runAsync(`DELETE FROM NoteFiles WHERE noteId IN (${placeholders});`, noteIds)).changes;
+      changed += (await txn.runAsync(`DELETE FROM RecoveryProvenance WHERE noteId IN (${placeholders});`, noteIds)).changes;
+      changed += (await txn.runAsync(`DELETE FROM Notes WHERE id IN (${placeholders});`, noteIds)).changes;
     }
-    const result = await txn.runAsync('DELETE FROM Folders WHERE id = ?;', [folderId]);
-    changed += result.changes;
+    changed += (await txn.runAsync(`DELETE FROM Folders WHERE id IN (${folderPlaceholders});`, ids)).changes;
     if (changed > 0) await advanceContentRevision(txn);
   });
-
-  await deleteMediaFiles(mediaUris);
+  await deleteUnreferencedMediaFiles(db, mediaUris);
 };
+
+export const deleteFolder = async (folderId: number): Promise<void> => withDatabaseOperation(() => withMediaMutation(async () => {
+  const db = await getDb();
+  await deleteFolderRows(db, [folderId]);
+}));
+
+export const deleteFolders = async (folderIds: readonly number[]): Promise<void> => withDatabaseOperation(() => withMediaMutation(async () => {
+  const db = await getDb();
+  await deleteFolderRows(db, folderIds);
+}));
 
 export const listNotesByFolder = async (
   folderId: number,
   sort: ListSortOptions = { field: 'custom', direction: 'asc' },
   searchQuery = ''
-): Promise<NoteListItem[]> => {
+): Promise<NoteListItem[]> => withDatabaseOperation(async () => {
   const db = await getDb();
   const orderBy = resolveNoteSortClause(sort);
   const normalizedSearch = searchQuery.trim().toLowerCase();
@@ -786,9 +851,9 @@ export const listNotesByFolder = async (
   );
 
   return rows.map(mapNoteListItem);
-};
+});
 
-export const getNoteById = async (noteId: number): Promise<Note | null> => {
+export const getNoteById = async (noteId: number): Promise<Note | null> => withDatabaseOperation(async () => {
   const db = await getDb();
   const row = await db.getFirstAsync<NoteRow>(
     `
@@ -816,9 +881,9 @@ export const getNoteById = async (noteId: number): Promise<Note | null> => {
   const audios = await listNoteAudios(noteId);
   const files = await listNoteFiles(noteId);
   return { ...note, audioCount: audios.length, fileCount: files.length, audios, files };
-};
+});
 
-export const listNoteAudios = async (noteId: number): Promise<NoteAudio[]> => {
+export const listNoteAudios = async (noteId: number): Promise<NoteAudio[]> => withDatabaseOperation(async () => {
   const db = await getDb();
   const rows = await db.getAllAsync<NoteAudioRow>(
     `
@@ -831,9 +896,9 @@ export const listNoteAudios = async (noteId: number): Promise<NoteAudio[]> => {
   );
 
   return rows.map(mapNoteAudio);
-};
+});
 
-export const listNoteFiles = async (noteId: number): Promise<NoteFile[]> => {
+export const listNoteFiles = async (noteId: number): Promise<NoteFile[]> => withDatabaseOperation(async () => {
   const db = await getDb();
   const rows = await db.getAllAsync<NoteFileRow>(
     `
@@ -846,7 +911,7 @@ export const listNoteFiles = async (noteId: number): Promise<NoteFile[]> => {
   );
 
   return rows.map(mapNoteFile);
-};
+});
 
 const saveNoteFiles = async (
   db: SQLite.SQLiteDatabase,
@@ -937,7 +1002,7 @@ const saveNoteFiles = async (
 export const appendFilesToNote = async (
   noteId: number,
   files: NoteFileDraft[]
-): Promise<void> => {
+): Promise<void> => withDatabaseOperation(() => withMediaMutation(async () => {
   const db = await getDb();
   const normalizedFiles = files
     .map((file) => ({
@@ -978,7 +1043,7 @@ export const appendFilesToNote = async (
     await txn.runAsync('UPDATE Notes SET updatedAt = ? WHERE id = ?;', [nowIso(), noteId]);
     await advanceContentRevision(txn);
   });
-};
+}));
 
 const saveNoteAudios = async (
   db: SQLite.SQLiteDatabase,
@@ -1073,7 +1138,7 @@ const saveNoteAudios = async (
 export const createNote = async (
   folderId: number,
   draft: NoteDraft
-): Promise<number> => {
+): Promise<number> => withDatabaseOperation(() => withMediaMutation(async () => {
   const db = await getDb();
   const timestamp = nowIso();
   const title = draft.title.trim();
@@ -1111,13 +1176,13 @@ export const createNote = async (
     await advanceContentRevision(txn);
   });
   return noteId;
-};
+}));
 
 export const moveNotePosition = async (
   folderId: number,
   noteId: number,
   direction: 'up' | 'down'
-): Promise<boolean> => {
+): Promise<boolean> => withDatabaseOperation(async () => {
   const db = await getDb();
   const rows = await db.getAllAsync<{ id: number; sortOrder: number }>(
     'SELECT id, sortOrder FROM Notes WHERE folderId = ? ORDER BY sortOrder ASC, id ASC;',
@@ -1140,12 +1205,12 @@ export const moveNotePosition = async (
     await advanceContentRevision(txn);
   });
   return true;
-};
+});
 
 export const updateNote = async (
   noteId: number,
   draft: NoteDraft
-): Promise<void> => {
+): Promise<void> => withDatabaseOperation(() => withMediaMutation(async () => {
   const db = await getDb();
   const title = draft.title.trim();
   if (!title) {
@@ -1186,27 +1251,23 @@ export const updateNote = async (
     }
   });
 
-  const keptUris = new Set([
-    ...draft.audios.map((audio) => audio.uri.trim()),
-    ...draft.files.map((file) => file.uri.trim()),
-  ]);
-  await deleteMediaFiles(previousUris.filter((uri) => !keptUris.has(uri)));
-};
+  await deleteUnreferencedMediaFiles(db, previousUris);
+}));
 
-export const deleteNote = async (noteId: number): Promise<void> => {
+export const deleteNote = async (noteId: number): Promise<void> => withDatabaseOperation(() => withMediaMutation(async () => {
   const db = await getDb();
   const mediaUris = await listNoteMediaUris(db, [noteId]);
   await withWriteTransaction(db, async (txn) => {
     const result = await txn.runAsync('DELETE FROM Notes WHERE id = ?;', [noteId]);
     if (result.changes > 0) await advanceContentRevision(txn);
   });
-  await deleteMediaFiles(mediaUris);
-};
+  await deleteUnreferencedMediaFiles(db, mediaUris);
+}));
 
 export const appendAudiosToNote = async (
   noteId: number,
   audios: NoteAudioDraft[]
-): Promise<void> => {
+): Promise<void> => withDatabaseOperation(() => withMediaMutation(async () => {
   const db = await getDb();
   const normalizedAudios = audios
     .map((audio) => ({
@@ -1249,9 +1310,9 @@ export const appendAudiosToNote = async (
     await txn.runAsync('UPDATE Notes SET updatedAt = ? WHERE id = ?;', [nowIso(), noteId]);
     await advanceContentRevision(txn);
   });
-};
+}));
 
-export const getStorageSnapshot = async (): Promise<StorageSnapshot> => {
+export const getStorageSnapshot = async (): Promise<StorageSnapshot> => withDatabaseOperation(async () => {
   const db = await getDb();
 
   const noteStats = await db.getFirstAsync<{ noteCount: number | null; notesTextBytes: number | null }>(
@@ -1296,4 +1357,4 @@ export const getStorageSnapshot = async (): Promise<StorageSnapshot> => {
       .map((row) => row.uri?.trim() ?? '')
       .filter((uri) => Boolean(uri)),
   };
-};
+});

@@ -1,7 +1,7 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Alert, ScrollView, Switch, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppText } from '../components/AppText';
@@ -65,6 +65,7 @@ import {
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
 import type { RootStackParamList } from '../types/navigation';
+import { buildArchiveTree, folderCheckState, toggleArchiveNotes, type ArchiveTreeFolder } from '../backup/archiveTree';
 
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'Backup'>;
 
@@ -88,6 +89,7 @@ export const BackupScreen = () => {
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importMode, setImportMode] = useState<'selective' | 'additive' | 'replacement' | null>(null);
   const [selectedNoteIds, setSelectedNoteIds] = useState<ReadonlySet<string>>(new Set());
+  const [expandedFolderIds, setExpandedFolderIds] = useState<ReadonlySet<string>>(new Set());
   const [importState, setImportState] = useState<'idle' | 'previewing' | 'committing'>('idle');
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [replacementResult, setReplacementResult] = useState<FullReplacementResult | null>(null);
@@ -384,6 +386,7 @@ export const BackupScreen = () => {
       setImportPreview(preview);
       setImportMode(null);
       setSelectedNoteIds(new Set(preview.notes.map((note) => note.portableId)));
+      setExpandedFolderIds(new Set(preview.folders.map((folder) => folder.portableId)));
     } catch (error) {
       console.warn('Failed to preview backup archive:', error);
       setImportError(t('backup.import.invalid'));
@@ -400,6 +403,16 @@ export const BackupScreen = () => {
       return next;
     });
   };
+
+  const toggleFolder = (folder: ArchiveTreeFolder) => {
+    setSelectedNoteIds((current) => toggleArchiveNotes(current, folder.descendantNoteIds, folderCheckState(folder.descendantNoteIds, current) !== 'checked'));
+  };
+
+  const toggleExpandedFolder = (portableId: string) => setExpandedFolderIds((current) => {
+    const next = new Set(current);
+    if (next.has(portableId)) next.delete(portableId); else next.add(portableId);
+    return next;
+  });
 
   const commitImport = async () => {
     if (!importPreview || !importMode || (importMode === 'selective' && selectedNoteIds.size === 0)) return;
@@ -725,30 +738,31 @@ export const BackupScreen = () => {
             >
               <AppText variant="headline" color={colors.primary}>{t('backup.import.selective')}</AppText>
             </PressableScale>
-            {importMode === 'selective' ? importPreview.notes.map((note) => {
-              const selected = selectedNoteIds.has(note.portableId);
-              return (
-                <PressableScale
-                  key={note.portableId}
-                  accessibilityRole="checkbox"
-                  accessibilityState={{ checked: selected }}
-                  onPress={() => toggleSelectedNote(note.portableId)}
-                  style={{ paddingVertical: ui.space.sm, borderTopWidth: 1, borderTopColor: colors.border, gap: ui.space.xs }}
-                >
-                  <View style={{ flexDirection: 'row', gap: ui.space.sm, alignItems: 'center' }}>
-                    <MaterialCommunityIcons name={selected ? 'checkbox-marked' : 'checkbox-blank-outline'} size={24} color={selected ? colors.primary : colors.textSecondary} />
-                    <View style={{ flex: 1 }}>
-                      <AppText variant="headline">{note.title}</AppText>
-                      <AppText variant="bodySmall" color={colors.textSecondary}>{note.folderName}</AppText>
-                    </View>
+            {importMode === 'selective' ? (() => {
+              const renderFolder = (folder: ArchiveTreeFolder, depth = 0): ReactNode => {
+                const state = folderCheckState(folder.descendantNoteIds, selectedNoteIds);
+                const expanded = expandedFolderIds.has(folder.portableId);
+                const icon = state === 'checked' ? 'checkbox-marked' : state === 'indeterminate' ? 'minus-box' : 'checkbox-blank-outline';
+                return <View key={folder.portableId} style={{ marginLeft: depth * ui.space.md, gap: ui.space.xs }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', borderTopWidth: 1, borderTopColor: colors.border, paddingVertical: ui.space.sm }}>
+                    <PressableScale accessibilityRole="button" accessibilityLabel={`${expanded ? 'Collapse' : 'Expand'} ${folder.name}`} onPress={() => toggleExpandedFolder(folder.portableId)} style={{ padding: ui.space.xs }}><MaterialCommunityIcons name={expanded ? 'chevron-down' : 'chevron-right'} size={22} color={colors.textSecondary} /></PressableScale>
+                    <PressableScale accessibilityRole="checkbox" accessibilityState={{ checked: state === 'indeterminate' ? 'mixed' : state === 'checked', disabled: state === 'disabled' }} disabled={state === 'disabled'} onPress={() => toggleFolder(folder)} style={{ padding: ui.space.xs }}><MaterialCommunityIcons name={icon} size={24} color={state === 'checked' || state === 'indeterminate' ? colors.primary : colors.textSecondary} /></PressableScale>
+                    <PressableScale accessibilityRole="button" accessibilityLabel={`${expanded ? 'Collapse' : 'Expand'} ${folder.name}`} onPress={() => toggleExpandedFolder(folder.portableId)} style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: ui.space.xs }}><AppText variant="headline">{folder.name}</AppText><AppText variant="caption" color={colors.textSecondary}>{folder.descendantNoteIds.length}</AppText></PressableScale>
                   </View>
-                  {note.contentPreview ? <AppText variant="bodySmall" color={colors.textSecondary} numberOfLines={2}>{note.contentPreview}</AppText> : null}
-                  <AppText variant="caption" color={colors.textSecondary}>
-                    {t('backup.import.media', { audio: note.audioCount, files: note.fileCount })}
-                  </AppText>
-                </PressableScale>
-              );
-            }) : null}
+                  {expanded ? <>
+                    {folder.notes.map((note) => {
+                      const selected = selectedNoteIds.has(note.portableId);
+                      return <PressableScale key={note.portableId} accessibilityRole="checkbox" accessibilityState={{ checked: selected }} onPress={() => toggleSelectedNote(note.portableId)} style={{ marginLeft: ui.space.lg, paddingVertical: ui.space.sm, gap: ui.space.xs }}>
+                        <View style={{ flexDirection: 'row', gap: ui.space.sm, alignItems: 'center' }}><MaterialCommunityIcons name={selected ? 'checkbox-marked' : 'checkbox-blank-outline'} size={24} color={selected ? colors.primary : colors.textSecondary} /><View style={{ flex: 1 }}><AppText variant="headline">{note.title}</AppText><AppText variant="bodySmall" color={colors.textSecondary}>{folder.path.join(' / ')}</AppText></View></View>
+                        {note.contentPreview ? <AppText variant="bodySmall" color={colors.textSecondary} numberOfLines={2}>{note.contentPreview}</AppText> : null}<AppText variant="caption" color={colors.textSecondary}>{t('backup.import.media', { audio: note.audioCount, files: note.fileCount })}</AppText>
+                      </PressableScale>;
+                    })}
+                    {folder.children.map((child) => renderFolder(child, depth + 1))}
+                  </> : null}
+                </View>;
+              };
+              return buildArchiveTree(importPreview.folders, importPreview.notes).map((folder) => renderFolder(folder));
+            })() : null}
             {importMode ? (
               <PrimaryButton
                 disabled={(importMode === 'selective' && selectedNoteIds.size === 0) || importState !== 'idle' || operationBusy}

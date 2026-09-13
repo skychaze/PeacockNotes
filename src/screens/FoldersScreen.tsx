@@ -32,24 +32,49 @@ import { useEntrance } from '../components/entrance';
 import {
   createFolder,
   deleteFolder,
+  deleteFolders,
+  getContentRevision,
   listFolders,
   moveFolderPosition,
   updateFolderName,
   type SortDirection,
   type SortField,
 } from '../database/schema';
+import { deriveHomeBackupStatus, type ArchivePresence, type HomeBackupStatus } from '../backup/homeBackupStatus';
+import { getAutomaticBackupState, subscribeAutomaticBackupState } from '../services/automaticBackup';
+import { getLastVerifiedBackup } from '../services/backupExport';
+import {
+  getBackupDiscoverySnapshot,
+  initializeBackupDiscovery,
+  refreshBackupDiscovery,
+  subscribeBackupDiscovery,
+  type BackupDiscoveryValue,
+} from '../services/backupDiscovery';
+import type { DiscoveryCacheSnapshot } from '../backup/discoveryCache';
 import { useLanguage } from '../i18n/LanguageContext';
-import { FOLDER_ACCENTS } from '../theme/colors';
+import { BACKUP_STATUS_PENDING, FOLDER_ACCENTS } from '../theme/colors';
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
 import type { FolderListItem } from '../types/models';
 import type { RootStackParamList } from '../types/navigation';
+import { reconcileFolderSelection, toggleFolderSelection as toggleSelectedFolder } from '../utils/folderSelection';
 
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'Folders'>;
 
 type ActiveSheet = 'none' | 'sort' | 'menu' | 'create' | 'rename' | 'folderActions';
 
 const SORT_FIELDS: SortField[] = ['custom', 'name', 'createdAt'];
+
+const archivePresence = (
+  snapshot: DiscoveryCacheSnapshot<BackupDiscoveryValue>,
+  uri: string | undefined,
+): ArchivePresence => {
+  if (!uri) return 'missing';
+  if (snapshot.phase !== 'ready' || !snapshot.value.collection?.complete) return 'unknown';
+  return snapshot.value.collection.archives.some((archive) =>
+    archive.uri === uri && archive.state === 'valid' && archive.verification === 'verified'
+  ) ? 'present' : 'missing';
+};
 
 export const FoldersScreen = () => {
   const navigation = useNavigation<Navigation>();
@@ -72,6 +97,9 @@ export const FoldersScreen = () => {
   const [sortField, setSortField] = useState<SortField>('custom');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [isReorderMode, setIsReorderMode] = useState(false);
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedFolderIds, setSelectedFolderIds] = useState<ReadonlySet<number>>(new Set());
+  const [backupStatus, setBackupStatus] = useState<HomeBackupStatus>({ level: 'pending', message: 'No verified backup yet' });
 
   const fabBottom = Math.max(insets.bottom + 12, 22);
   const listBottomPadding = Math.max(insets.bottom + 104, 126);
@@ -98,6 +126,7 @@ export const FoldersScreen = () => {
     try {
       const result = await listFolders({ field: sortField, direction: sortDirection });
       setFolders(result);
+      setSelectedFolderIds((current) => reconcileFolderSelection(current, new Set(result.map((folder) => folder.id))));
     } catch (error) {
       console.warn('Failed to load folders:', error);
       Alert.alert(t('common.error'), t('folder.loadError'));
@@ -106,11 +135,52 @@ export const FoldersScreen = () => {
     }
   }, [sortDirection, sortField, t]);
 
+  const refreshBackupStatus = useCallback(async (snapshot = getBackupDiscoverySnapshot()) => {
+    try {
+      const [contentRevision, verifiedBackup, automatic] = await Promise.all([getContentRevision(), getLastVerifiedBackup(), getAutomaticBackupState()]);
+      setBackupStatus(deriveHomeBackupStatus({
+        contentRevision,
+        verifiedBackup,
+        automatic,
+        destination: snapshot.value.folder,
+        archivePresence: archivePresence(snapshot, verifiedBackup?.uri),
+      }));
+    } catch {
+      setBackupStatus({ level: 'action_required', message: 'Backup status is unavailable' });
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       void refreshFolders();
-    }, [refreshFolders])
+      void refreshBackupStatus();
+      const unsubscribe = subscribeBackupDiscovery((snapshot) => void refreshBackupStatus(snapshot));
+      const unsubscribeAutomatic = subscribeAutomaticBackupState(() => void refreshBackupStatus());
+      void initializeBackupDiscovery();
+      void refreshBackupDiscovery();
+      const interval = setInterval(() => {
+        void refreshBackupDiscovery();
+        void refreshBackupStatus();
+      }, 60_000);
+      return () => { unsubscribe(); unsubscribeAutomatic(); clearInterval(interval); };
+    }, [refreshBackupStatus, refreshFolders])
   );
+
+  const toggleFolderSelection = (folderId: number) => setSelectedFolderIds((current) => toggleSelectedFolder(current, folderId));
+
+  const exitSelectionMode = () => { setIsSelectionMode(false); setSelectedFolderIds(new Set()); };
+
+  const confirmDeleteSelected = () => {
+    const ids = [...selectedFolderIds];
+    if (ids.length === 0) return;
+    Alert.alert('Delete selected folders?', `${ids.length} selected folder${ids.length === 1 ? '' : 's'} and their notes will be deleted.`, [
+      { text: t('common.cancel'), style: 'cancel' },
+      { text: t('common.delete'), style: 'destructive', onPress: async () => {
+        try { await deleteFolders(ids); await refreshFolders(); await refreshBackupStatus(); exitSelectionMode(); }
+        catch (error) { console.warn('Failed to delete selected folders:', error); Alert.alert(t('common.error'), t('folder.deleteError')); await refreshFolders(); await refreshBackupStatus(); }
+      } },
+    ]);
+  };
 
   const onCreateFolder = async () => {
     const name = newFolderName.trim();
@@ -125,6 +195,7 @@ export const FoldersScreen = () => {
       setNewFolderName('');
       closeSheet();
       await refreshFolders();
+      await refreshBackupStatus();
     } catch (error) {
       console.warn('Failed to create folder:', error);
       Alert.alert(t('common.error'), t('folder.createError'));
@@ -146,6 +217,7 @@ export const FoldersScreen = () => {
             try {
               await deleteFolder(folder.id);
               await refreshFolders();
+              await refreshBackupStatus();
             } catch (error) {
               console.warn('Failed to delete folder:', error);
               Alert.alert(t('common.error'), t('folder.deleteError'));
@@ -179,6 +251,7 @@ export const FoldersScreen = () => {
       setRenameFolderName('');
       closeSheet();
       await refreshFolders();
+      await refreshBackupStatus();
     } catch (error) {
       console.warn('Failed to rename folder:', error);
       Alert.alert(t('common.error'), t('folder.renameError'));
@@ -206,6 +279,7 @@ export const FoldersScreen = () => {
     try {
       await moveFolderPosition(folderId, direction);
       await refreshFolders();
+      await refreshBackupStatus();
     } catch (error) {
       console.warn('Failed to move folder position:', error);
       Alert.alert(t('common.error'), t('folder.loadError'));
@@ -281,13 +355,9 @@ export const FoldersScreen = () => {
                 style={{ width: cardWidth }}
               >
                 <PressableScale
-                  onPress={() =>
-                    navigation.navigate('NotesList', {
-                      folderId: item.id,
-                      folderName: item.name,
-                    })
-                  }
+                  onPress={() => isSelectionMode ? toggleFolderSelection(item.id) : navigation.navigate('NotesList', { folderId: item.id, folderName: item.name })}
                   onLongPress={() => {
+                    if (isSelectionMode) return;
                     setActionsFolder(item);
                     setActiveSheet('folderActions');
                   }}
@@ -321,6 +391,7 @@ export const FoldersScreen = () => {
                       }}
                     >
                       <MaterialCommunityIcons name="folder" size={24} color={ink} />
+                      {isSelectionMode ? <MaterialCommunityIcons name={selectedFolderIds.has(item.id) ? 'checkbox-marked' : 'checkbox-blank-outline'} size={24} color={selectedFolderIds.has(item.id) ? colors.primary : ink} /> : null}
                       {isReorderModeActive ? (
                         <View style={{ flexDirection: 'row', gap: ui.space.xs }}>
                           <IconButton
@@ -354,6 +425,24 @@ export const FoldersScreen = () => {
 
       <TopBar>
         <LanguageToggleButton />
+        {isSelectionMode ? <>
+          <AppText variant="caption">{selectedFolderIds.size} selected</AppText>
+          <IconButton icon="trash-can-outline" danger disabled={selectedFolderIds.size === 0} accessibilityLabel="Delete selected folders" onPress={confirmDeleteSelected} />
+          <IconButton icon="close" accessibilityLabel="Cancel selection" onPress={exitSelectionMode} />
+        </> : <>
+        <IconButton icon="checkbox-multiple-marked-outline" accessibilityLabel="Select folders" onPress={() => setIsSelectionMode(true)} />
+        <PressableScale
+          accessibilityRole="button"
+          accessibilityLabel={backupStatus.message}
+          onPress={() => Alert.alert('Backup status', backupStatus.message)}
+          style={{ width: 40, height: 40, borderRadius: ui.radius.pill, backgroundColor: colors.surfaceVariant, alignItems: 'center', justifyContent: 'center' }}
+        >
+          <MaterialCommunityIcons
+            name="cloud-check-outline"
+            size={22}
+            color={backupStatus.level === 'current' ? colors.primary : backupStatus.level === 'pending' ? (isDark ? BACKUP_STATUS_PENDING.dark : BACKUP_STATUS_PENDING.light) : colors.error}
+          />
+        </PressableScale>
         <IconButton
           icon="sort-variant"
           accessibilityLabel={t('sort.title')}
@@ -365,9 +454,10 @@ export const FoldersScreen = () => {
           accessibilityLabel={t('drawer.quickMenu')}
           onPress={() => setActiveSheet('menu')}
         />
+        </>}
       </TopBar>
 
-      <FAB icon="folder-plus" bottom={fabBottom} onPress={() => setActiveSheet('create')} />
+      {!isSelectionMode ? <FAB icon="folder-plus" bottom={fabBottom} onPress={() => setActiveSheet('create')} /> : null}
 
       <BottomSheet
         visible={activeSheet === 'sort'}

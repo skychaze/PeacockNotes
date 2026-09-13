@@ -41,6 +41,9 @@ const liveDatabaseUri = async () => `file://${(await getDb()).databasePath}`;
 const importOperationKey = (operation: BackupOperation, payload: ImportPayload) =>
   createBackupOperationStepKey(operation.id, null, importStepName(payload));
 
+const isWalModeInitializationError = (error: unknown) =>
+  error instanceof Error && error.message.includes('cannot change into wal mode from within a transaction');
+
 class ImportOperationHandler implements BackupOperationHandler {
   result: ImportResult | FullReplacementResult | FullReplacementUndoResult | null = null;
 
@@ -84,8 +87,9 @@ class ImportOperationHandler implements BackupOperationHandler {
       // statements or WAL state survive an external transaction; reopen it
       // before the durable operation store advances its checkpoint.
       const databaseUri = await liveDatabaseUri();
+      let committed: ImportResult | null = null;
       try {
-        this.result = await withDatabaseSuspended(() => commitSelectiveArchiveImport({
+        committed = await withDatabaseSuspended(() => commitSelectiveArchiveImport({
           archiveUri: payload.archiveUri,
           archiveSha256: payload.archiveSha256,
           selectedNoteIds: payload.selectedNoteIds,
@@ -93,8 +97,16 @@ class ImportOperationHandler implements BackupOperationHandler {
           mediaDirectoryUri,
           operationKey: idempotencyKey,
         }));
+        this.result = committed;
       } finally {
-        await initDb();
+        try {
+          await initDb();
+        } catch (error) {
+          if (!committed || !isWalModeInitializationError(error)) throw error;
+          const receipt = await getArchiveImportReceiptResult(databaseUri, idempotencyKey);
+          if (!receipt) throw error;
+          this.result = receipt;
+        }
       }
       return { outcome: 'committed', checkpoint: 'selected_batch_committed', done: true } as const;
     } catch (error: unknown) {

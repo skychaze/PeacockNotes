@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import { backupDatabaseAsync, deleteDatabaseAsync, openDatabaseAsync } from 'expo-sqlite';
 import type { BackupOperationHandler } from '../backup';
-import { getDb } from '../database/schema';
+import { getDb, withDatabaseOperation } from '../database/schema';
 import {
   backupOperationCoordinator as coordinator,
   backupOperationStore as operationStore,
@@ -55,10 +55,11 @@ const safeIdentity = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '-');
 const operationId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 const captureContent = async (directoryUri: string): Promise<Capture> =>
-  withMediaDeletionPaused(async () => {
+  withDatabaseOperation(() => withMediaDeletionPaused(async () => {
     const db = await getDb();
     const databaseName = `${operationId()}.db`;
     const snapshot = await openDatabaseAsync(databaseName, { useNewConnection: true });
+    let captured = false;
     try {
       // SQLite's online backup creates a consistent snapshot without holding an
       // exclusive transaction on the live database. Read the media inventory
@@ -77,16 +78,22 @@ const captureContent = async (directoryUri: string): Promise<Capture> =>
         sourceUri: row.uri,
         kind: row.kind,
       })) });
-      return {
+      const capture = {
         databaseName,
         databaseUri: `file://${snapshot.databasePath}`,
         media: pinned,
         revision: Number(revisionRow?.revision ?? 0),
       };
+      captured = true;
+      return capture;
     } finally {
-      await snapshot.closeAsync();
+      try {
+        await snapshot.closeAsync();
+      } finally {
+        if (!captured) await deleteDatabaseAsync(databaseName);
+      }
     }
-  });
+  }));
 
 const sameInventory = (left: ArchiveSummary, right: ArchiveSummary) =>
   left.archiveSha256 === right.archiveSha256 &&

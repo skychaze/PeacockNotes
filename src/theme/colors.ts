@@ -35,6 +35,11 @@ export const FOLDER_ACCENTS: FolderAccent[] = [
   { light: '#D0F0EC', inkLight: '#0E6E66', dark: '#1D3230', inkDark: '#7FE0D4' },
 ];
 
+export const BACKUP_STATUS_PENDING = {
+  light: '#8A5A00',
+  dark: '#FFD28A',
+} as const;
+
 export const AppTheme: { light: ThemeColors; dark: ThemeColors } = {
   light: {
     background: '#F7F6F2',

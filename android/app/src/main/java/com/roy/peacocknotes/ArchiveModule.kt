@@ -35,7 +35,7 @@ import java.util.concurrent.Executors
 class ArchiveModule(private val context: ReactApplicationContext) : ReactContextBaseJavaModule(context) {
   companion object {
     private const val FORMAT_VERSION = 1
-    private const val DATABASE_VERSION = 1
+    private const val DATABASE_VERSION = 2
     private const val MANIFEST_PATH = "manifest.json"
     private const val DATABASE_PATH = "database/content.sqlite"
     private const val BUFFER_SIZE = 64 * 1024
@@ -561,18 +561,38 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         ?: fail("STAGING_UNAVAILABLE", "Validated import staging is missing")
       val db = SQLiteDatabase.openDatabase(File(extracted, DATABASE_PATH).path, null, SQLiteDatabase.OPEN_READONLY)
       val notes = Arguments.createArray()
+      val folders = Arguments.createArray()
       try {
-        db.rawQuery("SELECT n.portableId,n.title,substr(n.content,1,180),n.updatedAt,f.name,(SELECT COUNT(*) FROM NoteAudios a WHERE a.notePortableId=n.portableId),(SELECT COUNT(*) FROM NoteFiles x WHERE x.notePortableId=n.portableId) FROM Notes n JOIN Folders f ON f.portableId=n.folderPortableId ORDER BY n.updatedAt DESC,n.portableId", null).use { cursor ->
+        val parentColumn = if (hasColumn(db, "Folders", "parentPortableId")) "parentPortableId" else "NULL"
+        val folderMetadata = mutableMapOf<String, Pair<String?, String>>()
+        db.rawQuery("SELECT portableId,$parentColumn,name,sortOrder FROM Folders ORDER BY sortOrder,portableId", null).use { cursor ->
+          while (cursor.moveToNext()) folderMetadata[cursor.getString(0)] = cursor.getString(1) to cursor.getString(2)
+        }
+        fun folderPath(portableId: String, visited: MutableSet<String> = mutableSetOf()): List<String> {
+          if (!visited.add(portableId)) fail("BROKEN_REFERENCE", "Folder hierarchy contains a cycle")
+          val folder = folderMetadata[portableId] ?: fail("BROKEN_REFERENCE", "Folder hierarchy is missing a parent")
+          return (folder.first?.let { folderPath(it, visited) } ?: emptyList()) + folder.second
+        }
+        db.rawQuery("SELECT portableId,$parentColumn,name,sortOrder FROM Folders ORDER BY sortOrder,portableId", null).use { cursor ->
+          while (cursor.moveToNext()) {
+            val id = cursor.getString(0)
+            folders.pushMap(Arguments.createMap().apply {
+              putString("portableId", id); putString("parentPortableId", cursor.getString(1)); putString("name", cursor.getString(2)); putInt("sortOrder", cursor.getInt(3))
+              putArray("path", Arguments.createArray().apply { folderPath(id).forEach(::pushString) })
+            })
+          }
+        }
+        db.rawQuery("SELECT n.portableId,n.folderPortableId,n.title,substr(n.content,1,180),n.updatedAt,(SELECT COUNT(*) FROM NoteAudios a WHERE a.notePortableId=n.portableId),(SELECT COUNT(*) FROM NoteFiles x WHERE x.notePortableId=n.portableId) FROM Notes n JOIN Folders f ON f.portableId=n.folderPortableId ORDER BY f.sortOrder,f.portableId,n.sortOrder,n.portableId", null).use { cursor ->
           while (cursor.moveToNext()) notes.pushMap(Arguments.createMap().apply {
-            putString("portableId", cursor.getString(0)); putString("title", cursor.getString(1))
-            putString("contentPreview", cursor.getString(2)?.take(180) ?: ""); putString("updatedAt", cursor.getString(3))
-            putString("folderName", cursor.getString(4)); putInt("audioCount", cursor.getInt(5)); putInt("fileCount", cursor.getInt(6))
+            putString("portableId", cursor.getString(0)); putString("folderPortableId", cursor.getString(1)); putString("title", cursor.getString(2))
+            putString("contentPreview", cursor.getString(3)?.take(180) ?: ""); putString("updatedAt", cursor.getString(4))
+            putInt("audioCount", cursor.getInt(5)); putInt("fileCount", cursor.getInt(6))
           })
         }
       } finally { db.close() }
       return Arguments.createMap().apply {
         putString("archiveUri", archiveUri); putString("archiveSha256", summary.getString("archiveSha256"))
-        putString("createdAt", summary.getString("createdAt")); putArray("notes", notes)
+        putString("createdAt", summary.getString("createdAt")); putArray("folders", folders); putArray("notes", notes)
       }
     } finally { work.deleteRecursively() }
   }
@@ -611,7 +631,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
 
         if (!mediaRoot.exists() && !mediaRoot.mkdirs()) fail("STAGING_UNAVAILABLE", "Cannot create media directory")
         ensureSpace(mediaRoot, summary.getDouble("expandedBytes").toLong())
-        val restrictions = inspectCurrentMedia(live, mediaRoot)
+        val restrictions = MediaRestrictions(emptySet(), emptySet())
 
         val mediaUris = mutableMapOf<String, String>()
         listOf("NoteAudios", "NoteFiles").forEach { table ->
@@ -640,14 +660,13 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         var imported = 0; var recovered = 0; var skipped = 0; var repaired = 0
         live.beginTransaction()
         try {
-          applyMediaRestrictions(live, restrictions)
           selected.sorted().forEach { noteId ->
             val note = source.rawQuery("SELECT n.portableId,n.folderPortableId,n.title,n.content,n.createdAt,n.updatedAt,n.sortOrder,f.name,f.createdAt,f.sortOrder FROM Notes n JOIN Folders f ON f.portableId=n.folderPortableId WHERE n.portableId=?", arrayOf(noteId)).use { cursor ->
               if (!cursor.moveToFirst()) fail("INVALID_SELECTION", "Selected note is missing")
               List(cursor.columnCount) { index -> if (cursor.isNull(index)) null else cursor.getString(index) }
             }
             val sourceFolderPortableId = note[1]!!
-            val folderId = ensureImportedFolder(live, sourceFolderPortableId, note[7]!!, note[8]!!, note[9]!!.toInt())
+            val folderId = ensureImportedFolderChain(source, live, sourceFolderPortableId)
             if (folderId <= 0L) fail("IMPORT_DEPENDENCY_FAILED", "The imported folder could not be resolved")
             Log.i(
               "BackupRuntime",
@@ -773,16 +792,20 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       val journal = JSONObject()
         .put("database", databaseFile.path).put("mediaRoot", mediaRoot.path)
         .put("snapshot", snapshot.path).put("staged", staged.path)
-      context.getSharedPreferences(REPLACEMENT_PREFERENCES, android.app.Activity.MODE_PRIVATE)
-        .edit().putString(REPLACEMENT_JOURNAL, journal.toString()).commit()
+      val preferences = context.getSharedPreferences(REPLACEMENT_PREFERENCES, android.app.Activity.MODE_PRIVATE)
+      if (!preferences.edit().putString(REPLACEMENT_JOURNAL, journal.toString()).commit()) {
+        fail("REPLACEMENT_JOURNAL_FAILED", "Cannot persist the replacement recovery boundary")
+      }
       try {
         replaceFile(stagedDatabase, databaseFile)
         replaceDirectory(stagedAudio, File(mediaRoot, "audio"))
         replaceDirectory(stagedFiles, File(mediaRoot, "files"))
         verifyLiveGeneration(databaseFile, File(mediaRoot, "audio"), File(mediaRoot, "files"), operationKey)
       } catch (error: Exception) {
-        rollbackReplacement(journal)
-        throw ArchiveException("REPLACEMENT_ROLLED_BACK", "Full replacement failed and the prior content was restored", error)
+        rollbackAfterFailedReplacement(
+          preferences, journal, "REPLACEMENT_ROLLED_BACK",
+          "Full replacement failed and the prior content was restored", error
+        )
       }
       val completedAt = System.currentTimeMillis()
       val undo = JSONObject()
@@ -790,11 +813,13 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         .put("database", databaseFile.path).put("mediaRoot", mediaRoot.path)
         .put("completedAt", completedAt).put("expiresAt", completedAt + UNDO_WINDOW_MILLIS)
         .put("fingerprint", snapshotFingerprint(snapshot))
-      val preferences = context.getSharedPreferences(REPLACEMENT_PREFERENCES, android.app.Activity.MODE_PRIVATE)
       if (!preferences.edit().remove(REPLACEMENT_JOURNAL).putString(REPLACEMENT_UNDO, undo.toString()).commit()) {
-        rollbackReplacement(journal)
-        fail("UNDO_METADATA_FAILED", "Replacement was rolled back because its undo point could not be saved")
+        rollbackAfterFailedReplacement(
+          preferences, journal, "UNDO_METADATA_FAILED",
+          "Replacement was rolled back because its undo point could not be saved", null
+        )
       }
+      cleanupUnreferencedReplacementSnapshots(preferences)
       val count = SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READONLY).useDatabase {
         scalarCount(it, "SELECT COUNT(*) FROM Notes").toInt()
       }
@@ -802,11 +827,17 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     } finally {
       work.deleteRecursively()
       staged.deleteRecursively()
+      runCatching {
+        cleanupUnreferencedReplacementSnapshots(
+          context.getSharedPreferences(REPLACEMENT_PREFERENCES, android.app.Activity.MODE_PRIVATE)
+        )
+      }
     }
   }
 
   private fun copyReplacementFolders(source: SQLiteDatabase, target: SQLiteDatabase) {
-    copyRows(source, target, "SELECT portableId,name,createdAt,sortOrder FROM Folders ORDER BY portableId", "INSERT INTO Folders(portableId,name,createdAt,sortOrder) VALUES(?,?,?,?)", 4)
+    val parentColumn = if (hasColumn(source, "Folders", "parentPortableId")) "parentPortableId" else "NULL"
+    copyRows(source, target, "SELECT portableId,$parentColumn,name,createdAt,sortOrder FROM Folders ORDER BY portableId", "INSERT INTO Folders(portableId,parentPortableId,name,createdAt,sortOrder) VALUES(?,?,?,?,?)", 5)
   }
 
   private fun copyReplacementNotes(source: SQLiteDatabase, target: SQLiteDatabase) {
@@ -880,8 +911,10 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     val expiresAt = undo.optLong("expiresAt", -1)
     if (snapshotId.isBlank() || expiresAt < 0) return undoStatus("damaged", snapshotId, expiresAt)
     if (System.currentTimeMillis() >= expiresAt) {
-      File(undo.optString("snapshot")).deleteRecursively()
-      preferences.edit().remove(REPLACEMENT_UNDO).commit()
+      if (!preferences.edit().remove(REPLACEMENT_UNDO).commit()) {
+        fail("UNDO_METADATA_FAILED", "The expired undo point could not be cleared")
+      }
+      cleanupUnreferencedReplacementSnapshots(preferences)
       return undoStatus("expired", snapshotId, expiresAt)
     }
     val snapshot = File(undo.optString("snapshot"))
@@ -930,15 +963,18 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         replaceDirectory(File(snapshot, "files"), File(mediaRoot, "files"), copy = true)
         verifySnapshotGeneration(database, File(mediaRoot, "audio"), File(mediaRoot, "files"))
       } catch (error: Exception) {
-        rollbackReplacement(journal)
-        throw ArchiveException("UNDO_ROLLED_BACK", "Undo failed and replacement content was restored", error)
+        rollbackAfterFailedReplacement(
+          preferences, journal, "UNDO_ROLLED_BACK",
+          "Undo failed and replacement content was restored", error
+        )
       }
       if (!preferences.edit().remove(REPLACEMENT_JOURNAL).remove(REPLACEMENT_UNDO)
           .putString(LAST_UNDONE_SNAPSHOT, snapshotId).commit()) {
-        rollbackReplacement(journal)
-        fail("UNDO_FAILED", "Undo completion could not be recorded")
+        rollbackAfterFailedReplacement(
+          preferences, journal, "UNDO_FAILED", "Undo completion could not be recorded", null
+        )
       }
-      snapshot.deleteRecursively()
+      cleanupUnreferencedReplacementSnapshots(preferences)
       return Arguments.createMap().apply { putBoolean("alreadyUndone", false) }
     } finally {
       // A persisted journal owns the rollback generation. Keep it until startup
@@ -1046,8 +1082,50 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     val raw = preferences.getString(REPLACEMENT_JOURNAL, null) ?: return false
     val journal = JSONObject(raw)
     rollbackReplacement(journal)
-    preferences.edit().remove(REPLACEMENT_JOURNAL).commit()
+    if (!preferences.edit().remove(REPLACEMENT_JOURNAL).commit()) {
+      fail("RECOVERY_MARKER_FAILED", "The replacement recovery marker could not be cleared")
+    }
+    cleanupUnreferencedReplacementSnapshots(preferences)
     return true
+  }
+
+  private fun rollbackAfterFailedReplacement(
+    preferences: android.content.SharedPreferences,
+    journal: JSONObject,
+    code: String,
+    message: String,
+    cause: Exception?
+  ): Nothing {
+    try {
+      rollbackReplacement(journal)
+    } catch (rollbackError: Exception) {
+      throw ArchiveException("ROLLBACK_FAILED", "Replacement rollback failed", rollbackError)
+    }
+    if (!preferences.edit().remove(REPLACEMENT_JOURNAL).commit()) {
+      throw ArchiveException(
+        "REPLACEMENT_RECOVERY_PENDING",
+        "The prior content was restored, but recovery could not be marked complete. Restart before editing.",
+        cause
+      )
+    }
+    throw ArchiveException(code, message, cause)
+  }
+
+  private fun cleanupUnreferencedReplacementSnapshots(preferences: android.content.SharedPreferences) {
+    val referenced = mutableSetOf<String>()
+    for (key in listOf(REPLACEMENT_JOURNAL, REPLACEMENT_UNDO)) {
+      val raw = preferences.getString(key, null) ?: continue
+      val snapshotPath = runCatching { JSONObject(raw).getString("snapshot") }.getOrNull() ?: return
+      referenced.add(runCatching { File(snapshotPath).canonicalPath }.getOrNull() ?: return)
+    }
+    val durableRoot = File(context.filesDir, "backup-replacement")
+    durableRoot.listFiles()?.filter { file ->
+      file.isDirectory && file.name.startsWith("snapshot-") && file.canonicalPath !in referenced
+    }?.forEach { snapshot ->
+      if (!snapshot.deleteRecursively() && snapshot.exists()) {
+        Log.w("BackupRuntime", "Could not remove obsolete replacement snapshot: ${snapshot.path}")
+      }
+    }
   }
 
   private fun rollbackReplacement(journal: JSONObject) {
@@ -1187,10 +1265,32 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     putBoolean("recoveryComplete", audio == 0 && files == 0)
   }
 
-  private fun ensureImportedFolder(db: SQLiteDatabase, portableId: String, name: String, createdAt: String, sortOrder: Int): Long {
-    db.rawQuery("SELECT id FROM Folders WHERE portableId=?", arrayOf(portableId)).use { if (it.moveToFirst()) return it.getLong(0) }
-    val statement = db.compileStatement("INSERT INTO Folders(portableId,name,createdAt,sortOrder) VALUES(?,?,?,?)")
-    statement.bindString(1, portableId); statement.bindString(2, name); statement.bindString(3, createdAt); statement.bindLong(4, sortOrder.toLong())
+  private data class ArchivedFolderRow(
+    val portableId: String,
+    val parentPortableId: String?,
+    val name: String,
+    val createdAt: String,
+    val sortOrder: Int,
+  )
+
+  private fun ensureImportedFolderChain(source: SQLiteDatabase, live: SQLiteDatabase, portableId: String): Long {
+    val parentColumn = if (hasColumn(source, "Folders", "parentPortableId")) "parentPortableId" else "NULL"
+    val folder = source.rawQuery("SELECT portableId,$parentColumn,name,createdAt,sortOrder FROM Folders WHERE portableId=?", arrayOf(portableId)).use {
+      if (!it.moveToFirst()) fail("IMPORT_DEPENDENCY_FAILED", "Archived folder is missing")
+      ArchivedFolderRow(it.getString(0), it.getString(1), it.getString(2), it.getString(3), it.getInt(4))
+    }
+    folder.parentPortableId?.let { parentId -> ensureImportedFolderChain(source, live, parentId) }
+    val liveParentColumn = if (hasColumn(live, "Folders", "parentPortableId")) "parentPortableId" else "NULL"
+    live.rawQuery("SELECT id,$liveParentColumn FROM Folders WHERE portableId=?", arrayOf(portableId)).use {
+      if (it.moveToFirst()) {
+        if (it.getString(1) != folder.parentPortableId) fail("IMPORT_DEPENDENCY_FAILED", "Folder identity has a different parent locally")
+        return it.getLong(0)
+      }
+    }
+    val statement = live.compileStatement("INSERT INTO Folders(portableId,parentPortableId,name,createdAt,sortOrder) VALUES(?,?,?,?,?)")
+    statement.bindString(1, folder.portableId)
+    if (folder.parentPortableId == null) statement.bindNull(2) else statement.bindString(2, folder.parentPortableId)
+    statement.bindString(3, folder.name); statement.bindString(4, folder.createdAt); statement.bindLong(5, folder.sortOrder.toLong())
     return statement.executeInsert()
   }
 
@@ -1255,13 +1355,17 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     val output = SQLiteDatabase.openOrCreateDatabase(target, null)
     try {
       output.execSQL("PRAGMA foreign_keys=ON")
+      output.execSQL("PRAGMA defer_foreign_keys=ON")
       output.execSQL("PRAGMA user_version=$DATABASE_VERSION")
-      output.execSQL("CREATE TABLE Folders(portableId TEXT PRIMARY KEY,name TEXT NOT NULL,createdAt TEXT NOT NULL,sortOrder INTEGER NOT NULL)")
+      output.execSQL("CREATE TABLE Folders(portableId TEXT PRIMARY KEY,parentPortableId TEXT,name TEXT NOT NULL,createdAt TEXT NOT NULL,sortOrder INTEGER NOT NULL,FOREIGN KEY(parentPortableId) REFERENCES Folders(portableId))")
       output.execSQL("CREATE TABLE Notes(portableId TEXT PRIMARY KEY,folderPortableId TEXT NOT NULL,title TEXT NOT NULL,content TEXT,createdAt TEXT NOT NULL,updatedAt TEXT NOT NULL,sortOrder INTEGER NOT NULL,FOREIGN KEY(folderPortableId) REFERENCES Folders(portableId))")
       output.execSQL("CREATE TABLE NoteAudios(portableId TEXT PRIMARY KEY,notePortableId TEXT NOT NULL,mediaPath TEXT NOT NULL,displayName TEXT,groupId TEXT,segmentIndex INTEGER,orderIndex INTEGER NOT NULL,createdAt TEXT NOT NULL,FOREIGN KEY(notePortableId) REFERENCES Notes(portableId))")
       output.execSQL("CREATE TABLE NoteFiles(portableId TEXT PRIMARY KEY,notePortableId TEXT NOT NULL,mediaPath TEXT NOT NULL,displayName TEXT,mimeType TEXT,orderIndex INTEGER NOT NULL,createdAt TEXT NOT NULL,FOREIGN KEY(notePortableId) REFERENCES Notes(portableId))")
       output.beginTransaction()
-      copyRows(input, output, "SELECT portableId,name,createdAt,sortOrder FROM Folders", "INSERT INTO Folders VALUES(?,?,?,?)", 4)
+      val parentColumn = if (hasColumn(input, "Folders", "parentPortableId")) {
+        "CASE WHEN F.parentPortableId IS NULL OR EXISTS (SELECT 1 FROM Folders P WHERE P.portableId = F.parentPortableId) THEN F.parentPortableId ELSE NULL END"
+      } else "NULL"
+      copyRows(input, output, "SELECT F.portableId,$parentColumn,F.name,F.createdAt,F.sortOrder FROM Folders F", "INSERT INTO Folders VALUES(?,?,?,?,?)", 5)
       copyRows(input, output, "SELECT n.portableId,f.portableId,n.title,n.content,n.createdAt,n.updatedAt,n.sortOrder FROM Notes n JOIN Folders f ON f.id=n.folderId", "INSERT INTO Notes VALUES(?,?,?,?,?,?,?)", 7)
       copyMediaRows(input, output, media, true)
       copyMediaRows(input, output, media, false)
@@ -1284,6 +1388,12 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       }
     }
   }
+
+  private fun hasColumn(db: SQLiteDatabase, table: String, column: String): Boolean =
+    db.rawQuery("PRAGMA table_info($table)", null).use { cursor ->
+      while (cursor.moveToNext()) if (cursor.getString(1) == column) return@use true
+      false
+    }
 
   private fun copyMediaRows(input: SQLiteDatabase, output: SQLiteDatabase, media: Map<String, HashedMedia>, audio: Boolean) {
     val table = if (audio) "NoteAudios" else "NoteFiles"
@@ -1314,7 +1424,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       val integrity = db.rawQuery("PRAGMA integrity_check", null).use { if (it.moveToFirst()) it.getString(0) else "failed" }
       if (integrity != "ok") fail("INVALID_DATABASE", "SQLite integrity check failed")
       val databaseVersion = db.rawQuery("PRAGMA user_version", null).use { if (it.moveToFirst()) it.getInt(0) else -1 }
-      if (databaseVersion != DATABASE_VERSION) fail("UNSUPPORTED_DATABASE_VERSION", "SQLite database version does not match manifest")
+      if (databaseVersion !in 1..DATABASE_VERSION) fail("UNSUPPORTED_DATABASE_VERSION", "SQLite database version does not match manifest")
       val seen = mutableSetOf<String>()
       var entityCount = 0
       listOf("Folders", "Notes", "NoteAudios", "NoteFiles").forEach { table ->
@@ -1388,7 +1498,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
 
   private fun enforceManifestVersion(manifest: JSONObject) {
     if (manifest.optInt("formatVersion", -1) != FORMAT_VERSION) fail("UNSUPPORTED_FORMAT_VERSION", "Unsupported archive format version")
-    if (manifest.optInt("databaseVersion", -1) != DATABASE_VERSION) fail("UNSUPPORTED_DATABASE_VERSION", "Unsupported database version")
+    if (manifest.optInt("databaseVersion", -1) !in 1..DATABASE_VERSION) fail("UNSUPPORTED_DATABASE_VERSION", "Unsupported database version")
     if (!manifest.has("createdAt") || manifest.optLong("contentRevision", -1) < 0) fail("MALFORMED_MANIFEST", "Required manifest metadata is missing")
   }
 
