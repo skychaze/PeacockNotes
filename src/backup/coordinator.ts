@@ -4,6 +4,7 @@ import {
   type BackupOperationHandler,
   type BackupOperationKind,
   type BackupOperationStore,
+  createBackupOperationStepKey,
   type CoordinatorOptions,
   type OperationPatch,
   type StepContext,
@@ -38,9 +39,12 @@ export class BackupOperationCoordinator {
   }
 
   /** Resume the sole durable operation after app/process startup. */
-  async resume(): Promise<BackupOperation | null> {
+  async resume(allowedKinds?: readonly BackupOperationKind[]): Promise<BackupOperation | null> {
     return this.exclusive(async () => {
       const operation = await this.store.getActive();
+      if (operation && allowedKinds && !allowedKinds.includes(operation.kind)) {
+        throw new BackupOperationBusyError();
+      }
       return operation ? this.drive(operation) : null;
     });
   }
@@ -97,7 +101,15 @@ export class BackupOperationCoordinator {
         step: { name: operation.activeStep },
         idempotencyKey: operation.activeStepKey,
       };
-      const resolution = await handler.recoverInterruptedStep(context);
+      let resolution;
+      try {
+        resolution = await handler.recoverInterruptedStep(context);
+      } catch (error: unknown) {
+        // Recovery is allowed to be inconclusive, but a thrown handler error
+        // must still leave a truthful terminal record.  Otherwise a process
+        // restart can strand the row in `running` forever with no retry path.
+        return this.finish(operation, 'interrupted', 'recovery_threw', errorMessage(error));
+      }
       if (resolution.outcome === 'unknown') {
         return this.finish(operation, 'interrupted', resolution.code, resolution.message);
       }
@@ -112,13 +124,18 @@ export class BackupOperationCoordinator {
     while (!terminal(operation)) {
       if (operation.cancelRequested) return this.finish(operation, 'cancelled');
 
-      const step = await handler.nextStep(operation);
+      let step;
+      try {
+        step = await handler.nextStep(operation);
+      } catch (error: unknown) {
+        return this.finish(operation, 'failed', 'step_planning_failed', errorMessage(error));
+      }
       if (!step) return this.finish(operation, 'succeeded');
 
       const attempt = operation.attempt + 1;
       // The key identifies the logical transition, not an attempt. Retries
       // therefore reuse it and downstream implementations can deduplicate.
-      const idempotencyKey = `${operation.id}:${operation.checkpoint ?? 'start'}:${step.name}`;
+      const idempotencyKey = createBackupOperationStepKey(operation.id, operation.checkpoint, step.name);
       operation = await this.change(operation, {
         state: 'running',
         activeStep: step.name,
@@ -210,3 +227,6 @@ export class BackupOperationCoordinator {
     }
   }
 }
+
+const errorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : typeof error === 'string' ? error : 'Unexpected backup operation error';

@@ -61,6 +61,12 @@ export type OperationStep = Readonly<{
   name: string;
 }>;
 
+export const createBackupOperationStepKey = (
+  operationId: string,
+  checkpoint: string | null,
+  stepName: string,
+) => `${operationId}:${checkpoint ?? 'start'}:${stepName}`;
+
 export type StepContext = Readonly<{
   operation: BackupOperation;
   step: OperationStep;
@@ -94,6 +100,11 @@ export interface BackupOperationStore {
   create(operation: NewBackupOperation, now: string): Promise<BackupOperation>;
   get(id: string): Promise<BackupOperation | null>;
   getActive(): Promise<BackupOperation | null>;
+  /** Return the newest attempt with an exact operation payload, if supported. */
+  getLatestByKindAndPayload?: (
+    kind: BackupOperationKind,
+    payload: string,
+  ) => Promise<BackupOperation | null>;
   update(
     id: string,
     expectedVersion: number,
@@ -108,6 +119,8 @@ export type CoordinatorOptions = Readonly<{
 }>;
 
 export class BackupOperationBusyError extends Error {
+  readonly code = 'BACKUP_OPERATION_BUSY';
+
   constructor() {
     super('Another backup operation is already active');
     this.name = 'BackupOperationBusyError';

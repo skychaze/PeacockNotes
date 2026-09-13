@@ -2,7 +2,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RouteProp } from '@react-navigation/native';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Alert, FlatList, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated from 'react-native-reanimated';
@@ -20,7 +20,7 @@ import { useEntrance } from '../components/entrance';
 import { useLanguage } from '../i18n/LanguageContext';
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
-import type { FolderListItem, Note, NoteAudioDraft, NoteFileDraft } from '../types/models';
+import type { FolderListItem, NoteListItem, NoteAudioDraft, NoteFileDraft } from '../types/models';
 import type { RootStackParamList } from '../types/navigation';
 import {
   getBestAudioExtension,
@@ -54,7 +54,7 @@ export const ShareImportScreen = () => {
   const route = useRoute<Route>();
   const navigation = useNavigation<Navigation>();
   const { colors } = useAppColors();
-  const { t, language } = useLanguage();
+  const { t } = useLanguage();
   const insets = useSafeAreaInsets();
   const entrance = useEntrance();
   const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntentContext();
@@ -62,7 +62,7 @@ export const ShareImportScreen = () => {
   const [folders, setFolders] = useState<FolderListItem[]>([]);
   const [selectedFolderId, setSelectedFolderId] = useState<number | null>(null);
   const [selectedNoteId, setSelectedNoteId] = useState<number | null>(null);
-  const [notes, setNotes] = useState<Note[]>([]);
+  const [notes, setNotes] = useState<NoteListItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isImporting, setIsImporting] = useState(false);
   const [hasAutoRedirected, setHasAutoRedirected] = useState(false);
@@ -126,26 +126,42 @@ export const ShareImportScreen = () => {
     };
   }, [pendingSharedFiles]);
 
-  const refreshFolders = useCallback(async () => {
-    try {
-      const result = await listFolders();
-      setFolders(result);
-      if (!selectedFolderId && result.length > 0) {
-        setSelectedFolderId(result[0].id);
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadFolders = async () => {
+      try {
+        const result = await listFolders();
+        if (!cancelled) {
+          setFolders(result);
+        }
+      } catch (error) {
+        console.warn('Failed to load folders for share import:', error);
+        if (!cancelled) {
+          Alert.alert(t('common.error'), t('shareImport.folderLoadError'));
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
       }
-    } catch (error) {
-      console.warn('Failed to load folders for share import:', error);
-      Alert.alert(t('common.error'), t('shareImport.folderLoadError'));
-    } finally {
-      setIsLoading(false);
+    };
+
+    void loadFolders();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selectedFolderId && folders.length > 0) {
+      setSelectedFolderId(folders[0].id);
     }
-  }, [selectedFolderId, t, language]);
+  }, [folders, selectedFolderId]);
 
   useEffect(() => {
-    void refreshFolders();
-  }, [refreshFolders]);
+    let cancelled = false;
 
-  useEffect(() => {
     const loadNotes = async () => {
       if (!selectedFolderId) {
         setNotes([]);
@@ -153,14 +169,21 @@ export const ShareImportScreen = () => {
       }
       try {
         const result = await listNotesByFolder(selectedFolderId);
-        setNotes(result);
+        if (!cancelled) {
+          setNotes(result);
+        }
       } catch (error) {
         console.warn('Failed to load notes for share import:', error);
-        Alert.alert(t('common.error'), t('shareImport.noteLoadError'));
+        if (!cancelled) {
+          Alert.alert(t('common.error'), t('shareImport.noteLoadError'));
+        }
       }
     };
 
     void loadNotes();
+    return () => {
+      cancelled = true;
+    };
   }, [selectedFolderId]);
 
   useEffect(() => {
@@ -251,7 +274,7 @@ export const ShareImportScreen = () => {
     }
   };
 
-  const onAppendToNote = async (note: Note) => {
+  const onAppendToNote = async (note: NoteListItem) => {
     if (isImporting) {
       return;
     }

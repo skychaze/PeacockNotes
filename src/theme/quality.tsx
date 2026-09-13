@@ -20,7 +20,8 @@ type Override = 'auto' | 'full' | 'reduced';
 // Flip to 'reduced' or 'full' to test tiers manually.
 export const QUALITY_OVERRIDE = 'auto' as Override;
 
-const PROBE_KEY = 'ui.quality.probe.v1';
+const PROBE_KEY = 'ui.quality.probe.v2';
+const PROBE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 const isIOS = Platform.OS === 'ios';
 const apiLevel = isIOS
@@ -61,8 +62,11 @@ const useQualityProbe = (enabled: boolean, onDone: (reduced: boolean) => void) =
         frame.setActive(false);
         const sampled = totalFrames.value;
         const slowRatio = sampled > 0 ? slowFrames.value / sampled : 0;
-        const reduced = sampled >= 120 && slowRatio > 0.15;
-        AsyncStorage.setItem(PROBE_KEY, reduced ? 'reduced' : 'full').catch(() => {});
+        const reduced = sampled > 0 && (sampled < 120 || slowRatio > 0.15);
+        AsyncStorage.setItem(
+          PROBE_KEY,
+          JSON.stringify({ result: reduced ? 'reduced' : 'full', measuredAt: Date.now() })
+        ).catch(() => {});
         onDone(reduced);
       }, 6000);
     }, 3000);
@@ -86,8 +90,20 @@ export const QualityProvider = ({ children }: PropsWithChildren) => {
   useEffect(() => {
     AsyncStorage.getItem(PROBE_KEY)
       .then((value) => {
-        if (value === 'reduced' || value === 'full') {
-          setProbeResult(value);
+        if (!value) {
+          return;
+        }
+        const record: unknown = JSON.parse(value);
+        if (
+          typeof record === 'object' &&
+          record !== null &&
+          'result' in record &&
+          'measuredAt' in record &&
+          (record.result === 'reduced' || record.result === 'full') &&
+          typeof record.measuredAt === 'number' &&
+          Date.now() - record.measuredAt <= PROBE_MAX_AGE_MS
+        ) {
+          setProbeResult(record.result);
         }
       })
       .catch(() => {});

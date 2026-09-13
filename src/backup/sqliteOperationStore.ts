@@ -1,4 +1,4 @@
-import { getDb } from '../database/schema';
+import { getDb, withSqliteBusyRetry } from '../database/schema';
 import {
   BackupOperationBusyError,
   type BackupOperation,
@@ -39,12 +39,12 @@ export class SqliteBackupOperationStore implements BackupOperationStore {
   async create(operation: NewBackupOperation, now: string): Promise<BackupOperation> {
     const db = await getDb();
     try {
-      await db.runAsync(
-        `INSERT INTO BackupOperations
-          (id, kind, state, payload, createdAt, updatedAt)
-         VALUES (?, ?, 'pending', ?, ?, ?);`,
-        [operation.id, operation.kind, operation.payload, now, now],
-      );
+      await withSqliteBusyRetry(() => db.runAsync(
+          `INSERT INTO BackupOperations
+            (id, kind, state, payload, createdAt, updatedAt)
+           VALUES (?, ?, 'pending', ?, ?, ?);`,
+          [operation.id, operation.kind, operation.payload, now, now],
+        ));
     } catch (error: unknown) {
       if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) {
         throw new BackupOperationBusyError();
@@ -74,6 +74,28 @@ export class SqliteBackupOperationStore implements BackupOperationStore {
     return row ? fromRow(row) : null;
   }
 
+  async getLatest(): Promise<BackupOperation | null> {
+    const db = await getDb();
+    const row = await db.getFirstAsync<OperationRow>(
+      `SELECT ${selectColumns} FROM BackupOperations ORDER BY updatedAt DESC LIMIT 1;`,
+    );
+    return row ? fromRow(row) : null;
+  }
+
+  async getLatestByKindAndPayload(
+    kind: BackupOperationKind,
+    payload: string,
+  ): Promise<BackupOperation | null> {
+    const db = await getDb();
+    const row = await db.getFirstAsync<OperationRow>(
+      `SELECT ${selectColumns} FROM BackupOperations
+       WHERE kind = ? AND payload = ?
+       ORDER BY updatedAt DESC, rowid DESC LIMIT 1;`,
+      [kind, payload],
+    );
+    return row ? fromRow(row) : null;
+  }
+
   async update(
     id: string,
     expectedVersion: number,
@@ -96,10 +118,10 @@ export class SqliteBackupOperationStore implements BackupOperationStore {
     values.push(now, id, expectedVersion);
 
     const db = await getDb();
-    const result = await db.runAsync(
-      `UPDATE BackupOperations SET ${assignments.join(', ')} WHERE id = ? AND version = ?;`,
-      values,
-    );
+    const result = await withSqliteBusyRetry(() => db.runAsync(
+        `UPDATE BackupOperations SET ${assignments.join(', ')} WHERE id = ? AND version = ?;`,
+        values,
+      ));
     return result.changes === 1 ? this.get(id) : null;
   }
 }

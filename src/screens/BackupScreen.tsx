@@ -1,8 +1,8 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useCallback, useState } from 'react';
-import { ActivityIndicator, Alert, ScrollView, Switch, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, ScrollView, Switch, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppText } from '../components/AppText';
 import { Card } from '../components/Card';
@@ -15,20 +15,27 @@ import { useLanguage } from '../i18n/LanguageContext';
 import {
   chooseBackupFolder,
   disconnectBackupFolder,
-  getBackupFolderState,
-  type BackupFolderState,
+  releaseBackupForegroundService,
+  startBackupForegroundService,
+  updateBackupNotification,
 } from '../services/backupFolder';
+import { ProgressFill } from '../components/ProgressFill';
 import {
   exportBackup,
+  clearLastVerifiedBackupIfDeleted,
   getManagedRetentionState,
+  getLastVerifiedBackup,
   type ExportProgress,
   type ManagedRetentionState,
   type VerifiedBackup,
 } from '../services/backupExport';
+import { getActiveBackupOperation } from '../services/backupBackground';
+import { requestBackupNotificationPermissionOnce } from '../services/backupNotificationPermission';
 import {
   attemptAutomaticBackup,
   getAutomaticBackupState,
   setAutomaticBackupEnabled,
+  setAutomaticBackupAuthorizationInProgress,
   type AutomaticBackupState,
 } from '../services/automaticBackup';
 import {
@@ -41,35 +48,43 @@ import {
   undoFullReplacement,
 } from '../services/backupImport';
 import {
-  scanBackupCollection,
   type BackupCollectionArchive,
-  type BackupCollectionScan,
   type ImportPreview,
   type FullReplacementResult,
   type FullReplacementUndo,
   type ImportResult,
+  deleteBackupArchives,
 } from '../services/archive';
+import {
+  getBackupDiscoverySnapshot,
+  initializeBackupDiscovery,
+  removeBackupDiscoveryArchives,
+  refreshBackupDiscovery,
+  subscribeBackupDiscovery,
+} from '../services/backupDiscovery';
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
 import type { RootStackParamList } from '../types/navigation';
 
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'Backup'>;
 
-const EMPTY_STATE: BackupFolderState = { status: 'disconnected', uri: null, name: null };
+const EXPORT_PROGRESS: Record<ExportProgress, number> = {
+  capturing: 10,
+  building: 35,
+  publishing: 70,
+  verifying: 92,
+};
 
 export const BackupScreen = () => {
   const navigation = useNavigation<Navigation>();
   const insets = useSafeAreaInsets();
   const { colors } = useAppColors();
   const { language, t } = useLanguage();
-  const [folder, setFolder] = useState<BackupFolderState>(EMPTY_STATE);
-  const [isLoading, setIsLoading] = useState(true);
+  const [discovery, setDiscovery] = useState(getBackupDiscoverySnapshot());
   const [isChoosing, setIsChoosing] = useState(false);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [verifiedBackup, setVerifiedBackup] = useState<VerifiedBackup | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
-  const [collection, setCollection] = useState<BackupCollectionScan | null>(null);
-  const [scanState, setScanState] = useState<'idle' | 'loading' | 'failed'>('idle');
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importMode, setImportMode] = useState<'selective' | 'additive' | 'replacement' | null>(null);
   const [selectedNoteIds, setSelectedNoteIds] = useState<ReadonlySet<string>>(new Set());
@@ -83,14 +98,115 @@ export const BackupScreen = () => {
   const [automatic, setAutomatic] = useState<AutomaticBackupState | null>(null);
   const [isChangingAutomatic, setIsChangingAutomatic] = useState(false);
   const [retention, setRetention] = useState<ManagedRetentionState | null>(null);
+  const [activeOperation, setActiveOperation] = useState<Awaited<ReturnType<typeof getActiveBackupOperation>> | null>(null);
+  const [operationRunning, setOperationRunning] = useState(false);
+  const [selectedArchiveUris, setSelectedArchiveUris] = useState<ReadonlySet<string>>(new Set());
+  const [isDeletingArchives, setIsDeletingArchives] = useState(false);
+  const mountedRef = useRef(true);
+  const operationStatusPollInFlightRef = useRef(false);
+  const foregroundOperationInFlightRef = useRef(false);
+  const automaticChangeInFlightRef = useRef(false);
+  const chooseInFlightRef = useRef(false);
+
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
+  useEffect(() => subscribeBackupDiscovery(setDiscovery), []);
+
+  const folder = discovery.value.folder;
+  const collection = discovery.value.collection;
+  const isLoading = discovery.phase === 'idle' || (discovery.phase === 'loading' && discovery.updatedAt === null);
+  const scanState: 'idle' | 'loading' | 'failed' = discovery.phase === 'loading'
+    ? 'loading'
+    : discovery.phase === 'failed' || discovery.value.scanError !== null
+      ? 'failed'
+      : 'idle';
+
+  const runForegroundOperation = async <T,>(work: () => Promise<T>): Promise<T> => {
+    // React state updates are asynchronous, so two rapid taps can otherwise
+    // both pass the `operationBusy` check before the first durable row exists.
+    // Claim the in-process slot synchronously and release it in the same
+    // finally block as the foreground-service lease.
+    if (foregroundOperationInFlightRef.current) throw new Error('BACKUP_OPERATION_BUSY');
+    foregroundOperationInFlightRef.current = true;
+    setOperationRunning(true);
+    let completed = false;
+    let serviceStarted = false;
+    try {
+      const activeBeforeStart = await getActiveBackupOperation();
+      if (activeBeforeStart) throw new Error('BACKUP_OPERATION_BUSY');
+      await requestBackupNotificationPermissionOnce();
+      await startBackupForegroundService();
+      serviceStarted = true;
+      const result = await work();
+      completed = true;
+      return result;
+    } finally {
+      // Notification/service cleanup is best-effort. A provider operation can
+      // already have committed, and a cleanup exception must never turn that
+      // success into a stuck/busy screen or mask the original error.
+      if (serviceStarted) {
+        try {
+          await releaseBackupForegroundService(completed);
+        } catch (error) {
+          console.warn('Failed to release backup foreground service:', error);
+        }
+      }
+      if (mountedRef.current) setOperationRunning(false);
+      // The durable operation may have completed while this screen was not
+      // focused. Re-read it so a screen that stayed mounted does not keep its
+      // controls disabled until the next navigation event.
+      void loadOperationStatus();
+      foregroundOperationInFlightRef.current = false;
+    }
+  };
 
   const loadRetention = useCallback(async () => {
-    setRetention(await getManagedRetentionState());
+    try {
+      const value = await getManagedRetentionState();
+      if (mountedRef.current) setRetention(value);
+    } catch (error) {
+      console.warn('Failed to read managed retention state:', error);
+    }
+  }, []);
+
+  const loadOperationStatus = useCallback(async () => {
+    try {
+      const [active, lastVerified] = await Promise.all([
+        getActiveBackupOperation(),
+        getLastVerifiedBackup(),
+      ]);
+      if (!mountedRef.current) return;
+      setActiveOperation(active);
+      if (!active) {
+        // Do not resurrect the previous success banner while a new export is
+        // active. The persisted record becomes authoritative again once the
+        // durable operation reaches a terminal state.
+        setVerifiedBackup(lastVerified);
+        setExportProgress(null);
+        setImportState((current) => current === 'committing' ? 'idle' : current);
+      } else if (active.kind === 'export' || active.kind === 'automatic_backup') {
+        setVerifiedBackup(null);
+        // Keep the live callback stage when this screen is already observing
+        // the operation; synthesize a stage only when attaching after a
+        // navigation/process change.
+        setExportProgress((current) => current ?? 'publishing');
+        setImportState((current) => current === 'committing' ? 'idle' : current);
+      } else if (active?.kind === 'import') {
+        setExportProgress(null);
+        setImportState('committing');
+      } else {
+        setExportProgress(null);
+        setImportState((current) => current === 'committing' ? 'idle' : current);
+      }
+    } catch (error) {
+      console.warn('Failed to restore backup operation status:', error);
+    }
   }, []);
 
   const loadAutomatic = useCallback(async () => {
     try {
-      setAutomatic(await getAutomaticBackupState());
+      const value = await getAutomaticBackupState();
+      if (mountedRef.current) setAutomatic(value);
     } catch (error) {
       console.warn('Failed to read Automatic backup state:', error);
     }
@@ -99,56 +215,37 @@ export const BackupScreen = () => {
   const loadUndo = useCallback(async () => {
     setUndoState('loading');
     try {
-      setUndo(await loadFullReplacementUndo());
+      const value = await loadFullReplacementUndo();
+      if (mountedRef.current) setUndo(value);
     } catch (error) {
       console.warn('Failed to inspect full replacement undo:', error);
-      setUndo({ state: 'unavailable', snapshotId: null, expiresAt: null });
+      if (mountedRef.current) setUndo({ state: 'unavailable', snapshotId: null, expiresAt: null });
     } finally {
-      setUndoState('idle');
+      if (mountedRef.current) setUndoState('idle');
     }
   }, []);
 
   const scanCollection = useCallback(async () => {
-    setScanState('loading');
     try {
-      setCollection(await scanBackupCollection());
-      setScanState('idle');
+      await refreshBackupDiscovery();
     } catch (error) {
       console.warn('Failed to scan backup collection:', error);
-      setCollection(null);
-      setScanState('failed');
     }
   }, []);
 
-  const loadFolder = useCallback(async () => {
-    try {
-      const nextFolder = await getBackupFolderState();
-      setFolder(nextFolder);
-      if (nextFolder.status === 'connected') await scanCollection();
-      else {
-        setCollection(null);
-        setScanState('idle');
-      }
-    } catch (error) {
-      console.warn('Failed to restore backup folder authorization:', error);
-      setFolder({ status: 'unavailable', uri: null, name: null });
-      setCollection(null);
-      setScanState('failed');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [scanCollection]);
-
   useFocusEffect(
     useCallback(() => {
-      void loadFolder();
+      void initializeBackupDiscovery();
       void loadUndo();
       void loadAutomatic();
       void loadRetention();
-    }, [loadAutomatic, loadFolder, loadRetention, loadUndo])
+      void loadOperationStatus();
+    }, [loadAutomatic, loadOperationStatus, loadRetention, loadUndo])
   );
 
   const changeAutomatic = async (enabled: boolean) => {
+    if (automaticChangeInFlightRef.current || operationBusy) return;
+    automaticChangeInFlightRef.current = true;
     setIsChangingAutomatic(true);
     try {
       const next = await setAutomaticBackupEnabled(enabled);
@@ -160,32 +257,102 @@ export const BackupScreen = () => {
       await loadAutomatic();
     } finally {
       setIsChangingAutomatic(false);
+      automaticChangeInFlightRef.current = false;
     }
   };
 
   const chooseFolder = async () => {
+    if (chooseInFlightRef.current || isChoosing || operationBusy) return;
+    chooseInFlightRef.current = true;
     try {
       setIsChoosing(true);
-      const nextFolder = await chooseBackupFolder();
-      setFolder(nextFolder);
-      if (nextFolder.status === 'connected') await scanCollection();
+      setAutomaticBackupAuthorizationInProgress(true);
+      await chooseBackupFolder();
+      await refreshBackupDiscovery();
     } catch (error) {
       if ((error as { code?: string }).code === 'PICKER_CANCELLED') return;
       console.warn('Failed to choose backup folder:', error);
       Alert.alert(t('common.error'), t('backup.chooseError'));
     } finally {
+      setAutomaticBackupAuthorizationInProgress(false);
       setIsChoosing(false);
+      chooseInFlightRef.current = false;
     }
+  };
+
+  const toggleSelectedArchive = (uri: string) => {
+    setSelectedArchiveUris((current) => {
+      const next = new Set(current);
+      if (next.has(uri)) next.delete(uri);
+      else next.add(uri);
+      return next;
+    });
+  };
+
+  const confirmDeleteArchives = () => {
+    if (selectedArchiveUris.size === 0 || isDeletingArchives || operationBusy) return;
+    const uris = [...selectedArchiveUris];
+    Alert.alert(
+      t('backup.collection.deleteConfirmTitle'),
+      t('backup.collection.deleteConfirmBody', { count: uris.length }),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('common.delete'),
+          style: 'destructive',
+          onPress: async () => {
+            if (foregroundOperationInFlightRef.current || operationBusy) return;
+            foregroundOperationInFlightRef.current = true;
+            setIsDeletingArchives(true);
+            setOperationRunning(true);
+            try {
+              const active = await getActiveBackupOperation();
+              if (active) throw new Error('BACKUP_OPERATION_BUSY');
+              await deleteBackupArchives(uris);
+              await clearLastVerifiedBackupIfDeleted(uris);
+              setVerifiedBackup((current) => current && uris.includes(current.uri) ? null : current);
+              // Evict by immutable Drive ID before refreshing. Drive listings
+              // can briefly be eventually consistent after DELETE.
+              removeBackupDiscoveryArchives(uris);
+              setSelectedArchiveUris(new Set());
+              void refreshBackupDiscovery()
+                .then(() => removeBackupDiscoveryArchives(uris))
+                .catch((error: unknown) => console.warn('Failed to refresh backups after deletion:', error));
+            } catch (error) {
+              console.warn('Failed to delete backup archives:', error);
+              Alert.alert(t('common.error'), t('backup.collection.deleteError'));
+              // A provider can delete an earlier item before a later item
+              // fails. Reconcile the cache even on this partial-failure path.
+              void refreshBackupDiscovery().catch((refreshError: unknown) => {
+                console.warn('Failed to reconcile backups after deletion error:', refreshError);
+              });
+            } finally {
+              if (mountedRef.current) {
+                setIsDeletingArchives(false);
+                setOperationRunning(false);
+              }
+              foregroundOperationInFlightRef.current = false;
+            }
+          },
+        },
+      ],
+    );
   };
 
   const startExport = async () => {
     setExportError(null);
     setVerifiedBackup(null);
     try {
-      const result = await exportBackup(setExportProgress);
+      const result = await runForegroundOperation(() => exportBackup((progress) => {
+          setExportProgress(progress);
+          updateBackupNotification(t(`backup.export.progress.${progress}`), EXPORT_PROGRESS[progress]);
+        }));
       setVerifiedBackup(result);
-      await loadRetention();
-      await scanCollection();
+      // A collection scan re-downloads and validates every archive. Refresh it
+      // after the verified result is visible instead of holding the export UI
+      // at 92% while that non-critical work completes.
+      void loadRetention();
+      void refreshBackupDiscovery();
     } catch (error: unknown) {
       console.warn('Backup export failed:', error);
       const code = typeof error === 'object' && error !== null && 'code' in error
@@ -194,7 +361,8 @@ export const BackupScreen = () => {
       const known = [
         'INSUFFICIENT_STORAGE', 'DESTINATION_STORAGE_INSUFFICIENT', 'PROVIDER_INTERRUPTED',
         'PARTIAL_WRITE', 'PARTIAL_OUTPUT_REMAINS', 'OUTPUT_RENAMED', 'STAGING_MISSING',
-        'DESTINATION_VERIFICATION_FAILED',
+        'DESTINATION_VERIFICATION_FAILED', 'DRIVE_AUTH_REQUIRED', 'DRIVE_API_FORBIDDEN',
+        'DRIVE_RATE_LIMITED', 'DRIVE_UNAVAILABLE', 'DRIVE_API_FAILED', 'DRIVE_UPLOAD_FAILED',
       ].includes(code) ? code : 'EXPORT_FAILED';
       setExportError(t(`backup.export.error.${known}`));
     } finally {
@@ -207,6 +375,7 @@ export const BackupScreen = () => {
     setImportError(null);
     setImportResult(null);
     setReplacementResult(null);
+    setImportPreview(null);
     try {
       const preview = archiveUri
         ? await previewNewestArchive(archiveUri)
@@ -237,9 +406,9 @@ export const BackupScreen = () => {
     setImportState('committing');
     setImportError(null);
     try {
-      const result = importMode === 'additive'
-        ? await importAllNotesAdditively(importPreview)
-        : await importSelectedNotes(importPreview, [...selectedNoteIds]);
+      const result = await runForegroundOperation(() => importMode === 'additive'
+        ? importAllNotesAdditively(importPreview)
+        : importSelectedNotes(importPreview, [...selectedNoteIds]));
       setImportResult(result);
       setImportPreview(null);
       setImportMode(null);
@@ -264,7 +433,7 @@ export const BackupScreen = () => {
           setImportState('committing');
           setImportError(null);
           try {
-            setReplacementResult(await importAllNotesByReplacement(importPreview));
+            setReplacementResult(await runForegroundOperation(() => importAllNotesByReplacement(importPreview)));
             setUndoMessage(null);
             await loadUndo();
             setImportPreview(null);
@@ -292,7 +461,7 @@ export const BackupScreen = () => {
           setUndoState('committing');
           setUndoMessage(null);
           try {
-            await undoFullReplacement(undo);
+            await runForegroundOperation(() => undoFullReplacement(undo));
             setUndoMessage('success');
           } catch (error) {
             console.warn('Failed to undo full replacement:', error);
@@ -312,10 +481,13 @@ export const BackupScreen = () => {
         text: t('backup.disconnect'),
         style: 'destructive',
         onPress: async () => {
+          // The confirmation dialog can remain open while another operation
+          // starts. Re-check at commit time so disconnect cannot race an
+          // export/import and invalidate its Drive target mid-flight.
+          if (foregroundOperationInFlightRef.current || operationBusy) return;
           try {
-            setFolder(await disconnectBackupFolder());
-            setCollection(null);
-            setScanState('idle');
+            await disconnectBackupFolder();
+            await refreshBackupDiscovery();
           } catch (error) {
             console.warn('Failed to disconnect backup folder:', error);
             Alert.alert(t('common.error'), t('backup.disconnectError'));
@@ -326,6 +498,28 @@ export const BackupScreen = () => {
   };
 
   const isConnected = folder.status === 'connected';
+  const operationBusy = operationRunning || activeOperation !== null || exportProgress !== null || importState === 'committing' || undoState === 'committing' || isDeletingArchives;
+
+  useEffect(() => {
+    if (!operationBusy) return;
+    let cancelled = false;
+    const poll = async () => {
+      if (cancelled || operationStatusPollInFlightRef.current) return;
+      operationStatusPollInFlightRef.current = true;
+      try {
+        await loadOperationStatus();
+      } finally {
+        operationStatusPollInFlightRef.current = false;
+      }
+    };
+    void poll();
+    const interval = setInterval(() => { void poll(); }, 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [loadOperationStatus, operationBusy]);
+
   const hasStaleAuthorization = folder.status === 'revoked' || folder.status === 'unavailable';
   const statusColor = isConnected ? colors.primary : hasStaleAuthorization ? colors.error : colors.textSecondary;
   const statusIcon = isConnected ? 'folder-check-outline' : hasStaleAuthorization ? 'folder-alert-outline' : 'folder-outline';
@@ -333,6 +527,13 @@ export const BackupScreen = () => {
     (Date.parse(right.createdAt ?? '') || right.providerModifiedAt || 0) -
     (Date.parse(left.createdAt ?? '') || left.providerModifiedAt || 0)
   );
+  useEffect(() => {
+    const available = new Set(archives.map((archive) => archive.uri));
+    setSelectedArchiveUris((current) => {
+      const next = new Set([...current].filter((uri) => available.has(uri)));
+      return next.size === current.size ? current : next;
+    });
+  }, [collection]);
   const newestValid = collection?.complete
     ? archives.find((archive) => archive.state === 'valid') ?? null
     : null;
@@ -383,7 +584,7 @@ export const BackupScreen = () => {
             </View>
             <Switch
               accessibilityLabel={t('backup.automatic.title')}
-              disabled={automatic === null || isChangingAutomatic}
+              disabled={automatic === null || isChangingAutomatic || operationBusy}
               value={automatic?.enabled ?? false}
               onValueChange={(enabled) => void changeAutomatic(enabled)}
             />
@@ -415,15 +616,18 @@ export const BackupScreen = () => {
               {t('backup.export.help')}
             </AppText>
           </View>
-          <PrimaryButton onPress={() => void startExport()} disabled={!isConnected || exportProgress !== null}>
+      <PrimaryButton onPress={() => void startExport()} disabled={!isConnected || operationBusy}>
             {exportProgress ? t(`backup.export.progress.${exportProgress}`) : t('backup.export.action')}
           </PrimaryButton>
           {exportProgress ? (
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: ui.space.sm }}>
-              <ActivityIndicator color={colors.primary} />
+            <View style={{ gap: ui.space.xs }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: ui.space.sm }}>
               <AppText variant="body" color={colors.textSecondary}>
                 {t(`backup.export.progress.${exportProgress}`)}
               </AppText>
+                <AppText variant="body" color={colors.primary}>{EXPORT_PROGRESS[exportProgress]}%</AppText>
+              </View>
+              <ProgressFill progress={EXPORT_PROGRESS[exportProgress] / 100} trackColor={colors.border} fillColor={colors.primary} />
             </View>
           ) : null}
           {verifiedBackup ? (
@@ -452,7 +656,7 @@ export const BackupScreen = () => {
                       })}
             </AppText>
             {undo?.state === 'available' ? (
-              <PrimaryButton disabled={undoState !== 'idle'} onPress={confirmUndo}>
+              <PrimaryButton disabled={undoState !== 'idle' || operationBusy} onPress={confirmUndo}>
                 {undoState === 'committing' ? t('backup.undo.committing') : t('backup.undo.action')}
               </PrimaryButton>
             ) : null}
@@ -464,14 +668,14 @@ export const BackupScreen = () => {
             <AppText variant="headline">{t('backup.import.title')}</AppText>
             <AppText variant="bodySmall" color={colors.textSecondary}>{t('backup.import.help')}</AppText>
             <PrimaryButton
-              disabled={!newestValid || importState !== 'idle'}
+              disabled={!newestValid || importState !== 'idle' || operationBusy}
               onPress={() => newestValid && void openImportPreview(newestValid.uri)}
             >
               {importState === 'previewing' ? t('backup.import.validating') : t('backup.import.newest')}
             </PrimaryButton>
             <PressableScale
               accessibilityRole="button"
-              disabled={importState !== 'idle'}
+              disabled={importState !== 'idle' || operationBusy}
               onPress={() => void openImportPreview()}
               style={{ alignSelf: 'center', padding: ui.space.sm }}
             >
@@ -509,13 +713,13 @@ export const BackupScreen = () => {
           <Card style={{ gap: ui.space.md }}>
             <AppText variant="headline">{t('backup.import.modeTitle')}</AppText>
             <AppText variant="bodySmall" color={colors.textSecondary}>{t('backup.import.noOverwrite')}</AppText>
-            <PrimaryButton disabled={importState !== 'idle'} onPress={() => setImportMode('additive')}>
+            <PrimaryButton disabled={importState !== 'idle' || operationBusy} onPress={() => setImportMode('additive')}>
               {t('backup.import.additive')}
             </PrimaryButton>
             <AppText variant="bodySmall" color={colors.textSecondary}>{t('backup.import.additiveHelp')}</AppText>
             <PressableScale
               accessibilityRole="button"
-              disabled={importState !== 'idle'}
+              disabled={importState !== 'idle' || operationBusy}
               onPress={() => setImportMode('selective')}
               style={{ alignSelf: 'center', padding: ui.space.sm }}
             >
@@ -547,7 +751,7 @@ export const BackupScreen = () => {
             }) : null}
             {importMode ? (
               <PrimaryButton
-                disabled={(importMode === 'selective' && selectedNoteIds.size === 0) || importState !== 'idle'}
+                disabled={(importMode === 'selective' && selectedNoteIds.size === 0) || importState !== 'idle' || operationBusy}
                 onPress={() => void commitImport()}
               >
                 {importState === 'committing'
@@ -560,7 +764,7 @@ export const BackupScreen = () => {
             <View style={{ gap: ui.space.sm, borderTopWidth: 2, borderTopColor: colors.error, paddingTop: ui.space.lg, marginTop: ui.space.sm }}>
               <AppText variant="headline" color={colors.error}>{t('backup.import.replacement')}</AppText>
               <AppText variant="bodySmall" color={colors.error}>{t('backup.import.replacementHelp')}</AppText>
-              <PrimaryButton disabled={importState !== 'idle'} onPress={confirmReplacement}>
+              <PrimaryButton disabled={importState !== 'idle' || operationBusy} onPress={confirmReplacement}>
                 {importState === 'committing' && importMode === 'replacement'
                   ? t('backup.import.replacementCommitting')
                   : t('backup.import.replacementAction')}
@@ -578,7 +782,7 @@ export const BackupScreen = () => {
               <AppText variant="headline">{t('backup.collection.title')}</AppText>
               <PressableScale
                 accessibilityRole="button"
-                disabled={scanState === 'loading'}
+                disabled={scanState === 'loading' || operationBusy}
                 onPress={() => void scanCollection()}
                 style={{ padding: ui.space.sm }}
               >
@@ -602,6 +806,19 @@ export const BackupScreen = () => {
                 {t(`backup.retention.status.${retention.status}`, { count: retention.deletedCount })}
               </AppText>
             ) : null}
+            {selectedArchiveUris.size > 0 ? (
+              <View style={{ gap: ui.space.sm }}>
+                <AppText variant="bodySmall" color={colors.textSecondary}>
+                  {t('backup.collection.selected', { count: selectedArchiveUris.size })}
+                </AppText>
+                <PrimaryButton
+                  disabled={isDeletingArchives || operationBusy}
+                  onPress={confirmDeleteArchives}
+                >
+                  {isDeletingArchives ? t('backup.collection.deleting') : t('backup.collection.delete')}
+                </PrimaryButton>
+              </View>
+            ) : null}
             {scanState !== 'loading' && collection && archives.length === 0 ? (
               <AppText variant="body" color={colors.textSecondary}>{t('backup.collection.empty')}</AppText>
             ) : null}
@@ -610,11 +827,21 @@ export const BackupScreen = () => {
                 ? colors.primary
                 : archive.state === 'uncertain' ? colors.textSecondary : colors.error;
               return (
-                <View
+                <PressableScale
                   key={archive.uri}
+                  accessibilityRole="checkbox"
+                  accessibilityLabel={`${t('backup.collection.select')}: ${archive.name}`}
+                  accessibilityState={{ checked: selectedArchiveUris.has(archive.uri) }}
+                  disabled={isDeletingArchives || operationBusy}
+                  onPress={() => toggleSelectedArchive(archive.uri)}
                   style={{ gap: ui.space.xs, paddingTop: ui.space.sm, borderTopWidth: 1, borderTopColor: colors.border }}
                 >
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: ui.space.sm }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: ui.space.sm, alignItems: 'center' }}>
+                    <MaterialCommunityIcons
+                      name={selectedArchiveUris.has(archive.uri) ? 'checkbox-marked' : 'checkbox-blank-outline'}
+                      size={22}
+                      color={selectedArchiveUris.has(archive.uri) ? colors.primary : colors.textSecondary}
+                    />
                     <AppText variant="headline" style={{ flex: 1 }}>{formatDate(archive)}</AppText>
                     <AppText variant="headline" color={color}>{t(`backup.collection.state.${archive.state}`)}</AppText>
                   </View>
@@ -622,7 +849,7 @@ export const BackupScreen = () => {
                   <AppText variant="bodySmall" color={colors.textSecondary}>
                     {formatBytes(archive.bytes)} · {t(`backup.collection.verification.${archive.verification}`)} · {t(`backup.collection.compatibility.${archive.compatibility}`)}
                   </AppText>
-                </View>
+                </PressableScale>
               );
             })}
           </Card>
@@ -667,7 +894,7 @@ export const BackupScreen = () => {
             </View>
           ) : null}
 
-          <PrimaryButton onPress={() => void chooseFolder()} disabled={isLoading || isChoosing}>
+          <PrimaryButton onPress={() => void chooseFolder()} disabled={isLoading || isChoosing || operationBusy}>
             {isChoosing
               ? t('backup.openingPicker')
               : isConnected || hasStaleAuthorization
@@ -675,9 +902,23 @@ export const BackupScreen = () => {
                 : t('backup.connectFolder')}
           </PrimaryButton>
 
+          {!isConnected ? (
+            <PressableScale
+              accessibilityRole="button"
+              disabled={isLoading || scanState === 'loading'}
+              onPress={() => void scanCollection()}
+              style={{ alignSelf: 'center', padding: ui.space.sm }}
+            >
+              <AppText variant="headline" color={colors.primary}>
+                {scanState === 'loading' ? t('backup.collection.scanning') : t('backup.collection.refresh')}
+              </AppText>
+            </PressableScale>
+          ) : null}
+
           {isConnected || hasStaleAuthorization ? (
             <PressableScale
               accessibilityRole="button"
+              disabled={operationBusy || isChoosing}
               onPress={disconnect}
               style={{ alignSelf: 'center', padding: ui.space.sm }}
             >

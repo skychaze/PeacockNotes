@@ -4,7 +4,7 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
 import android.os.StatFs
-import android.provider.DocumentsContract
+import android.util.Log
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -40,16 +40,22 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     private const val DATABASE_PATH = "database/content.sqlite"
     private const val BUFFER_SIZE = 64 * 1024
     private const val MAX_MANIFEST_BYTES = 2L * 1024 * 1024
-    private const val FOLDER_PREFERENCES = "peacock_notes_backup_folder"
-    private const val FOLDER_URI = "folder_uri"
+    private const val FOLDER_PREFERENCES = BackupFolderModule.PREFERENCES
+    private const val FOLDER_URI = BackupFolderModule.FOLDER_URI
     private const val REPLACEMENT_PREFERENCES = "peacock_notes_full_replacement"
     private const val REPLACEMENT_JOURNAL = "journal"
     private const val REPLACEMENT_UNDO = "undo"
     private const val LAST_UNDONE_SNAPSHOT = "last_undone_snapshot"
+    private const val SCAN_CACHE_PREFERENCES = "peacock_notes_backup_scan_cache"
+    private const val SCAN_CACHE_KEY = "archives"
     private const val UNDO_WINDOW_MILLIS = 168L * 60 * 60 * 1000
     private val ARCHIVE_NAME = Regex("^peacock-notes-\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z(?:-[a-zA-Z0-9_-]+)?\\.pnbak$")
     private val INCOMPATIBLE_CODES = setOf("UNSUPPORTED_FORMAT_VERSION", "UNSUPPORTED_DATABASE_VERSION")
-    private val UNCERTAIN_CODES = setOf("SOURCE_UNAVAILABLE", "STAGING_UNAVAILABLE", "INSUFFICIENT_STORAGE", "ARCHIVE_OPERATION_FAILED")
+    private val UNCERTAIN_CODES = setOf(
+      "SOURCE_UNAVAILABLE", "STAGING_UNAVAILABLE", "INSUFFICIENT_STORAGE", "ARCHIVE_OPERATION_FAILED",
+      "DRIVE_AUTH_REQUIRED", "DRIVE_API_FORBIDDEN", "DRIVE_RATE_LIMITED", "DRIVE_UNAVAILABLE",
+      "DRIVE_API_FAILED", "DRIVE_LIST_INCOMPLETE",
+    )
   }
 
   private val executor = Executors.newSingleThreadExecutor()
@@ -78,9 +84,30 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
 
   @ReactMethod
   fun scanConnectedFolder(promise: Promise) = executor.execute {
-    runCatching { scanFolder() }
+    runCatching { scanFolder(deepValidation = false) }
       .onSuccess(promise::resolve)
-      .onFailure { promise.reject("PROVIDER_SCAN_FAILED", it.message, it) }
+      .onFailure {
+        Log.e("BackupRuntime", "[DEBUG-BR-SCAN] failed deep=false code=${errorCode(it)} message=${it.message}", it)
+        promise.reject(errorCode(it), it.message, it)
+      }
+  }
+
+  /** Explicit refresh used by retention/recovery, where every archive must be trusted. */
+  @ReactMethod
+  fun scanConnectedFolderDeep(promise: Promise) = executor.execute {
+    runCatching { scanFolder(deepValidation = true) }
+      .onSuccess(promise::resolve)
+      .onFailure {
+        Log.e("BackupRuntime", "[DEBUG-BR-SCAN] failed deep=true code=${errorCode(it)} message=${it.message}", it)
+        promise.reject(errorCode(it), it.message, it)
+      }
+  }
+
+  @ReactMethod
+  fun deleteArchives(request: ReadableMap, promise: Promise) = executor.execute {
+    runCatching { deleteArchives(request) }
+      .onSuccess(promise::resolve)
+      .onFailure { promise.reject(errorCode(it), it.message, it) }
   }
 
   @ReactMethod
@@ -101,7 +128,10 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   fun commitSelectiveImport(request: ReadableMap, promise: Promise) = executor.execute {
     runCatching { commitImport(request) }
       .onSuccess(promise::resolve)
-      .onFailure { promise.reject(errorCode(it), it.message, it) }
+      .onFailure {
+        Log.e("BackupRuntime", "[DEBUG-BR-IMPORT] commit failed code=${errorCode(it)} message=${it.message}", it)
+        promise.reject(errorCode(it), it.message, it)
+      }
   }
 
   @ReactMethod
@@ -143,66 +173,172 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   }
 
   @ReactMethod
-  fun hasImportReceipt(request: ReadableMap, promise: Promise) = executor.execute {
+  fun getImportReceiptResult(request: ReadableMap, promise: Promise) = executor.execute {
     runCatching {
       val db = SQLiteDatabase.openDatabase(fileFromUri(requiredString(request, "databaseUri")).path, null, SQLiteDatabase.OPEN_READONLY)
       try {
-        Arguments.createMap().apply { putBoolean("committed", importReceiptExists(db, requiredString(request, "operationKey"))) }
+        importReceiptResult(db, requiredString(request, "operationKey"))
       } finally { db.close() }
     }.onSuccess(promise::resolve).onFailure { promise.reject(errorCode(it), it.message, it) }
   }
 
-  private fun scanFolder(): com.facebook.react.bridge.WritableMap {
-    val folder = context.getSharedPreferences(FOLDER_PREFERENCES, android.app.Activity.MODE_PRIVATE)
-      .getString(FOLDER_URI, null)?.let(Uri::parse)
-      ?: fail("FOLDER_NOT_CONNECTED", "No backup folder is connected")
-    val children = DocumentsContract.buildChildDocumentsUriUsingTree(
-      folder,
-      DocumentsContract.getTreeDocumentId(folder)
-    )
-    val projection = arrayOf(
-      DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-      DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-      DocumentsContract.Document.COLUMN_MIME_TYPE,
-      DocumentsContract.Document.COLUMN_SIZE,
-      DocumentsContract.Document.COLUMN_LAST_MODIFIED
-    )
+  private fun scanFolder(
+    deepValidation: Boolean,
+    reuseTrustedCache: Boolean = false,
+  ): com.facebook.react.bridge.WritableMap {
+    val startedAt = android.os.SystemClock.elapsedRealtime()
+    val folderUri = context.getSharedPreferences(FOLDER_PREFERENCES, android.app.Activity.MODE_PRIVATE).getString(FOLDER_URI, null)
+      ?: fail("FOLDER_NOT_CONNECTED", "Google Drive is not connected")
+    val folderId = DriveClient.idFromUri(folderUri) ?: fail("FOLDER_NOT_CONNECTED", "Google Drive connection is invalid")
+    val drive = DriveClient(context)
+    val listed = drive.list(folderId).filter { archive -> ARCHIVE_NAME.matches(archive.name) }
+    Log.i("BackupRuntime", "[DEBUG-BR-SCAN] listed folder=$folderId candidates=${listed.size}")
+    val cached = loadScanCache(folderId)
+    Log.i("BackupRuntime", "[DEBUG-BR-SCAN] cache_loaded folder=$folderId entries=${cached.size}")
+    val nextCache = linkedMapOf<String, JSONObject>()
     val archives = Arguments.createArray()
-    var complete = true
-    val cursor = context.contentResolver.query(children, projection, null, null, null)
-      ?: fail("PROVIDER_SCAN_FAILED", "The document provider returned no folder listing")
-    cursor.use {
-      while (it.moveToNext()) {
-        val name = it.stringOrNull(DocumentsContract.Document.COLUMN_DISPLAY_NAME) ?: continue
-        val mime = it.stringOrNull(DocumentsContract.Document.COLUMN_MIME_TYPE)
-        if (!ARCHIVE_NAME.matches(name) || mime == DocumentsContract.Document.MIME_TYPE_DIR) continue
-        val id = it.stringOrNull(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-        if (id == null) {
-          complete = false
-          continue
-        }
-        val uri = DocumentsContract.buildDocumentUriUsingTree(folder, id)
-        val size = it.longOrNull(DocumentsContract.Document.COLUMN_SIZE)
-        val modified = it.longOrNull(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
-        archives.pushMap(scanArchive(uri, name, size, modified))
+    var deepValidated = 0
+    var cacheHits = 0
+    // A light scan only needs to validate enough newest candidates to find the
+    // newest valid recovery point. If the newest archive is damaged or its
+    // validation is inconclusive, continue to the next candidate rather than
+    // incorrectly rendering the collection as having no recovery point.
+    var lightRecoveryPointFound = false
+    listed.sortedByDescending { it.modifiedTime ?: 0L }.forEach { item ->
+      val uri = DriveClient.uri(item.id)
+      val cachedItem = cached[item.id]
+      val cacheMatches = cachedItem != null && cacheFingerprintMatches(cachedItem, item)
+      // A full deep scan remains available for explicit recovery/debugging.
+      // Managed retention calls the same routine with trusted-cache reuse so
+      // unchanged verified archives do not get downloaded and parsed again.
+      // Drive's immutable ID plus size/modified-time fingerprint invalidates
+      // that trust when the provider changes an item.
+      val cachedIsTrusted = cacheMatches &&
+        cachedItem.optString("state") == "valid" &&
+        cachedItem.optString("verification") == "verified" &&
+        cachedItem.optString("compatibility") == "compatible"
+      val shouldValidate = when {
+        deepValidation && !(reuseTrustedCache && cachedIsTrusted) -> true
+        !deepValidation -> !lightRecoveryPointFound && !cacheMatches
+        else -> false
       }
-      complete = complete &&
-        !it.extras.getBoolean(DocumentsContract.EXTRA_LOADING, false) &&
-        !it.extras.containsKey(DocumentsContract.EXTRA_ERROR)
+      val archive = if (shouldValidate) {
+        deepValidated += 1
+        scanArchive(uri, item.name, item.size, item.modifiedTime).also { scanned ->
+          if (scanned.getString("state") == "valid") lightRecoveryPointFound = true
+        }
+      } else if (cacheMatches) {
+        cacheHits += 1
+        cachedArchive(cachedItem!!, item).also { cachedResult ->
+          if (cachedResult.getString("state") == "valid") lightRecoveryPointFound = true
+        }
+      } else {
+        metadataArchive(item)
+      }
+      // React Native takes ownership of a WritableMap when it is pushed into
+      // a WritableArray. Serialize the cache entry first; reading `archive`
+      // after pushMap would throw "Map already consumed" and turn an otherwise
+      // successful Drive listing into a generic scan failure.
+      nextCache[item.id] = cacheEntry(item, archive)
+      archives.pushMap(archive)
     }
+    saveScanCache(folderId, nextCache.values.toList())
+    Log.i(
+      "BackupRuntime",
+      "[DEBUG-BR-SCAN] folder=$folderId listed=${listed.size} deep=$deepValidation reuseTrusted=$reuseTrustedCache " +
+        "validated=$deepValidated cacheHits=$cacheHits elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt}",
+    )
     return Arguments.createMap().apply {
-      putBoolean("complete", complete)
+      putBoolean("complete", true)
       putArray("archives", archives)
     }
   }
 
-  private fun scanArchive(uri: Uri, name: String, providerSize: Long?, modified: Long?) = Arguments.createMap().apply {
-    putString("uri", uri.toString())
+  private fun metadataArchive(item: DriveClient.Item) = Arguments.createMap().apply {
+    putString("uri", DriveClient.uri(item.id))
+    putString("name", item.name)
+    if (item.size == null) putNull("bytes") else putDouble("bytes", item.size.toDouble())
+    if (item.modifiedTime == null) putNull("providerModifiedAt") else putDouble("providerModifiedAt", item.modifiedTime.toDouble())
+    putString("state", "uncertain")
+    putString("verification", "not_verified")
+    putString("compatibility", "unknown")
+    filenameCreatedAt(item.name)?.let { putString("createdAt", it) } ?: putNull("createdAt")
+  }
+
+  private fun filenameCreatedAt(name: String): String? {
+    val match = Regex("^peacock-notes-(\\d{4}-\\d{2}-\\d{2})T(\\d{2})-(\\d{2})-(\\d{2})-(\\d{3})Z").find(name)
+      ?: return null
+    return runCatching {
+      Instant.parse("${match.groupValues[1]}T${match.groupValues[2]}:${match.groupValues[3]}:${match.groupValues[4]}.${match.groupValues[5]}Z").toString()
+    }.getOrNull()
+  }
+
+  private fun cacheFingerprintMatches(cached: JSONObject, item: DriveClient.Item): Boolean {
+    val size = if (item.size == null) JSONObject.NULL else item.size
+    val modified = if (item.modifiedTime == null) JSONObject.NULL else item.modifiedTime
+    return cached.optString("name") == item.name &&
+      (if (cached.has("providerSize")) cached.optLong("providerSize", Long.MIN_VALUE) else Long.MIN_VALUE) ==
+        (if (size === JSONObject.NULL) Long.MIN_VALUE else item.size ?: Long.MIN_VALUE) &&
+      (if (cached.has("providerModifiedAt")) cached.optLong("providerModifiedAt", Long.MIN_VALUE) else Long.MIN_VALUE) ==
+        (if (modified === JSONObject.NULL) Long.MIN_VALUE else item.modifiedTime ?: Long.MIN_VALUE)
+  }
+
+  private fun cacheEntry(item: DriveClient.Item, archive: com.facebook.react.bridge.ReadableMap): JSONObject = JSONObject().apply {
+    put("id", item.id)
+    put("name", item.name)
+    if (item.size == null) put("providerSize", JSONObject.NULL) else put("providerSize", item.size)
+    if (item.modifiedTime == null) put("providerModifiedAt", JSONObject.NULL) else put("providerModifiedAt", item.modifiedTime)
+    put("uri", archive.getString("uri"))
+    put("bytes", if (archive.hasKey("bytes") && !archive.isNull("bytes")) archive.getDouble("bytes") else JSONObject.NULL)
+    put("createdAt", if (archive.hasKey("createdAt") && !archive.isNull("createdAt")) archive.getString("createdAt") else JSONObject.NULL)
+    put("state", archive.getString("state") ?: "uncertain")
+    put("verification", archive.getString("verification") ?: "not_verified")
+    put("compatibility", archive.getString("compatibility") ?: "unknown")
+  }
+
+  private fun cachedArchive(cached: JSONObject, item: DriveClient.Item) = Arguments.createMap().apply {
+    putString("uri", DriveClient.uri(item.id))
+    putString("name", item.name)
+    if (cached.isNull("bytes")) putNull("bytes") else putDouble("bytes", cached.optDouble("bytes"))
+    if (item.modifiedTime == null) putNull("providerModifiedAt") else putDouble("providerModifiedAt", item.modifiedTime.toDouble())
+    if (cached.isNull("createdAt")) putNull("createdAt") else putString("createdAt", cached.optString("createdAt"))
+    putString("state", cached.optString("state", "uncertain"))
+    putString("verification", cached.optString("verification", "not_verified"))
+    putString("compatibility", cached.optString("compatibility", "unknown"))
+  }
+
+  private fun loadScanCache(folderId: String): Map<String, JSONObject> {
+    val raw = context.getSharedPreferences(SCAN_CACHE_PREFERENCES, android.app.Activity.MODE_PRIVATE)
+      .getString(SCAN_CACHE_KEY, null) ?: return emptyMap()
+    return runCatching {
+      val root = JSONObject(raw)
+      if (root.optString("folderId") != folderId) return@runCatching emptyMap()
+      val array = root.optJSONArray("archives") ?: return@runCatching emptyMap()
+      buildMap {
+        for (index in 0 until array.length()) {
+          val item = array.optJSONObject(index) ?: continue
+          val id = item.optString("id")
+          if (id.isNotBlank()) put(id, item)
+        }
+      }
+    }.getOrDefault(emptyMap())
+  }
+
+  private fun saveScanCache(folderId: String, entries: List<JSONObject>) {
+    val root = JSONObject().put("folderId", folderId).put("archives", JSONArray().apply {
+      entries.forEach(::put)
+    })
+    context.getSharedPreferences(SCAN_CACHE_PREFERENCES, android.app.Activity.MODE_PRIVATE)
+      .edit().putString(SCAN_CACHE_KEY, root.toString()).apply()
+  }
+
+  private fun scanArchive(uri: String, name: String, providerSize: Long?, modified: Long?) = Arguments.createMap().apply {
+    putString("uri", uri)
     putString("name", name)
     if (providerSize == null) putNull("bytes") else putDouble("bytes", providerSize.toDouble())
     if (modified == null) putNull("providerModifiedAt") else putDouble("providerModifiedAt", modified.toDouble())
     try {
-      val request = Arguments.createMap().apply { putString("archiveUri", uri.toString()) }
+      val request = Arguments.createMap().apply { putString("archiveUri", uri) }
       val validated = validate(request)
       putString("state", "valid")
       putString("verification", "verified")
@@ -224,7 +360,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   }
 
   private fun applyRetention(): com.facebook.react.bridge.WritableMap {
-    val scan = scanFolder()
+    val scan = scanFolder(deepValidation = true, reuseTrustedCache = true)
     if (!scan.getBoolean("complete")) {
       fail("RETENTION_SCAN_INCOMPLETE", "Managed retention requires a complete trustworthy folder scan")
     }
@@ -241,32 +377,15 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       retentionArchives,
       System.currentTimeMillis(),
       UNDO_WINDOW_MILLIS,
-    ).map(Uri::parse)
-
-    // Establish policy support for every candidate before deleting any recovery point.
-    candidates.forEach { candidate ->
-      val flags = context.contentResolver.query(
-        candidate,
-        arrayOf(DocumentsContract.Document.COLUMN_FLAGS),
-        null,
-        null,
-        null,
-      )?.use { cursor ->
-        if (!cursor.moveToFirst()) null else cursor.longOrNull(DocumentsContract.Document.COLUMN_FLAGS)
-      } ?: fail("RETENTION_POLICY_RESTRICTED", "The provider did not report whether an archive can be deleted")
-      if (flags and DocumentsContract.Document.FLAG_SUPPORTS_DELETE.toLong() == 0L) {
-        fail("RETENTION_POLICY_RESTRICTED", "The connected folder does not permit managed archive deletion")
-      }
-    }
+    )
 
     var deleted = 0
     candidates.forEach { candidate ->
-      val removed = try {
-        DocumentsContract.deleteDocument(context.contentResolver, candidate)
-      } catch (error: Exception) {
-        fail("PROVIDER_DELETE_FAILED", "The provider failed while applying managed retention", error)
+      val id = DriveClient.idFromUri(candidate) ?: fail("RETENTION_POLICY_RESTRICTED", "Archive is not a Google Drive item")
+      try { DriveClient(context).delete(id) } catch (error: Exception) {
+        if (error is DriveException) throw error
+        fail("PROVIDER_DELETE_FAILED", "Google Drive failed while applying managed retention", error)
       }
-      if (!removed) fail("PROVIDER_DELETE_FAILED", "The provider refused to delete an expired archive")
       deleted += 1
     }
     return Arguments.createMap().apply {
@@ -276,14 +395,17 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     }
   }
 
-  private fun Cursor.stringOrNull(column: String): String? {
-    val index = getColumnIndex(column)
-    return if (index >= 0 && !isNull(index)) getString(index) else null
-  }
-
-  private fun Cursor.longOrNull(column: String): Long? {
-    val index = getColumnIndex(column)
-    return if (index >= 0 && !isNull(index)) getLong(index) else null
+  private fun deleteArchives(request: ReadableMap): com.facebook.react.bridge.WritableMap {
+    val array = request.getArray("uris") ?: fail("INVALID_REQUEST", "uris is required")
+    val ids = (0 until array.size()).map {
+      val uri = array.getString(it) ?: fail("INVALID_REQUEST", "Archive URI is missing")
+      DriveClient.idFromUri(uri) ?: fail("INVALID_REQUEST", "Archive URI is not a Google Drive item")
+    }.distinct()
+    if (ids.isEmpty()) fail("EMPTY_SELECTION", "Select at least one archive")
+    val drive = DriveClient(context)
+    ids.forEach { id -> drive.delete(id) }
+    Log.i("BackupRuntime", "[DEBUG-BR-DELETE] requested=${ids.size} deleted=${ids.size}")
+    return Arguments.createMap().apply { putInt("deletedCount", ids.size) }
   }
 
   private fun pin(request: ReadableMap): com.facebook.react.bridge.WritableArray {
@@ -479,6 +601,10 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       var mediaCommitted = false
       try {
         importReceiptResult(live, operationKey)?.let { return it }
+        // Native connections do not inherit Expo's connection-local pragma.
+        // Enable FK enforcement for the import transaction so newly restored
+        // relations cannot introduce another orphaned row.
+        live.execSQL("PRAGMA foreign_keys=ON")
         val available = mutableSetOf<String>()
         source.rawQuery("SELECT portableId FROM Notes", null).use { while (it.moveToNext()) available.add(it.getString(0)) }
         if (!available.containsAll(selected)) fail("INVALID_SELECTION", "The selection contains a note absent from the archive")
@@ -511,7 +637,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         }
 
         val archiveCreatedAt = summary.getString("createdAt") ?: fail("MALFORMED_MANIFEST", "Archive creation time is missing")
-        var imported = 0; var recovered = 0; var skipped = 0
+        var imported = 0; var recovered = 0; var skipped = 0; var repaired = 0
         live.beginTransaction()
         try {
           applyMediaRestrictions(live, restrictions)
@@ -520,18 +646,45 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
               if (!cursor.moveToFirst()) fail("INVALID_SELECTION", "Selected note is missing")
               List(cursor.columnCount) { index -> if (cursor.isNull(index)) null else cursor.getString(index) }
             }
-            val folderId = ensureImportedFolder(live, note[1]!!, note[7]!!, note[8]!!, note[9]!!.toInt())
-            val existing = live.rawQuery("SELECT n.id,f.portableId,n.title,n.content,n.createdAt,n.updatedAt,n.sortOrder FROM Notes n JOIN Folders f ON f.id=n.folderId WHERE n.portableId=?", arrayOf(noteId)).use { cursor ->
+            val sourceFolderPortableId = note[1]!!
+            val folderId = ensureImportedFolder(live, sourceFolderPortableId, note[7]!!, note[8]!!, note[9]!!.toInt())
+            if (folderId <= 0L) fail("IMPORT_DEPENDENCY_FAILED", "The imported folder could not be resolved")
+            Log.i(
+              "BackupRuntime",
+              "[DEBUG-BR-IMPORT] note=$noteId sourceFolder=$sourceFolderPortableId targetFolderRow=$folderId",
+            )
+            // Look up by note identity without requiring the current folder to
+            // exist. Older databases can retain a note after its folder was
+            // deleted (before FK cascade enforcement was enabled); treating
+            // that row as absent would collide with the unique portableId
+            // index on insert and incorrectly fail the whole import.
+            val existing = live.rawQuery("SELECT n.id,f.portableId,n.title,n.content,n.createdAt,n.updatedAt,n.sortOrder FROM Notes n LEFT JOIN Folders f ON f.id=n.folderId WHERE n.portableId=?", arrayOf(noteId)).use { cursor ->
               if (!cursor.moveToFirst()) null else List(cursor.columnCount) { index -> if (cursor.isNull(index)) null else cursor.getString(index) }
             }
-            val unchanged = existing != null && existing[1] == note[1] && existing[2] == note[2] && (existing[3] ?: "") == (note[3] ?: "") && existing[4] == note[4] && existing[5] == note[5] && existing[6] == note[6] && mediaMatches(source, live, noteId, existing[0]!!.toLong())
+            val existingFolderPortableId = existing?.get(1)
+            val repairedOrphan = existing != null && existingFolderPortableId == null
+            if (repairedOrphan) {
+              live.execSQL("UPDATE Notes SET folderId=? WHERE id=?", arrayOf(folderId, existing!![0]!!.toLong()))
+              repaired++
+              Log.i("BackupRuntime", "[DEBUG-BR-IMPORT] repaired_orphan note=$noteId targetFolderRow=$folderId")
+            }
+            val unchanged = existing != null &&
+              (existingFolderPortableId ?: sourceFolderPortableId) == note[1] &&
+              existing[2] == note[2] && (existing[3] ?: "") == (note[3] ?: "") &&
+              existing[4] == note[4] && existing[5] == note[5] && existing[6] == note[6] &&
+              mediaMatches(source, live, noteId, existing[0]!!.toLong())
             if (unchanged) { skipped++; return@forEach }
             val targetPortableId = if (existing == null) noteId else UUID.randomUUID().toString()
             val targetTitle = if (existing == null) note[2]!! else "${note[2]} (Recovered copy)"
-            val statement = live.compileStatement("INSERT INTO Notes(portableId,folderId,title,content,audioUri,createdAt,updatedAt,sortOrder) VALUES(?,?,?,?,NULL,?,?,?)")
+            val statement = live.compileStatement("INSERT INTO Notes(portableId,folderId,title,searchTitle,content,searchContent,audioUri,createdAt,updatedAt,sortOrder) VALUES(?,?,?,?,?,?,NULL,?,?,?)")
             statement.bindString(1, targetPortableId); statement.bindLong(2, folderId); statement.bindString(3, targetTitle)
-            if (note[3] == null) statement.bindNull(4) else statement.bindString(4, note[3]!!)
-            statement.bindString(5, note[4]!!); statement.bindString(6, note[5]!!); statement.bindLong(7, note[6]!!.toLong())
+            statement.bindString(4, targetTitle.lowercase(Locale.ROOT))
+            if (note[3] == null) {
+              statement.bindNull(5); statement.bindString(6, "")
+            } else {
+              statement.bindString(5, note[3]!!); statement.bindString(6, note[3]!!.lowercase(Locale.ROOT))
+            }
+            statement.bindString(7, note[4]!!); statement.bindString(8, note[5]!!); statement.bindLong(9, note[6]!!.toLong())
             val liveNoteId = statement.executeInsert()
             copyImportedMedia(source, live, "NoteAudios", noteId, liveNoteId, mediaUris, existing != null)
             copyImportedMedia(source, live, "NoteFiles", noteId, liveNoteId, mediaUris, existing != null)
@@ -541,7 +694,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
             imported++; if (existing != null) recovered++
           }
           live.execSQL("INSERT INTO BackupImportReceipts(operationKey,archiveSha256,selectedNoteIds,importedCount,recoveredCount,skippedCount,restrictedAudioCount,restrictedFileCount,committedAt) VALUES(?,?,?,?,?,?,?,?,?)", arrayOf<Any>(operationKey, expectedHash, selected.sorted().joinToString(","), imported, recovered, skipped, restrictions.audioIds.size, restrictions.fileIds.size, java.time.Instant.now().toString()))
-          if (imported > 0) live.execSQL("UPDATE ContentMetadata SET revision=revision+1 WHERE id=1")
+          if (imported > 0 || repaired > 0) live.execSQL("UPDATE ContentMetadata SET revision=revision+1 WHERE id=1")
           live.setTransactionSuccessful()
         } finally { live.endTransaction() }
         mediaCommitted = true
@@ -563,10 +716,9 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     val operationKey = requiredString(request, "operationKey")
     val existing = SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READONLY)
     try {
+      replacementReceiptResult(existing, operationKey)?.let { return it }
       if (importReceiptExists(existing, operationKey)) {
-        val count = scalarCount(existing, "SELECT COUNT(*) FROM Notes").toInt()
-        val restrictions = receiptRestrictions(existing, operationKey)
-        return replacementResult(true, count, "existing", restrictions.first, restrictions.second)
+        fail("IMPORT_RESULT_UNAVAILABLE", "The replacement receipt is missing its safety snapshot")
       }
     } finally { existing.close() }
 
@@ -608,8 +760,8 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         target.execSQL("UPDATE ContentMetadata SET revision=revision+1 WHERE id=1")
         val noteCount = scalarCount(source, "SELECT COUNT(*) FROM Notes").toInt()
         target.execSQL(
-          "INSERT INTO BackupImportReceipts(operationKey,archiveSha256,selectedNoteIds,importedCount,recoveredCount,skippedCount,restrictedAudioCount,restrictedFileCount,committedAt) VALUES(?,?,?,?,0,0,?,?,?)",
-          arrayOf<Any>(operationKey, expectedHash, "__full_replacement__", noteCount, restrictions.audioIds.size, restrictions.fileIds.size, java.time.Instant.now().toString())
+          "INSERT INTO BackupImportReceipts(operationKey,archiveSha256,selectedNoteIds,importedCount,recoveredCount,skippedCount,restrictedAudioCount,restrictedFileCount,safetySnapshotId,committedAt) VALUES(?,?,?,?,0,0,?,?,?,?)",
+          arrayOf<Any>(operationKey, expectedHash, "__full_replacement__", noteCount, restrictions.audioIds.size, restrictions.fileIds.size, generationId, java.time.Instant.now().toString())
         )
         target.setTransactionSuccessful()
       } finally {
@@ -659,10 +811,23 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
 
   private fun copyReplacementNotes(source: SQLiteDatabase, target: SQLiteDatabase) {
     source.rawQuery("SELECT portableId,folderPortableId,title,content,createdAt,updatedAt,sortOrder FROM Notes ORDER BY portableId", null).use { cursor ->
-      val statement = target.compileStatement("INSERT INTO Notes(portableId,folderId,title,content,audioUri,createdAt,updatedAt,sortOrder) VALUES(?,(SELECT id FROM Folders WHERE portableId=?),?,?,NULL,?,?,?)")
+      val statement = target.compileStatement("INSERT INTO Notes(portableId,folderId,title,searchTitle,content,searchContent,audioUri,createdAt,updatedAt,sortOrder) VALUES(?,(SELECT id FROM Folders WHERE portableId=?),?,?,?,?,NULL,?,?,?)")
       while (cursor.moveToNext()) {
         statement.clearBindings()
-        for (index in 0 until cursor.columnCount) bind(statement, index + 1, cursor, index)
+        val title = cursor.getString(2)
+        statement.bindString(1, cursor.getString(0))
+        statement.bindString(2, cursor.getString(1))
+        statement.bindString(3, title)
+        statement.bindString(4, title.lowercase(Locale.ROOT))
+        if (cursor.isNull(3)) {
+          statement.bindNull(5); statement.bindString(6, "")
+        } else {
+          val content = cursor.getString(3)
+          statement.bindString(5, content); statement.bindString(6, content.lowercase(Locale.ROOT))
+        }
+        statement.bindString(7, cursor.getString(4))
+        statement.bindString(8, cursor.getString(5))
+        statement.bindLong(9, cursor.getLong(6))
         statement.executeInsert()
       }
     }
@@ -793,7 +958,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         listOf("RecoveryProvenance", "NoteAudios", "NoteFiles", "Notes", "Folders").forEach { db.execSQL("DELETE FROM $it") }
         db.execSQL("DELETE FROM sqlite_sequence WHERE name IN ('Folders','Notes','NoteAudios','NoteFiles')")
         db.execSQL("INSERT INTO Folders SELECT * FROM prior.Folders")
-        db.execSQL("INSERT INTO Notes SELECT * FROM prior.Notes")
+        copyPriorNotes(db)
         db.execSQL("INSERT INTO NoteAudios SELECT * FROM prior.NoteAudios")
         db.execSQL("INSERT INTO NoteFiles SELECT * FROM prior.NoteFiles")
         db.execSQL("INSERT INTO RecoveryProvenance SELECT * FROM prior.RecoveryProvenance")
@@ -803,6 +968,39 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     } finally {
       runCatching { db.execSQL("DETACH DATABASE prior") }
       db.close()
+    }
+  }
+
+  private fun copyPriorNotes(db: SQLiteDatabase) {
+    val statement = db.compileStatement(
+      "INSERT INTO Notes(id,portableId,folderId,title,searchTitle,content,searchContent,audioUri,createdAt,updatedAt,sortOrder) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+    )
+    db.rawQuery(
+      "SELECT id,portableId,folderId,title,content,audioUri,createdAt,updatedAt,sortOrder FROM prior.Notes",
+      null,
+    ).use { cursor ->
+      while (cursor.moveToNext()) {
+        statement.clearBindings()
+        statement.bindLong(1, cursor.getLong(0))
+        bind(statement, 2, cursor, 1)
+        bind(statement, 3, cursor, 2)
+        val title = cursor.getString(3)
+        statement.bindString(4, title)
+        statement.bindString(5, title.lowercase(Locale.ROOT))
+        if (cursor.isNull(4)) {
+          statement.bindNull(6)
+          statement.bindString(7, "")
+        } else {
+          val content = cursor.getString(4)
+          statement.bindString(6, content)
+          statement.bindString(7, content.lowercase(Locale.ROOT))
+        }
+        bind(statement, 8, cursor, 5)
+        bind(statement, 9, cursor, 6)
+        if (cursor.isNull(7)) statement.bindString(10, cursor.getString(6)) else bind(statement, 10, cursor, 7)
+        if (cursor.isNull(8)) statement.bindLong(11, 0L) else bind(statement, 11, cursor, 8)
+        statement.executeInsert()
+      }
     }
   }
 
@@ -957,15 +1155,27 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   }
 
   private fun importReceiptResult(db: SQLiteDatabase, key: String): com.facebook.react.bridge.WritableMap? {
+    return if (isFullReplacementReceipt(db, key)) replacementReceiptResult(db, key) else selectiveReceiptResult(db, key)
+  }
+
+  private fun isFullReplacementReceipt(db: SQLiteDatabase, key: String): Boolean =
+    db.rawQuery("SELECT selectedNoteIds FROM BackupImportReceipts WHERE operationKey=?", arrayOf(key)).use {
+      it.moveToFirst() && it.getString(0) == "__full_replacement__"
+    }
+
+  private fun selectiveReceiptResult(db: SQLiteDatabase, key: String): com.facebook.react.bridge.WritableMap? {
     return db.rawQuery("SELECT importedCount,recoveredCount,skippedCount,restrictedAudioCount,restrictedFileCount FROM BackupImportReceipts WHERE operationKey=?", arrayOf(key)).use {
       if (it.moveToFirst()) importResult(true, it.getInt(0), it.getInt(1), it.getInt(2), it.getInt(3), it.getInt(4)) else null
     }
   }
 
-  private fun receiptRestrictions(db: SQLiteDatabase, key: String): Pair<Int, Int> =
-    db.rawQuery("SELECT restrictedAudioCount,restrictedFileCount FROM BackupImportReceipts WHERE operationKey=?", arrayOf(key)).use {
-      if (it.moveToFirst()) it.getInt(0) to it.getInt(1) else 0 to 0
+  private fun replacementReceiptResult(db: SQLiteDatabase, key: String): com.facebook.react.bridge.WritableMap? {
+    return db.rawQuery("SELECT importedCount,restrictedAudioCount,restrictedFileCount,safetySnapshotId FROM BackupImportReceipts WHERE operationKey=?", arrayOf(key)).use {
+      if (!it.moveToFirst()) return null
+      val snapshotId = it.getString(3) ?: return null
+      replacementResult(true, it.getInt(0), snapshotId, it.getInt(1), it.getInt(2))
     }
+  }
 
   private fun importResult(alreadyCommitted: Boolean, imported: Int, recovered: Int, skipped: Int = 0, restrictedAudio: Int = 0, restrictedFiles: Int = 0) = Arguments.createMap().apply {
     putBoolean("alreadyCommitted", alreadyCommitted); putInt("importedCount", imported); putInt("recoveredCount", recovered); putInt("skippedCount", skipped)
@@ -1219,8 +1429,12 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   private fun materialize(uri: String, target: File, limit: Long): File { open(uri).use { input -> FileOutputStream(target).use { copyBounded(input, it, limit) } }; return target }
   private fun materializeDigest(uri: String, target: File, limit: Long): Digest = open(uri).use { input -> FileOutputStream(target).use { copyAndHash(input, it, limit, null) } }
   private fun copyToUri(source: File, uri: String) { FileInputStream(source).use { input -> openOutput(uri).use { output -> input.copyTo(output, BUFFER_SIZE) } } }
-  private fun open(uri: String): InputStream =
-    (if (uri.startsWith("content:")) context.contentResolver.openInputStream(Uri.parse(uri)) else FileInputStream(fileFromUri(uri)))
+  private fun open(uri: String): InputStream = when {
+    uri.startsWith("gdrive:") -> DriveClient.idFromUri(uri)?.let { DriveClient(context).download(it) }
+      ?: fail("INVALID_URI", "Invalid Google Drive archive URI")
+    uri.startsWith("content:") -> context.contentResolver.openInputStream(Uri.parse(uri))
+    else -> FileInputStream(fileFromUri(uri))
+  }
       ?: fail("SOURCE_UNAVAILABLE", "Cannot open source URI")
   private fun openOutput(uri: String): OutputStream =
     (if (uri.startsWith("content:")) context.contentResolver.openOutputStream(Uri.parse(uri), "wt") else FileOutputStream(fileFromUri(uri)))
@@ -1246,7 +1460,11 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   private fun bind(statement: android.database.sqlite.SQLiteStatement, bindIndex: Int, cursor: Cursor, column: Int) { when (cursor.getType(column)) { Cursor.FIELD_TYPE_NULL -> statement.bindNull(bindIndex); Cursor.FIELD_TYPE_INTEGER -> statement.bindLong(bindIndex, cursor.getLong(column)); Cursor.FIELD_TYPE_FLOAT -> statement.bindDouble(bindIndex, cursor.getDouble(column)); Cursor.FIELD_TYPE_BLOB -> statement.bindBlob(bindIndex, cursor.getBlob(column)); else -> statement.bindString(bindIndex, cursor.getString(column)) } }
   private fun scalarCount(db: SQLiteDatabase, query: String): Long = db.rawQuery(query, null).use { if (it.moveToFirst()) it.getLong(0) else 0L }
   private fun ReadableMap.optionalString(key: String): String? = if (hasKey(key) && !isNull(key)) getString(key) else null
-  private fun errorCode(error: Throwable) = (error as? ArchiveException)?.code ?: "ARCHIVE_OPERATION_FAILED"
+  private fun errorCode(error: Throwable) = when (error) {
+    is ArchiveException -> error.code
+    is DriveException -> error.code
+    else -> "ARCHIVE_OPERATION_FAILED"
+  }
   private fun fail(code: String, message: String, cause: Throwable? = null): Nothing = throw ArchiveException(code, message, cause)
 
   private data class MediaSource(val portableId: String, val uri: String, val kind: String)

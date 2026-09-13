@@ -1,18 +1,31 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import { backupDatabaseAsync, deleteDatabaseAsync, openDatabaseAsync } from 'expo-sqlite';
-import { BackupOperationCoordinator, SqliteBackupOperationStore, type BackupOperationHandler } from '../backup';
+import type { BackupOperationHandler } from '../backup';
 import { getDb } from '../database/schema';
+import {
+  backupOperationCoordinator as coordinator,
+  backupOperationStore as operationStore,
+  registerBackupOperationHandler,
+} from './backupOperations';
 import {
   applyManagedArchiveRetention,
   createArchive,
   pinMedia,
+  scanBackupCollection,
   validateArchive,
   type ArchiveMediaSource,
   type ArchiveSummary,
   type ManagedRetentionResult,
 } from './archive';
-import { publishBackupArchive, type PublishedBackup } from './backupFolder';
+import {
+  acquireBackupForegroundServiceLease,
+  publishBackupArchive,
+  releaseBackupForegroundService,
+  type PublishedBackup,
+} from './backupFolder';
+import { refreshBackupDiscovery } from './backupDiscovery';
+import { withMediaDeletionPaused } from '../utils/mediaFiles';
 
 export type ExportProgress =
   | 'capturing'
@@ -41,17 +54,20 @@ const safeTimestamp = (value: string) => value.replace(/[:.]/g, '-');
 const safeIdentity = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '-');
 const operationId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-const captureContent = async (directoryUri: string): Promise<Capture> => {
-  const db = await getDb();
-  const databaseName = `${operationId()}.db`;
-  const snapshot = await openDatabaseAsync(databaseName, { useNewConnection: true });
-  try {
-    let capture: Capture | null = null;
-    await db.withExclusiveTransactionAsync(async (transaction) => {
-      const revisionRow = await transaction.getFirstAsync<{ revision: number }>(
+const captureContent = async (directoryUri: string): Promise<Capture> =>
+  withMediaDeletionPaused(async () => {
+    const db = await getDb();
+    const databaseName = `${operationId()}.db`;
+    const snapshot = await openDatabaseAsync(databaseName, { useNewConnection: true });
+    try {
+      // SQLite's online backup creates a consistent snapshot without holding an
+      // exclusive transaction on the live database. Read the media inventory
+      // from that snapshot so note edits remain responsive during pinning.
+      await backupDatabaseAsync({ sourceDatabase: db, destDatabase: snapshot });
+      const revisionRow = await snapshot.getFirstAsync<{ revision: number }>(
         'SELECT revision FROM ContentMetadata WHERE id = 1;',
       );
-      const rows = await transaction.getAllAsync<MediaRow>(`
+      const rows = await snapshot.getAllAsync<MediaRow>(`
         SELECT portableId, uri, 'audio' AS kind FROM NoteAudios
         UNION ALL
         SELECT portableId, uri, 'file' AS kind FROM NoteFiles;
@@ -61,20 +77,16 @@ const captureContent = async (directoryUri: string): Promise<Capture> => {
         sourceUri: row.uri,
         kind: row.kind,
       })) });
-      await backupDatabaseAsync({ sourceDatabase: db, destDatabase: snapshot });
-      capture = {
+      return {
         databaseName,
         databaseUri: `file://${snapshot.databasePath}`,
         media: pinned,
         revision: Number(revisionRow?.revision ?? 0),
       };
-    });
-    if (!capture) throw new Error('CAPTURE_FAILED');
-    return capture;
-  } finally {
-    await snapshot.closeAsync();
-  }
-};
+    } finally {
+      await snapshot.closeAsync();
+    }
+  });
 
 const sameInventory = (left: ArchiveSummary, right: ArchiveSummary) =>
   left.archiveSha256 === right.archiveSha256 &&
@@ -99,6 +111,7 @@ const executeExport = async (
   await FileSystem.makeDirectoryAsync(work, { intermediates: true });
   let capture: Capture | null = null;
   try {
+    console.info(`[BR-EXPORT] started name=${name}`);
     onProgress('capturing');
     capture = await captureContent(work);
     onProgress('building');
@@ -126,7 +139,11 @@ const executeExport = async (
       contentRevision: capture.revision,
     } satisfies VerifiedBackup;
     await AsyncStorage.setItem('backup.lastVerified', JSON.stringify(verified));
+    console.info(`[BR-EXPORT] verified uri=${verified.uri} bytes=${verified.bytes}`);
     return verified;
+  } catch (error) {
+    console.warn('[BR-EXPORT] failed after remote publication may have occurred:', error);
+    throw error;
   } finally {
     if (capture) await deleteDatabaseAsync(capture.databaseName);
     await FileSystem.deleteAsync(work, { idempotent: true });
@@ -134,10 +151,7 @@ const executeExport = async (
 };
 
 class ExportOperationHandler implements BackupOperationHandler {
-  constructor(
-    private readonly requiresForegroundContext: boolean,
-    private readonly retryTransientFailures = false,
-  ) {}
+  constructor(private readonly retryTransientFailures = false) {}
 
   progress: ((progress: ExportProgress) => void) | null = null;
   verified: VerifiedBackup | null = null;
@@ -147,9 +161,6 @@ class ExportOperationHandler implements BackupOperationHandler {
   }
 
   async runStep({ operation, idempotencyKey }: Parameters<BackupOperationHandler['runStep']>[0]) {
-    if (this.requiresForegroundContext && !this.progress) {
-      return { outcome: 'failed', code: 'EXPORT_INTERRUPTED', message: 'Export context was lost.' } as const;
-    }
     try {
       this.verified = await executeExport(this.progress ?? undefined, {
         key: idempotencyKey,
@@ -168,17 +179,37 @@ class ExportOperationHandler implements BackupOperationHandler {
     }
   }
 
-  async recoverInterruptedStep() {
-    return {
-      outcome: 'unknown',
-      code: 'EXPORT_INTERRUPTED',
-      message: 'The app stopped before provider verification completed.',
-    } as const;
+  async recoverInterruptedStep({ operation, idempotencyKey }: Parameters<BackupOperationHandler['recoverInterruptedStep']>[0]) {
+    try {
+      const expectedName = `peacock-notes-${safeTimestamp(operation.createdAt)}-${safeIdentity(idempotencyKey)}.pnbak`;
+      // Recovery is the exceptional path where every candidate must be
+      // trusted. Normal screen discovery uses the lightweight cached scan.
+      const collection = await scanBackupCollection(true);
+      const candidate = collection.archives.find((archive) => archive.name === expectedName && archive.state === 'valid');
+      if (!candidate) return { outcome: 'not_committed' } as const;
+      const summary = await validateArchive({ archiveUri: candidate.uri });
+      const verified = {
+        name: candidate.name,
+        uri: candidate.uri,
+        createdAt: summary.createdAt || operation.createdAt,
+        bytes: summary.archiveBytes,
+        contentRevision: summary.contentRevision,
+      } satisfies VerifiedBackup;
+      await AsyncStorage.setItem('backup.lastVerified', JSON.stringify(verified));
+      this.verified = verified;
+      return { outcome: 'committed', checkpoint: 'verified', done: true } as const;
+    } catch (error: unknown) {
+      return {
+        outcome: 'unknown',
+        code: 'EXPORT_RECOVERY_UNKNOWN',
+        message: error instanceof Error ? error.message : 'The prior export state could not be verified.',
+      } as const;
+    }
   }
 }
 
-const exportHandler = new ExportOperationHandler(true);
-const automaticExportHandler = new ExportOperationHandler(false);
+const exportHandler = new ExportOperationHandler();
+const automaticExportHandler = new ExportOperationHandler(true);
 class ManagedRetentionHandler implements BackupOperationHandler {
   result: ManagedRetentionResult | null = null;
 
@@ -206,17 +237,9 @@ class ManagedRetentionHandler implements BackupOperationHandler {
   }
 }
 const managedRetentionHandler = new ManagedRetentionHandler();
-const unavailableHandler: BackupOperationHandler = {
-  async nextStep() { return null; },
-  async runStep() { return { outcome: 'failed', code: 'UNAVAILABLE', message: 'Operation is unavailable.' }; },
-  async recoverInterruptedStep() { return { outcome: 'not_committed' }; },
-};
-const coordinator = new BackupOperationCoordinator(new SqliteBackupOperationStore(), {
-  export: exportHandler,
-  import: unavailableHandler,
-  managed_retention: managedRetentionHandler,
-  automatic_backup: automaticExportHandler,
-}, { maxAttemptsPerStep: 3 });
+registerBackupOperationHandler('export', exportHandler);
+registerBackupOperationHandler('automatic_backup', automaticExportHandler);
+registerBackupOperationHandler('managed_retention', managedRetentionHandler);
 
 export type ManagedRetentionState = Readonly<{
   status: 'applied' | 'nothing_to_prune' | 'scan_incomplete' | 'policy_restricted' | 'provider_failed' | 'failed';
@@ -242,13 +265,58 @@ export const getManagedRetentionState = async (): Promise<ManagedRetentionState 
   }
 };
 
+export const getLastVerifiedBackup = async (): Promise<VerifiedBackup | null> => {
+  const stored = await AsyncStorage.getItem('backup.lastVerified');
+  if (!stored) return null;
+  try {
+    const parsed = JSON.parse(stored) as Partial<VerifiedBackup>;
+    return typeof parsed.name === 'string' && typeof parsed.uri === 'string' &&
+      typeof parsed.createdAt === 'string' && typeof parsed.bytes === 'number' &&
+      typeof parsed.contentRevision === 'number'
+      ? parsed as VerifiedBackup
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Remove the persisted success pointer when its remote archive is deleted.
+ * The Drive collection is independently cached, so leaving this pointer in
+ * AsyncStorage would resurrect a deleted archive's success banner after a
+ * process restart and could also make automatic-backup policy treat it as a
+ * current recovery point.
+ */
+export const clearLastVerifiedBackupIfDeleted = async (deletedUris: readonly string[]) => {
+  if (deletedUris.length === 0) return;
+  const lastVerified = await getLastVerifiedBackup();
+  if (lastVerified && deletedUris.includes(lastVerified.uri)) {
+    await AsyncStorage.removeItem('backup.lastVerified');
+    console.info(`[BR-EXPORT] cleared deleted lastVerified uri=${lastVerified.uri}`);
+  }
+};
+
+export const resumePendingExportOperation = async () => {
+  const active = await operationStore.getActive();
+  if (!active || (active.kind !== 'export' && active.kind !== 'automatic_backup' && active.kind !== 'managed_retention')) {
+    return null;
+  }
+  exportHandler.progress = null;
+  exportHandler.verified = null;
+  automaticExportHandler.verified = null;
+  managedRetentionHandler.result = null;
+  return coordinator.resume(['export', 'automatic_backup', 'managed_retention']);
+};
+
 export const runManagedRetention = async (): Promise<ManagedRetentionState> => {
-  await coordinator.resume();
+  console.info('[BR-RETENTION] started');
+  await coordinator.resume(['export', 'automatic_backup', 'managed_retention']);
   managedRetentionHandler.result = null;
   const operation = await coordinator.start(operationId(), 'managed_retention', '{"version":1}');
   const result = managedRetentionHandler.result as ManagedRetentionResult | null;
   const updatedAt = new Date().toISOString();
   if (operation.state === 'succeeded' && result) {
+    console.info(`[BR-RETENTION] completed deleted=${result.deletedCount}`);
     return storeRetentionState({
       status: result.status,
       deletedCount: result.deletedCount,
@@ -266,7 +334,7 @@ export const runManagedRetention = async (): Promise<ManagedRetentionState> => {
 };
 
 export const runAutomaticExport = async (): Promise<VerifiedBackup> => {
-  await coordinator.resume();
+  await coordinator.resume(['export', 'automatic_backup', 'managed_retention']);
   automaticExportHandler.verified = null;
   const operation = await coordinator.start(operationId(), 'automatic_backup', '{"version":1}');
   if (operation.state !== 'succeeded' || !automaticExportHandler.verified) {
@@ -275,14 +343,28 @@ export const runAutomaticExport = async (): Promise<VerifiedBackup> => {
     throw error;
   }
   const verified = automaticExportHandler.verified;
-  await runManagedRetention();
+  // The remote archive is already read-back verified at this point. Retention
+  // and discovery are follow-up housekeeping and must not turn that committed
+  // automatic backup into a failed/stuck operation when Drive metadata or a
+  // later scan is temporarily unavailable.
+  try {
+    await runManagedRetention();
+  } catch (error) {
+    console.warn('[BR-AUTO] retention after verified export failed:', error);
+  }
+  try {
+    await refreshBackupDiscovery();
+  } catch (error) {
+    console.warn('[BR-AUTO] discovery refresh after verified export failed:', error);
+  }
   return verified;
 };
 
 export const exportBackup = async (
   onProgress: (progress: ExportProgress) => void,
 ): Promise<VerifiedBackup> => {
-  await coordinator.resume();
+  console.info('[BR-EXPORT] coordinator start');
+  await coordinator.resume(['export', 'automatic_backup', 'managed_retention']);
   exportHandler.progress = onProgress;
   exportHandler.verified = null;
   try {
@@ -293,7 +375,22 @@ export const exportBackup = async (
       throw error;
     }
     const verified = exportHandler.verified;
-    await runManagedRetention();
+    console.info('[BR-EXPORT] coordinator committed; retention detached');
+    // Retention validates every existing remote archive. It is important, but
+    // it must not make a completed, read-back-verified backup look stuck.
+    // Retention is intentionally asynchronous so the verified export can be
+    // shown immediately, but it still belongs to the same foreground work.
+    // Hold a lease across the gap before its durable row is created; otherwise
+    // the export wrapper could stop the shared service between phases.
+    acquireBackupForegroundServiceLease();
+    void runManagedRetention()
+      .then(() => refreshBackupDiscovery())
+      .catch((error: unknown) => {
+        console.warn('Managed retention after export failed:', error);
+      })
+      .finally(() => releaseBackupForegroundService(true).catch((error: unknown) => {
+        console.warn('Failed to finish backup notification:', error);
+      }));
     return verified;
   } finally {
     exportHandler.progress = null;

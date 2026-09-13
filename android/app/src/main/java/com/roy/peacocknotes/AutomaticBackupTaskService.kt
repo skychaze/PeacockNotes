@@ -4,6 +4,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import com.facebook.react.bridge.Arguments
@@ -32,7 +33,11 @@ class AutomaticBackupTaskService : HeadlessJsTaskService() {
       .setContentText("Automatic backup is continuing")
       .setOngoing(true)
       .build()
-    startForeground(NOTIFICATION_ID, notification)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+    } else {
+      startForeground(NOTIFICATION_ID, notification)
+    }
   }
 
   override fun getTaskConfig(intent: Intent?): HeadlessJsTaskConfig = HeadlessJsTaskConfig(
@@ -41,4 +46,10 @@ class AutomaticBackupTaskService : HeadlessJsTaskService() {
     30 * 60 * 1000L,
     true,
   )
+
+  override fun onHeadlessJsTaskFinish(taskId: Int) {
+    super.onHeadlessJsTaskFinish(taskId)
+    stopForeground(true)
+    stopSelf()
+  }
 }

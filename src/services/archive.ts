@@ -150,6 +150,8 @@ type NativeArchiveModule = {
   createArchive(request: CreateArchiveRequest): Promise<ArchiveSummary>;
   validateArchive(request: ValidateArchiveRequest): Promise<ArchiveSummary>;
   scanConnectedFolder(): Promise<BackupCollectionScan>;
+  scanConnectedFolderDeep(): Promise<BackupCollectionScan>;
+  deleteArchives(request: Readonly<{ uris: readonly string[] }>): Promise<Readonly<{ deletedCount: number }>>;
   applyManagedRetention(): Promise<ManagedRetentionResult>;
   previewImport(request: Readonly<{ archiveUri: string }>): Promise<ImportPreview>;
   commitSelectiveImport(request: CommitSelectiveImportRequest): Promise<ImportResult>;
@@ -158,7 +160,7 @@ type NativeArchiveModule = {
   getFullReplacementUndo(): Promise<FullReplacementUndo>;
   undoFullReplacement(request: Readonly<{ snapshotId: string }>): Promise<FullReplacementUndoResult>;
   hasFullReplacementUndoReceipt(request: Readonly<{ snapshotId: string }>): Promise<Readonly<{ committed: boolean }>>;
-  hasImportReceipt(request: Readonly<{ databaseUri: string; operationKey: string }>): Promise<Readonly<{ committed: boolean }>>;
+  getImportReceiptResult(request: Readonly<{ databaseUri: string; operationKey: string }>): Promise<ImportResult | FullReplacementResult | null>;
 };
 
 const nativeArchive = NativeModules.Archive as NativeArchiveModule | undefined;
@@ -179,8 +181,14 @@ export const createArchive = (request: CreateArchiveRequest): Promise<ArchiveSum
 export const validateArchive = (request: ValidateArchiveRequest): Promise<ArchiveSummary> =>
   moduleOrThrow().validateArchive(request);
 
-export const scanBackupCollection = (): Promise<BackupCollectionScan> =>
-  moduleOrThrow().scanConnectedFolder();
+export const scanBackupCollection = (deepValidation = false): Promise<BackupCollectionScan> =>
+  deepValidation ? moduleOrThrow().scanConnectedFolderDeep() : moduleOrThrow().scanConnectedFolder();
+
+export const deleteBackupArchives = async (uris: readonly string[]): Promise<number> => {
+  if (uris.length === 0) return 0;
+  const result = await moduleOrThrow().deleteArchives({ uris });
+  return result.deletedCount;
+};
 
 export const applyManagedArchiveRetention = (): Promise<ManagedRetentionResult> =>
   moduleOrThrow().applyManagedRetention();
@@ -206,5 +214,8 @@ export const commitFullReplacementUndo = (snapshotId: string): Promise<FullRepla
 export const hasFullReplacementUndoReceipt = (snapshotId: string): Promise<boolean> =>
   moduleOrThrow().hasFullReplacementUndoReceipt({ snapshotId }).then((result) => result.committed);
 
-export const hasArchiveImportReceipt = (databaseUri: string, operationKey: string): Promise<boolean> =>
-  moduleOrThrow().hasImportReceipt({ databaseUri, operationKey }).then((result) => result.committed);
+export const getArchiveImportReceiptResult = (
+  databaseUri: string,
+  operationKey: string,
+): Promise<ImportResult | FullReplacementResult | null> =>
+  moduleOrThrow().getImportReceiptResult({ databaseUri, operationKey });

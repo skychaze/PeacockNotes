@@ -78,15 +78,28 @@ export const getAutomaticBackupState = () => requireModule().getState();
 export const setAutomaticBackupEnabled = (enabled: boolean) => requireModule().setEnabled(enabled);
 
 let activeAttempt: Promise<AutomaticBackupState> | null = null;
+let driveAuthorizationInProgress = false;
+let automaticCatchUpSuppressedUntil = 0;
+
+/**
+ * OAuth temporarily backgrounds/resumes the JS app. Treat that lifecycle
+ * transition as authentication plumbing, not as a signal to start a backup.
+ * A short post-auth cooldown also covers the ordering where AppState's active
+ * event is delivered just after the authorization promise resolves.
+ */
+export const setAutomaticBackupAuthorizationInProgress = (inProgress: boolean) => {
+  driveAuthorizationInProgress = inProgress;
+  if (!inProgress) automaticCatchUpSuppressedUntil = Date.now() + 5_000;
+};
 
 const runAutomaticBackupAttempt = async (): Promise<AutomaticBackupState> => {
   const native = requireModule();
   let state = await native.getState();
-  if (!state.enabled) return state;
+  if (!state.enabled || driveAuthorizationInProgress) return state;
 
   const [revision, verified] = await Promise.all([getContentRevision(), readLastVerified()]);
   state = await native.getState();
-  if (!state.enabled) return state;
+  if (!state.enabled || driveAuthorizationInProgress) return state;
 
   const lastVerifiedAt = verified ? Date.parse(verified.createdAt) : null;
   if (!isAutomaticBackupDue({
@@ -104,7 +117,7 @@ const runAutomaticBackupAttempt = async (): Promise<AutomaticBackupState> => {
     getBackupFolderState(), native.constraintsMet(),
   ]);
   state = await native.getState();
-  if (!state.enabled) return state;
+  if (!state.enabled || driveAuthorizationInProgress) return state;
   if (folder.status !== 'connected') {
     const phase = folder.status === 'unavailable' ? 'provider' : 'permission';
     await native.setStatus(phase, 0, folder.status);
@@ -121,7 +134,7 @@ const runAutomaticBackupAttempt = async (): Promise<AutomaticBackupState> => {
 
   for (let attempt = 1; attempt <= MAX_AUTOMATIC_BACKUP_ATTEMPTS; attempt += 1) {
     state = await native.getState();
-    if (!state.enabled) return state;
+    if (!state.enabled || driveAuthorizationInProgress) return state;
     await native.setStatus('running', attempt, null);
     try {
       await runAutomaticExport();
@@ -129,6 +142,14 @@ const runAutomaticBackupAttempt = async (): Promise<AutomaticBackupState> => {
       return native.getState();
     } catch (error: unknown) {
       const code = errorCode(error);
+      if (code === 'BACKUP_OPERATION_BUSY') {
+        // A manual import/export (or another automatic worker) owns the
+        // single durable slot. Do not report this as a permanent provider
+        // failure and do not start a second job; leave a recoverable status
+        // for the next lifecycle/WorkManager attempt.
+        await native.setStatus('retrying', attempt, code);
+        return native.getState();
+      }
       const willRetry = shouldRetryAutomaticBackup(code, attempt);
       if (!willRetry) {
         await native.setStatus(failurePhase(code), attempt, code);
@@ -148,6 +169,10 @@ export const attemptAutomaticBackup = (): Promise<AutomaticBackupState> => {
 };
 
 const attemptWithoutUnhandledRejection = () => {
+  if (driveAuthorizationInProgress || Date.now() < automaticCatchUpSuppressedUntil) {
+    console.info('[BR-AUTO] skipped AppState catch-up during Drive authorization transition');
+    return;
+  }
   void attemptAutomaticBackup().catch((error: unknown) => {
     console.warn('Automatic backup catch-up failed:', error);
   });

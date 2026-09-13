@@ -154,6 +154,27 @@ export async function testRestartRecoversWithoutRepeatingStep() {
   assert(executions === 0, 'restart repeated a possibly committed step');
 }
 
+export async function testResumeRejectsAnOperationOwnedByAnotherHandler() {
+  const store = new MemoryStore();
+  const created = await store.create({ id: 'active-import', kind: 'import', payload: '{}' }, 'now');
+  await store.update(created.id, created.version, {
+    state: 'running', activeStep: 'commit', activeStepKey: 'active-import-key', attempt: 1,
+  }, 'later');
+  const handler: BackupOperationHandler = {
+    async nextStep() { throw new Error('wrong handler was allowed to drive the operation'); },
+    async runStep() { return { outcome: 'committed', checkpoint: 'done', done: true }; },
+    async recoverInterruptedStep() { return { outcome: 'not_committed' }; },
+  };
+  let rejected = false;
+  try {
+    await new BackupOperationCoordinator(store, handlers(handler)).resume(['export']);
+  } catch (error) {
+    rejected = error instanceof Error && error.name === 'BackupOperationBusyError';
+  }
+  assert(rejected, 'resume drove an operation owned by another handler');
+  assert((await store.getActive())?.kind === 'import', 'foreign operation was changed');
+}
+
 export async function testInterruptedReplacementRollsBackBeforeRetry() {
   const store = new MemoryStore();
   const created = await store.create({ id: 'replacement', kind: 'import', payload: '{"mode":"replacement"}' }, 'now');
@@ -180,6 +201,36 @@ export async function testInterruptedReplacementRollsBackBeforeRetry() {
   );
 }
 
+export async function testHandlerPlanningFailureIsTerminal() {
+  const store = new MemoryStore();
+  const handler: BackupOperationHandler = {
+    async nextStep() { throw new Error('malformed payload'); },
+    async runStep() { return { outcome: 'committed', checkpoint: 'never' }; },
+    async recoverInterruptedStep() { return { outcome: 'not_committed' }; },
+  };
+  const result = await new BackupOperationCoordinator(store, handlers(handler)).start('planning-failure', 'export', '{}');
+  assert(result.state === 'failed', 'planning failure did not become terminal');
+  assert(result.errorCode === 'step_planning_failed', 'planning failure lost its error code');
+  assert((await store.getActive()) === null, 'planning failure left an active operation behind');
+}
+
+export async function testRecoveryThrowIsTerminalAndRetryable() {
+  const store = new MemoryStore();
+  const created = await store.create({ id: 'recovery-failure', kind: 'export', payload: '{}' }, 'now');
+  await store.update(created.id, created.version, {
+    state: 'running', activeStep: 'publish', activeStepKey: 'recovery-key', attempt: 1,
+  }, 'later');
+  const handler: BackupOperationHandler = {
+    async nextStep() { return null; },
+    async runStep() { return { outcome: 'committed', checkpoint: 'never' }; },
+    async recoverInterruptedStep() { throw new Error('Drive unavailable'); },
+  };
+  const result = await new BackupOperationCoordinator(store, handlers(handler)).resume();
+  assert(result?.state === 'interrupted', 'recovery throw did not become interrupted');
+  assert(result?.errorCode === 'recovery_threw', 'recovery throw lost its error code');
+  assert((await store.getActive()) === null, 'recovery throw left an active operation behind');
+}
+
 export function testUndoWindowExactBoundary() {
   const expiresAt = 168 * 60 * 60 * 1000;
   assert(isWithinFullReplacementUndoWindow(expiresAt, expiresAt - 1), 'undo expired before 168 hours');
@@ -193,7 +244,10 @@ export async function runCoordinatorTests() {
   await testExplicitRetryReusesIdempotencyKey();
   await testCancellationWaitsForBoundary();
   await testRestartRecoversWithoutRepeatingStep();
+  await testResumeRejectsAnOperationOwnedByAnotherHandler();
   await testInterruptedReplacementRollsBackBeforeRetry();
+  await testHandlerPlanningFailureIsTerminal();
+  await testRecoveryThrowIsTerminalAndRetryable();
   testUndoWindowExactBoundary();
 }
 

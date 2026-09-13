@@ -9,6 +9,18 @@ export type FolderListItem = Folder & {
   noteCount: number;
 };
 
+export type NoteListItem = {
+  id: number;
+  portableId: string;
+  folderId: number;
+  title: string;
+  contentPreview: string;
+  audioCount: number;
+  fileCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type Note = {
   id: number;
   portableId: string;

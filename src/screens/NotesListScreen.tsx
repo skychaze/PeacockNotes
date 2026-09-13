@@ -1,7 +1,7 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GestureResponderEvent } from 'react-native';
 import { Alert, FlatList, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -30,7 +30,7 @@ import {
 import { useLanguage } from '../i18n/LanguageContext';
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
-import type { Note } from '../types/models';
+import type { NoteListItem } from '../types/models';
 import type { RootStackParamList } from '../types/navigation';
 import { formatMetaDate } from '../utils/dateFormat';
 import type { RouteProp } from '@react-navigation/native';
@@ -48,32 +48,49 @@ export const NotesListScreen = () => {
   const { t, language } = useLanguage();
   const insets = useSafeAreaInsets();
   const entrance = useEntrance();
-  const [notes, setNotes] = useState<Note[]>([]);
+  const [notes, setNotes] = useState<NoteListItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchQueryForSearch, setSearchQueryForSearch] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [sortField, setSortField] = useState<SortField>('custom');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [isReorderMode, setIsReorderMode] = useState(false);
   const [activeSheet, setActiveSheet] = useState<ActiveSheet>('none');
-  const [actionsNote, setActionsNote] = useState<Note | null>(null);
+  const [actionsNote, setActionsNote] = useState<NoteListItem | null>(null);
+  const refreshRequestRef = useRef(0);
   const fabBottom = Math.max(insets.bottom + 12, 22);
   const listBottomPadding = Math.max(insets.bottom + 104, 126);
 
   const { folderId, folderName } = route.params;
 
+  useEffect(() => {
+    const timer = setTimeout(() => setSearchQueryForSearch(searchQuery), 150);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
   const closeSheet = useCallback(() => setActiveSheet('none'), []);
 
   const refreshNotes = useCallback(async () => {
+    const requestId = refreshRequestRef.current + 1;
+    refreshRequestRef.current = requestId;
     try {
-      const result = await listNotesByFolder(folderId, { field: sortField, direction: sortDirection });
-      setNotes(result);
+      const result = await listNotesByFolder(
+        folderId,
+        { field: sortField, direction: sortDirection },
+        searchQueryForSearch
+      );
+      if (requestId === refreshRequestRef.current) {
+        setNotes(result);
+      }
     } catch (error) {
       console.warn('Failed to load notes:', error);
       Alert.alert(t('common.error'), t('notes.loadError'));
     } finally {
-      setIsLoading(false);
+      if (requestId === refreshRequestRef.current) {
+        setIsLoading(false);
+      }
     }
-  }, [folderId, sortDirection, sortField, t]);
+  }, [folderId, searchQueryForSearch, sortDirection, sortField, t]);
 
   useFocusEffect(
     useCallback(() => {
@@ -81,7 +98,7 @@ export const NotesListScreen = () => {
     }, [refreshNotes])
   );
 
-  const onDeleteNote = (note: Note) => {
+  const onDeleteNote = (note: NoteListItem) => {
     Alert.alert(t('notes.deleteTitle'), t('notes.deleteBody', { title: note.title }), [
       { text: t('common.cancel'), style: 'cancel' },
       {
@@ -99,19 +116,6 @@ export const NotesListScreen = () => {
       },
     ]);
   };
-
-  const filteredNotes = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (!query) {
-      return notes;
-    }
-
-    return notes.filter((note) => {
-      const title = note.title.toLowerCase();
-      const content = note.content.toLowerCase();
-      return title.includes(query) || content.includes(query);
-    });
-  }, [notes, searchQuery]);
 
   const isSearchActive = searchQuery.trim().length > 0;
   const canReorder = sortField === 'custom' && isReorderMode && !isSearchActive;
@@ -163,7 +167,7 @@ export const NotesListScreen = () => {
     <ScreenContainer>
       <View style={{ flex: 1, paddingHorizontal: ui.space.lg }}>
         <FlatList
-          data={filteredNotes}
+          data={notes}
           keyExtractor={(item) => String(item.id)}
           contentContainerStyle={{
             paddingTop: insets.top + ui.space.sm + TOP_BAR_HEIGHT + ui.space.md,
@@ -236,7 +240,7 @@ export const NotesListScreen = () => {
                       numberOfLines={2}
                       style={{ marginTop: ui.space.xs }}
                     >
-                      {item.content || t('common.noText')}
+                      {item.contentPreview || t('common.noText')}
                     </AppText>
                     <View
                       style={{
@@ -287,7 +291,7 @@ export const NotesListScreen = () => {
                       <IconButton
                         icon="arrow-down-bold"
                         size={18}
-                        disabled={!canReorder || index === filteredNotes.length - 1}
+                        disabled={!canReorder || index === notes.length - 1}
                         onPress={stopAnd(() => void onMoveNote(item.id, 'down'))}
                       />
                     </View>

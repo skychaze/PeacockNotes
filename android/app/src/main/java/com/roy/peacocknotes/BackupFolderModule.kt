@@ -1,31 +1,45 @@
 package com.roy.peacocknotes
 
 import android.app.Activity
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Intent
-import android.database.Cursor
+import android.content.Context
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.net.Uri
-import android.provider.DocumentsContract
-import android.provider.OpenableColumns
-import android.system.Os
-import com.facebook.react.bridge.ActivityEventListener
+import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.ActivityEventListener
 import com.facebook.react.bridge.Promise
+import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
-import com.facebook.react.bridge.ReadableMap
-import java.io.FileInputStream
+import java.io.File
+import java.util.concurrent.Executors
 
-class BackupFolderModule(
-  private val reactContext: ReactApplicationContext
-) : ReactContextBaseJavaModule(reactContext), ActivityEventListener {
+/** Preserves the JS BackupFolder API while backing it with Google Drive OAuth. */
+class BackupFolderModule(private val reactContext: ReactApplicationContext) :
+  ReactContextBaseJavaModule(reactContext), ActivityEventListener {
+
   companion object {
-    private const val PICK_FOLDER_REQUEST = 9402
-    private const val PREFERENCES = "peacock_notes_backup_folder"
-    private const val FOLDER_URI = "folder_uri"
+    const val PREFERENCES = "peacock_notes_backup_folder"
+    const val FOLDER_URI = "folder_uri"
+    private const val FOLDER_NAME = "Peacock Notes Backups"
+    private const val AUTH_REQUEST = 9402
+    private const val AUTH_TIMEOUT_MILLIS = 120_000L
+    private const val BACKUP_CHANNEL_ID = ManualBackupForegroundService.CHANNEL_ID
+    private const val BACKUP_NOTIFICATION_ID = ManualBackupForegroundService.NOTIFICATION_ID
   }
 
-  private var pickerPromise: Promise? = null
+  private val executor = Executors.newSingleThreadExecutor()
+  private val mainHandler = Handler(Looper.getMainLooper())
+  private var pending: Promise? = null
+  private var authorizationTimeout: Runnable? = null
 
   init {
     reactContext.addActivityEventListener(this)
@@ -34,226 +48,212 @@ class BackupFolderModule(
   override fun getName() = "BackupFolder"
 
   @ReactMethod
-  fun getFolderState(promise: Promise) {
-    promise.resolve(readFolderState())
+  fun getFolderState(promise: Promise) = executor.execute {
+    val saved = saved()
+    if (saved == null) {
+      promise.resolve(state("disconnected", null, null))
+      return@execute
+    }
+    runCatching {
+      DriveClient(reactContext).folder(saved.first)
+      state("connected", DriveClient.uri(saved.first), saved.second)
+    }.onSuccess(promise::resolve).onFailure {
+      val status = if ((it as? DriveException)?.code == "DRIVE_AUTH_REQUIRED") "revoked" else "unavailable"
+      promise.resolve(state(status, DriveClient.uri(saved.first), saved.second))
+    }
   }
 
   @ReactMethod
   fun chooseFolder(promise: Promise) {
-    if (pickerPromise != null) {
-      promise.reject("PICKER_ACTIVE", "The folder picker is already open.")
+    if (pending != null) {
+      promise.reject("PICKER_ACTIVE", "Google authorization is already open.")
       return
     }
-
-    val activity = reactContext.getCurrentActivity()
+    val activity = reactContext.currentActivity
     if (activity == null) {
-      promise.reject("ACTIVITY_UNAVAILABLE", "The folder picker is unavailable.")
+      promise.reject("ACTIVITY_UNAVAILABLE", "Google authorization is unavailable.")
       return
     }
-
-    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-      addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-      addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-      addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
-      storedUri()?.let { putExtra("android.provider.extra.INITIAL_URI", it) }
-    }
-
-    pickerPromise = promise
+    pending = promise
+    authorizationTimeout = Runnable {
+      rejectAuthorization(DriveException("DRIVE_AUTH_TIMEOUT", "Google Drive authorization timed out."))
+    }.also { mainHandler.postDelayed(it, AUTH_TIMEOUT_MILLIS) }
     try {
-      activity.startActivityForResult(intent, PICK_FOLDER_REQUEST)
-    } catch (error: Exception) {
-      pickerPromise = null
-      promise.reject("PICKER_UNAVAILABLE", "The folder picker could not be opened.", error)
+      DriveClient(reactContext).beginAuthorization(
+        activity,
+        AUTH_REQUEST,
+        completed = ::finishAuthorization,
+        failed = ::rejectAuthorization,
+      )
+    } catch (error: Throwable) {
+      rejectAuthorization(asDriveException(error, "DRIVE_AUTH_FAILED"))
     }
   }
 
   @ReactMethod
-  fun publishArchive(request: ReadableMap, promise: Promise) {
-    val folder = storedUri()
-    if (folder == null) {
-      promise.reject("FOLDER_NOT_CONNECTED", "No backup folder is connected.")
-      return
-    }
-    Thread {
-      var document: Uri? = null
-      try {
-        val stagedUri = requireString(request, "stagedUri")
-        val requestedName = requireString(request, "displayName")
-        val expectedBytes = requireNonNegativeLong(request, "expectedBytes")
-        val parent = DocumentsContract.buildDocumentUriUsingTree(
-          folder,
-          DocumentsContract.getTreeDocumentId(folder)
-        )
-        document = DocumentsContract.createDocument(
-          reactContext.contentResolver,
-          parent,
-          "application/octet-stream",
-          requestedName
-        ) ?: throw PublishException("PROVIDER_INTERRUPTED", "The provider did not create the backup document.")
-
-        reactContext.contentResolver.openFileDescriptor(document, "rw").use { descriptor ->
-          if (descriptor == null) throw PublishException("PROVIDER_INTERRUPTED", "The provider output is unavailable.")
-          val stats = try { Os.fstatvfs(descriptor.fileDescriptor) } catch (_: Exception) { null }
-          if (stats != null && stats.f_bavail * stats.f_bsize < expectedBytes) {
-            throw PublishException("DESTINATION_STORAGE_INSUFFICIENT", "The backup folder does not have enough free space.")
-          }
-        }
-
-        val source = if (stagedUri.startsWith("file:")) FileInputStream(Uri.parse(stagedUri).path!!) else
-          reactContext.contentResolver.openInputStream(Uri.parse(stagedUri))
-        source.use { input ->
-          if (input == null) throw PublishException("STAGING_MISSING", "The staged archive is missing.")
-          reactContext.contentResolver.openOutputStream(document, "wt").use { output ->
-            if (output == null) throw PublishException("PROVIDER_INTERRUPTED", "The provider output is unavailable.")
-            input.copyTo(output, 64 * 1024)
-            output.flush()
-          }
-        }
-        val actualName = displayName(document)
-        if (actualName != requestedName) {
-          throw PublishException("OUTPUT_RENAMED", "The provider stored '$actualName' instead of '$requestedName'.")
-        }
-        val actualBytes = reactContext.contentResolver.openAssetFileDescriptor(document, "r").use { it?.length ?: -1L }
-        if (actualBytes != expectedBytes) {
-          throw PublishException("PARTIAL_WRITE", "The provider stored an incomplete backup document.")
-        }
-        promise.resolve(Arguments.createMap().apply {
-          putString("uri", document.toString())
-          putString("name", actualName)
-        })
-      } catch (error: Exception) {
-        if (document != null && !DocumentsContract.deleteDocument(reactContext.contentResolver, document)) {
-          promise.reject("PARTIAL_OUTPUT_REMAINS", "Export failed and a partial document may remain in the backup folder.", error)
-        } else {
-          val code = (error as? PublishException)?.code ?: "PROVIDER_INTERRUPTED"
-          promise.reject(code, error.message, error)
-        }
+  fun publishArchive(request: ReadableMap, promise: Promise) = executor.execute {
+    runCatching {
+      val folder = saved() ?: throw DriveException("FOLDER_NOT_CONNECTED", "Google Drive is not connected.")
+      val staged = Uri.parse(string(request, "stagedUri"))
+      val sourcePath = staged.path.takeIf { staged.scheme == "file" }
+      val source: File = sourcePath?.let(::File)
+        ?: throw DriveException("STAGING_MISSING", "The staged archive is not a local file.")
+      val expected = request.getDouble("expectedBytes").toLong()
+      if (!source.isFile || source.length() != expected) {
+        throw DriveException("STAGING_MISSING", "The staged archive is missing.")
       }
-    }.start()
+      val displayName = string(request, "displayName")
+      val drive = DriveClient(reactContext)
+      val item = try {
+        drive.uploadResumable(
+          folder.first,
+          displayName,
+          source,
+          "application/octet-stream",
+        )
+      } catch (uploadError: Throwable) {
+        // A resumable PUT can commit remotely and then lose its response to a
+        // socket timeout/process interruption. Reconcile the deterministic
+        // operation name before reporting failure; this is the idempotency
+        // boundary for an otherwise-unknown upload outcome.
+        val reconciled = runCatching {
+          drive.list(folder.first).firstOrNull { it.name == displayName && it.size == expected }
+        }.getOrNull()
+        if (reconciled == null) throw uploadError
+        Log.i(
+          "BackupRuntime",
+          "[DEBUG-BR-DRIVE] publish_reconciled id=${reconciled.id} bytes=${reconciled.size}",
+        )
+        reconciled
+      }
+      Log.i("BackupRuntime", "[DEBUG-BR-DRIVE] publish_acknowledged id=${item.id} bytes=${item.size}")
+      if (item.size != expected) {
+        runCatching { DriveClient(reactContext).delete(item.id) }
+        throw DriveException("PARTIAL_WRITE", "Google Drive stored an incomplete archive.")
+      }
+      Arguments.createMap().apply {
+        putString("uri", DriveClient.uri(item.id))
+        putString("name", item.name)
+      }
+    }.onSuccess(promise::resolve).onFailure { error ->
+      promise.reject((error as? DriveException)?.code ?: "DRIVE_UPLOAD_FAILED", error.message, error)
+    }
+  }
+
+  /** Keeps the user informed while a foreground export is being staged, uploaded, and verified. */
+  @ReactMethod
+  fun startBackupForegroundService(promise: Promise) {
+    try {
+      ContextCompat.startForegroundService(
+        reactContext,
+        Intent(reactContext, ManualBackupForegroundService::class.java),
+      )
+      promise.resolve(null)
+    } catch (error: Exception) {
+      promise.reject("FOREGROUND_START_FAILED", error.message, error)
+    }
+  }
+
+  @ReactMethod
+  fun updateBackupNotification(message: String, progress: Double) {
+    val manager = reactContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      manager.createNotificationChannel(NotificationChannel(
+        BACKUP_CHANNEL_ID,
+        "Backup progress",
+        NotificationManager.IMPORTANCE_LOW,
+      ))
+    }
+    val percent = progress.toInt().coerceIn(0, 100)
+    manager.notify(BACKUP_NOTIFICATION_ID, NotificationCompat.Builder(reactContext, BACKUP_CHANNEL_ID)
+      .setSmallIcon(android.R.drawable.stat_sys_upload)
+      .setContentTitle("Peacock Notes backup")
+      .setContentText("$message ($percent%)")
+      .setProgress(100, percent, false)
+      .setOngoing(true)
+      .setOnlyAlertOnce(true)
+      .build())
+  }
+
+  @ReactMethod
+  fun finishBackupNotification(success: Boolean) {
+    val manager = reactContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    manager.cancel(BACKUP_NOTIFICATION_ID)
+    reactContext.stopService(Intent(reactContext, ManualBackupForegroundService::class.java))
+    reactContext.stopService(Intent(reactContext, ManualBackupTaskService::class.java))
   }
 
   @ReactMethod
   fun disconnect(promise: Promise) {
-    val uri = storedUri()
-    if (uri != null) {
-      try {
-        reactContext.contentResolver.releasePersistableUriPermission(
-          uri,
-          Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-        )
-      } catch (_: SecurityException) {
-        // The provider may already have revoked the grant.
-      }
-    }
-    preferences().edit().remove(FOLDER_URI).apply()
+    prefs().edit().clear().apply()
     promise.resolve(state("disconnected", null, null))
   }
 
-  override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
-    if (requestCode != PICK_FOLDER_REQUEST) return
-    val promise = pickerPromise ?: return
-    pickerPromise = null
-
-    if (resultCode != Activity.RESULT_OK || data?.data == null) {
-      promise.reject("PICKER_CANCELLED", "No folder was selected.")
+  override fun onActivityResult(activity: Activity, code: Int, result: Int, data: Intent?) {
+    if (code != AUTH_REQUEST) return
+    if (result != Activity.RESULT_OK || data == null) {
+      rejectAuthorization(DriveException("PICKER_CANCELLED", "Google Drive authorization was cancelled."))
       return
     }
-
-    val uri = data.data!!
-    val requestedFlags = data.flags and
-      (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-    val requiredFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-
-    if (requestedFlags and requiredFlags != requiredFlags) {
-      promise.reject("PERMISSION_INCOMPLETE", "The selected folder did not grant read and write access.")
-      return
-    }
-
     try {
-      reactContext.contentResolver.takePersistableUriPermission(uri, requiredFlags)
-      val oldUri = storedUri()
-      preferences().edit().putString(FOLDER_URI, uri.toString()).apply()
-      if (oldUri != null && oldUri != uri) releaseOldPermission(oldUri)
-      promise.resolve(readFolderState())
-    } catch (error: SecurityException) {
-      promise.reject("PERMISSION_NOT_PERSISTED", "Folder access could not be saved.", error)
+      finishAuthorization(DriveClient(reactContext).completeAuthorization(data))
+    } catch (error: Throwable) {
+      rejectAuthorization(asDriveException(error, "DRIVE_AUTH_FAILED"))
     }
   }
 
   override fun onNewIntent(intent: Intent) = Unit
 
-  private fun readFolderState(): com.facebook.react.bridge.WritableMap {
-    val uri = storedUri() ?: return state("disconnected", null, null)
-    val persistedPermission = reactContext.contentResolver.persistedUriPermissions.firstOrNull {
-      it.uri == uri && it.isReadPermission && it.isWritePermission
-    }
-    if (persistedPermission == null) return state("revoked", uri, displayName(uri, resolveTreeRoot = true))
-
-    return try {
-      val document = DocumentsContract.buildDocumentUriUsingTree(uri, DocumentsContract.getTreeDocumentId(uri))
-      reactContext.contentResolver.query(document, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-        .use { cursor ->
-          if (cursor == null || !cursor.moveToFirst()) {
-            state("unavailable", uri, null)
-          } else {
-            state("connected", uri, cursor.stringOrNull(OpenableColumns.DISPLAY_NAME))
-          }
-        }
-    } catch (_: Exception) {
-      state("unavailable", uri, null)
-    }
-  }
-
-  private fun Cursor.stringOrNull(columnName: String): String? {
-    val index = getColumnIndex(columnName)
-    return if (index >= 0 && !isNull(index)) getString(index) else null
-  }
-
-  private fun requireString(map: ReadableMap, key: String): String =
-    if (map.hasKey(key) && !map.isNull(key)) map.getString(key)?.takeIf { it.isNotBlank() }
-      ?: throw PublishException("INVALID_REQUEST", "$key is required")
-    else throw PublishException("INVALID_REQUEST", "$key is required")
-
-  private fun requireNonNegativeLong(map: ReadableMap, key: String): Long {
-    if (!map.hasKey(key) || map.isNull(key)) throw PublishException("INVALID_REQUEST", "$key is required")
-    val value = map.getDouble(key)
-    if (!value.isFinite() || value < 0 || value % 1.0 != 0.0) throw PublishException("INVALID_REQUEST", "$key is invalid")
-    return value.toLong()
-  }
-
-  private fun displayName(uri: Uri, resolveTreeRoot: Boolean = false): String? = try {
-    val document = if (resolveTreeRoot && DocumentsContract.isTreeUri(uri)) {
-      DocumentsContract.buildDocumentUriUsingTree(uri, DocumentsContract.getTreeDocumentId(uri))
-    } else uri
-    reactContext.contentResolver.query(document, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-      .use { cursor ->
-        if (cursor != null && cursor.moveToFirst()) cursor.stringOrNull(OpenableColumns.DISPLAY_NAME) else null
+  private fun finishAuthorization(token: String) {
+    val promise = pending ?: return
+    pending = null
+    clearAuthorizationTimeout()
+    executor.execute {
+      runCatching {
+        Log.i("BackupRuntime", "[DEBUG-BR-AUTH] authorization_acknowledged; resolving backup folder")
+        val folder = DriveClient(reactContext) { token }.findOrCreateFolder(FOLDER_NAME)
+        prefs().edit()
+          .putString(FOLDER_URI, DriveClient.uri(folder.id))
+          .putString("folder_name", folder.name)
+          .apply()
+        state("connected", DriveClient.uri(folder.id), folder.name)
+      }.onSuccess(promise::resolve).onFailure { error ->
+        promise.reject((error as? DriveException)?.code ?: "DRIVE_AUTH_FAILED", error.message, error)
       }
-  } catch (_: Exception) {
-    null
-  }
-
-  private fun releaseOldPermission(uri: Uri) {
-    try {
-      reactContext.contentResolver.releasePersistableUriPermission(
-        uri,
-        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-      )
-    } catch (_: SecurityException) {
-      // A replaced grant may already be gone.
     }
   }
 
-  private fun storedUri(): Uri? = preferences().getString(FOLDER_URI, null)?.let(Uri::parse)
+  private fun rejectAuthorization(error: DriveException) {
+    pending?.also {
+      pending = null
+      clearAuthorizationTimeout()
+      it.reject(error.code, error.message, error)
+    }
+  }
 
-  private fun preferences() = reactContext.getSharedPreferences(PREFERENCES, Activity.MODE_PRIVATE)
+  private fun clearAuthorizationTimeout() {
+    authorizationTimeout?.let(mainHandler::removeCallbacks)
+    authorizationTimeout = null
+  }
 
-  private class PublishException(val code: String, message: String) : Exception(message)
+  private fun asDriveException(error: Throwable, fallbackCode: String) =
+    (error as? DriveException) ?: DriveException(fallbackCode, error.message ?: "Google Drive authorization failed.", error)
 
-  private fun state(status: String, uri: Uri?, name: String?) = Arguments.createMap().apply {
+  private fun saved(): Pair<String, String>? {
+    val uri = prefs().getString(FOLDER_URI, null) ?: return null
+    val id = DriveClient.idFromUri(uri) ?: return null
+    return id to (prefs().getString("folder_name", null) ?: FOLDER_NAME)
+  }
+
+  private fun prefs() = reactContext.getSharedPreferences(PREFERENCES, Activity.MODE_PRIVATE)
+
+  private fun string(map: ReadableMap, key: String) =
+    map.getString(key)?.takeIf { it.isNotBlank() }
+      ?: throw DriveException("INVALID_REQUEST", "$key is required")
+
+  private fun state(status: String, uri: String?, name: String?) = Arguments.createMap().apply {
     putString("status", status)
-    if (uri == null) putNull("uri") else putString("uri", uri.toString())
+    if (uri == null) putNull("uri") else putString("uri", uri)
     if (name == null) putNull("name") else putString("name", name)
   }
 }
