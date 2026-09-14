@@ -36,6 +36,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   companion object {
     private const val FORMAT_VERSION = 1
     private const val DATABASE_VERSION = 1
+    private val SUPPORTED_DATABASE_VERSIONS = setOf(1, 2)
     private const val MANIFEST_PATH = "manifest.json"
     private const val DATABASE_PATH = "database/content.sqlite"
     private const val BUFFER_SIZE = 64 * 1024
@@ -562,11 +563,12 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       val db = SQLiteDatabase.openDatabase(File(extracted, DATABASE_PATH).path, null, SQLiteDatabase.OPEN_READONLY)
       val notes = Arguments.createArray()
       try {
-        db.rawQuery("SELECT n.portableId,n.title,substr(n.content,1,180),n.updatedAt,f.name,(SELECT COUNT(*) FROM NoteAudios a WHERE a.notePortableId=n.portableId),(SELECT COUNT(*) FROM NoteFiles x WHERE x.notePortableId=n.portableId) FROM Notes n JOIN Folders f ON f.portableId=n.folderPortableId ORDER BY n.updatedAt DESC,n.portableId", null).use { cursor ->
+        db.rawQuery("SELECT n.portableId,n.title,substr(n.content,1,180),n.updatedAt,f.name,f.portableId,(SELECT COUNT(*) FROM NoteAudios a WHERE a.notePortableId=n.portableId),(SELECT COUNT(*) FROM NoteFiles x WHERE x.notePortableId=n.portableId) FROM Notes n JOIN Folders f ON f.portableId=n.folderPortableId ORDER BY n.updatedAt DESC,n.portableId", null).use { cursor ->
           while (cursor.moveToNext()) notes.pushMap(Arguments.createMap().apply {
             putString("portableId", cursor.getString(0)); putString("title", cursor.getString(1))
             putString("contentPreview", cursor.getString(2)?.take(180) ?: ""); putString("updatedAt", cursor.getString(3))
-            putString("folderName", cursor.getString(4)); putInt("audioCount", cursor.getInt(5)); putInt("fileCount", cursor.getInt(6))
+            putString("folderName", cursor.getString(4)); putString("folderPortableId", cursor.getString(5))
+            putInt("audioCount", cursor.getInt(6)); putInt("fileCount", cursor.getInt(7))
           })
         }
       } finally { db.close() }
@@ -1314,7 +1316,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       val integrity = db.rawQuery("PRAGMA integrity_check", null).use { if (it.moveToFirst()) it.getString(0) else "failed" }
       if (integrity != "ok") fail("INVALID_DATABASE", "SQLite integrity check failed")
       val databaseVersion = db.rawQuery("PRAGMA user_version", null).use { if (it.moveToFirst()) it.getInt(0) else -1 }
-      if (databaseVersion != DATABASE_VERSION) fail("UNSUPPORTED_DATABASE_VERSION", "SQLite database version does not match manifest")
+      if (databaseVersion !in SUPPORTED_DATABASE_VERSIONS) fail("UNSUPPORTED_DATABASE_VERSION", "SQLite database version is not supported")
       val seen = mutableSetOf<String>()
       var entityCount = 0
       listOf("Folders", "Notes", "NoteAudios", "NoteFiles").forEach { table ->
@@ -1388,7 +1390,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
 
   private fun enforceManifestVersion(manifest: JSONObject) {
     if (manifest.optInt("formatVersion", -1) != FORMAT_VERSION) fail("UNSUPPORTED_FORMAT_VERSION", "Unsupported archive format version")
-    if (manifest.optInt("databaseVersion", -1) != DATABASE_VERSION) fail("UNSUPPORTED_DATABASE_VERSION", "Unsupported database version")
+    if (manifest.optInt("databaseVersion", -1) !in SUPPORTED_DATABASE_VERSIONS) fail("UNSUPPORTED_DATABASE_VERSION", "Unsupported database version")
     if (!manifest.has("createdAt") || manifest.optLong("contentRevision", -1) < 0) fail("MALFORMED_MANIFEST", "Required manifest metadata is missing")
   }
 

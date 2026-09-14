@@ -3,12 +3,10 @@ import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/nativ
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GestureResponderEvent } from 'react-native';
-import { Alert, FlatList, View } from 'react-native';
+import { Alert, FlatList, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated from 'react-native-reanimated';
-import { ActionSheet } from '../components/ActionSheet';
-import type { ActionSheetRow } from '../components/ActionSheet';
-import { AppText } from '../components/AppText';
+import { AppText, getFontFamily } from '../components/AppText';
 import { BottomSheet } from '../components/BottomSheet';
 import { Chip } from '../components/Chip';
 import { EmptyState } from '../components/EmptyState';
@@ -16,6 +14,7 @@ import { FAB } from '../components/FAB';
 import { IconButton } from '../components/IconButton';
 import { LanguageToggleButton } from '../components/LanguageToggleButton';
 import { PressableScale } from '../components/PressableScale';
+import { PrimaryButton } from '../components/PrimaryButton';
 import { ScreenContainer } from '../components/ScreenContainer';
 import { SearchBar } from '../components/SearchBar';
 import { TOP_BAR_HEIGHT, TopBar } from '../components/TopBar';
@@ -24,6 +23,7 @@ import {
   deleteNote,
   listNotesByFolder,
   moveNotePosition,
+  updateNoteTitle,
   type SortDirection,
   type SortField,
 } from '../database/schema';
@@ -37,7 +37,7 @@ import type { RouteProp } from '@react-navigation/native';
 
 type Route = RouteProp<RootStackParamList, 'NotesList'>;
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'NotesList'>;
-type ActiveSheet = 'none' | 'sort' | 'noteActions';
+type ActiveSheet = 'none' | 'sort' | 'rename';
 
 const SORT_FIELDS: SortField[] = ['custom', 'name', 'createdAt'];
 
@@ -56,7 +56,9 @@ export const NotesListScreen = () => {
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [isReorderMode, setIsReorderMode] = useState(false);
   const [activeSheet, setActiveSheet] = useState<ActiveSheet>('none');
-  const [actionsNote, setActionsNote] = useState<NoteListItem | null>(null);
+  const [selectedNoteIds, setSelectedNoteIds] = useState<ReadonlySet<number>>(new Set());
+  const [renameValue, setRenameValue] = useState('');
+  const [isRenaming, setIsRenaming] = useState(false);
   const refreshRequestRef = useRef(0);
   const fabBottom = Math.max(insets.bottom + 12, 22);
   const listBottomPadding = Math.max(insets.bottom + 104, 126);
@@ -98,15 +100,17 @@ export const NotesListScreen = () => {
     }, [refreshNotes])
   );
 
-  const onDeleteNote = (note: NoteListItem) => {
-    Alert.alert(t('notes.deleteTitle'), t('notes.deleteBody', { title: note.title }), [
+  const onDeleteSelected = () => {
+    const ids = [...selectedNoteIds];
+    Alert.alert(t('notes.deleteTitle'), t('selection.deleteNotesBody', { count: ids.length }), [
       { text: t('common.cancel'), style: 'cancel' },
       {
         text: t('common.delete'),
         style: 'destructive',
         onPress: async () => {
           try {
-            await deleteNote(note.id);
+            for (const id of ids) await deleteNote(id);
+            setSelectedNoteIds(new Set());
             await refreshNotes();
           } catch (error) {
             console.warn('Failed to delete note:', error);
@@ -152,16 +156,35 @@ export const NotesListScreen = () => {
       action();
     };
 
-  const actionRows: ActionSheetRow[] = actionsNote
-    ? [
-        {
-          icon: 'trash-can-outline',
-          label: t('common.delete'),
-          destructive: true,
-          onPress: () => onDeleteNote(actionsNote),
-        },
-      ]
-    : [];
+  const isSelecting = selectedNoteIds.size > 0;
+  const toggleNote = (id: number) => setSelectedNoteIds((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const openRename = () => {
+    const note = notes.find((item) => selectedNoteIds.has(item.id));
+    if (!note) return;
+    setRenameValue(note.title);
+    setActiveSheet('rename');
+  };
+  const renameSelected = async () => {
+    const id = [...selectedNoteIds][0];
+    if (!renameValue.trim()) {
+      Alert.alert(t('editor.missingTitleTitle'), t('editor.missingTitleBody'));
+      return;
+    }
+    try {
+      setIsRenaming(true);
+      await updateNoteTitle(id, renameValue);
+      setSelectedNoteIds(new Set());
+      closeSheet();
+      await refreshNotes();
+    } catch (error) {
+      console.warn('Failed to rename note:', error);
+      Alert.alert(t('common.error'), t('notes.renameError'));
+    } finally { setIsRenaming(false); }
+  };
 
   return (
     <ScreenContainer>
@@ -212,17 +235,15 @@ export const NotesListScreen = () => {
           renderItem={({ item, index }) => (
             <Animated.View entering={entrance(index)}>
               <PressableScale
-                onPress={() =>
+                accessibilityState={{ selected: selectedNoteIds.has(item.id) }}
+                onPress={() => isSelecting ? toggleNote(item.id) :
                   navigation.navigate('NoteEditor', {
                     folderId,
                     folderName,
                     noteId: item.id,
                   })
                 }
-                onLongPress={() => {
-                  setActionsNote(item);
-                  setActiveSheet('noteActions');
-                }}
+                onLongPress={() => toggleNote(item.id)}
                 style={{
                   backgroundColor: colors.surface,
                   borderRadius: ui.radius.lg,
@@ -279,6 +300,7 @@ export const NotesListScreen = () => {
                       ) : null}
                     </View>
                   </View>
+                  {selectedNoteIds.has(item.id) ? <MaterialCommunityIcons name="checkbox-marked-circle" size={24} color={colors.primary} /> : null}
 
                   {sortField === 'custom' && isReorderMode ? (
                     <View style={{ flexDirection: 'row', gap: ui.space.xs }}>
@@ -304,15 +326,20 @@ export const NotesListScreen = () => {
       </View>
 
       <TopBar onBack={() => navigation.goBack()}>
-        <LanguageToggleButton />
+        {isSelecting ? <>
+          <AppText variant="headline">{t('selection.count', { count: selectedNoteIds.size })}</AppText>
+          <IconButton icon="close" accessibilityLabel={t('common.cancel')} onPress={() => setSelectedNoteIds(new Set())} />
+          {selectedNoteIds.size === 1 ? <IconButton icon="pencil-outline" accessibilityLabel={t('action.rename')} onPress={openRename} /> : null}
+          <IconButton icon="trash-can-outline" accessibilityLabel={t('common.delete')} onPress={onDeleteSelected} />
+        </> : <><LanguageToggleButton />
         <IconButton
           icon="sort-variant"
           accessibilityLabel={t('sort.title')}
           onPress={() => setActiveSheet('sort')}
-        />
+        /></>}
       </TopBar>
 
-      <FAB
+      {!isSelecting ? <FAB
         icon="plus"
         bottom={fabBottom}
         onPress={() =>
@@ -321,7 +348,7 @@ export const NotesListScreen = () => {
             folderName,
           })
         }
-      />
+      /> : null}
 
       <BottomSheet
         visible={activeSheet === 'sort'}
@@ -370,12 +397,15 @@ export const NotesListScreen = () => {
         </View>
       </BottomSheet>
 
-      <ActionSheet
-        visible={activeSheet === 'noteActions'}
-        onClose={closeSheet}
-        title={actionsNote?.title}
-        rows={actionRows}
-      />
+      <BottomSheet visible={activeSheet === 'rename'} onClose={closeSheet} title={t('notes.renameTitle')}>
+        <View style={{ paddingHorizontal: ui.space.lg, gap: ui.space.md }}>
+          <TextInput value={renameValue} onChangeText={setRenameValue} placeholder={t('editor.titlePlaceholder')} placeholderTextColor={colors.textSecondary} style={{ backgroundColor: colors.surfaceVariant, borderRadius: ui.radius.md, padding: 14, color: colors.text, fontFamily: getFontFamily(language, '400'), fontSize: ui.type.body.size }} />
+          <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: ui.space.sm }}>
+            <PressableScale onPress={closeSheet} style={{ padding: ui.space.md }}><AppText variant="headline" color={colors.textSecondary}>{t('common.cancel')}</AppText></PressableScale>
+            <View style={{ width: 132 }}><PrimaryButton onPress={() => void renameSelected()} disabled={isRenaming}>{t('common.save')}</PrimaryButton></View>
+          </View>
+        </View>
+      </BottomSheet>
     </ScreenContainer>
   );
 };

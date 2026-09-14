@@ -90,6 +90,7 @@ export type ArchivedNotePreview = Readonly<{
   contentPreview: string;
   updatedAt: string;
   folderName: string;
+  folderPortableId: string;
   audioCount: number;
   fileCount: number;
 }>;

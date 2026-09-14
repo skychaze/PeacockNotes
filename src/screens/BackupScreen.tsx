@@ -65,6 +65,7 @@ import {
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
 import type { RootStackParamList } from '../types/navigation';
+import { formatBackupDate } from '../utils/backupDate';
 
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'Backup'>;
 
@@ -73,6 +74,16 @@ const EXPORT_PROGRESS: Record<ExportProgress, number> = {
   building: 35,
   publishing: 70,
   verifying: 92,
+};
+
+const IMPORT_PREVIEW_ERROR_KEYS: Record<string, string> = {
+  DRIVE_AUTH_REQUIRED: 'backup.import.error.DRIVE_AUTH_REQUIRED',
+  DRIVE_AUTH_FAILED: 'backup.import.error.DRIVE_AUTH_REQUIRED',
+  DRIVE_API_FORBIDDEN: 'backup.import.error.DRIVE_API_FORBIDDEN',
+  DRIVE_RATE_LIMITED: 'backup.import.error.DRIVE_RATE_LIMITED',
+  DRIVE_UNAVAILABLE: 'backup.import.error.DRIVE_UNAVAILABLE',
+  DRIVE_API_FAILED: 'backup.import.error.DRIVE_API_FAILED',
+  INSUFFICIENT_STORAGE: 'backup.import.error.INSUFFICIENT_STORAGE',
 };
 
 export const BackupScreen = () => {
@@ -88,6 +99,7 @@ export const BackupScreen = () => {
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [importMode, setImportMode] = useState<'selective' | 'additive' | 'replacement' | null>(null);
   const [selectedNoteIds, setSelectedNoteIds] = useState<ReadonlySet<string>>(new Set());
+  const [expandedFolderId, setExpandedFolderId] = useState<string | null>(null);
   const [importState, setImportState] = useState<'idle' | 'previewing' | 'committing'>('idle');
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [replacementResult, setReplacementResult] = useState<FullReplacementResult | null>(null);
@@ -383,10 +395,14 @@ export const BackupScreen = () => {
       if (!preview) return;
       setImportPreview(preview);
       setImportMode(null);
+      setExpandedFolderId(null);
       setSelectedNoteIds(new Set(preview.notes.map((note) => note.portableId)));
-    } catch (error) {
+    } catch (error: unknown) {
       console.warn('Failed to preview backup archive:', error);
-      setImportError(t('backup.import.invalid'));
+      const code = typeof error === 'object' && error !== null && 'code' in error
+        ? String(error.code)
+        : '';
+      setImportError(t(IMPORT_PREVIEW_ERROR_KEYS[code] ?? 'backup.import.invalid'));
     } finally {
       setImportState('idle');
     }
@@ -400,6 +416,15 @@ export const BackupScreen = () => {
       return next;
     });
   };
+
+  const previewFolders = importPreview ? Array.from(
+    importPreview.notes.reduce((groups, note) => {
+      const id = note.folderPortableId || note.folderName;
+      const group = groups.get(id);
+      if (group) group.notes.push(note); else groups.set(id, { id, name: note.folderName, notes: [note] });
+      return groups;
+    }, new Map<string, { id: string; name: string; notes: typeof importPreview.notes[number][] }>()).values()
+  ) : [];
 
   const commitImport = async () => {
     if (!importPreview || !importMode || (importMode === 'selective' && selectedNoteIds.size === 0)) return;
@@ -540,10 +565,7 @@ export const BackupScreen = () => {
   const formatDate = (archive: BackupCollectionArchive) => {
     const value = archive.createdAt ? Date.parse(archive.createdAt) : archive.providerModifiedAt;
     if (!value || Number.isNaN(value)) return t('backup.collection.unknownTime');
-    return new Intl.DateTimeFormat(language === 'bn' ? 'bn-BD' : 'en-US', {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-    }).format(new Date(value));
+    return formatBackupDate(value, language) ?? t('backup.collection.unknownTime');
   };
   const formatBytes = (bytes: number | null) => {
     if (bytes === null) return t('backup.collection.unknownSize');
@@ -725,7 +747,13 @@ export const BackupScreen = () => {
             >
               <AppText variant="headline" color={colors.primary}>{t('backup.import.selective')}</AppText>
             </PressableScale>
-            {importMode === 'selective' ? importPreview.notes.map((note) => {
+            {importMode === 'selective' ? previewFolders.map((folder) => <View key={folder.id} style={{ borderTopWidth: 1, borderTopColor: colors.border }}>
+              <PressableScale accessibilityRole="button" accessibilityState={{ expanded: expandedFolderId === folder.id }} onPress={() => setExpandedFolderId((current) => current === folder.id ? null : folder.id)} style={{ paddingVertical: ui.space.md, flexDirection: 'row', alignItems: 'center', gap: ui.space.sm }}>
+                <MaterialCommunityIcons name={expandedFolderId === folder.id ? 'chevron-down' : 'chevron-right'} size={24} color={colors.textSecondary} />
+                <AppText variant="headline" style={{ flex: 1 }}>{folder.name}</AppText>
+                <AppText variant="caption" color={colors.textSecondary}>{folder.notes.length}</AppText>
+              </PressableScale>
+              {expandedFolderId === folder.id ? folder.notes.map((note) => {
               const selected = selectedNoteIds.has(note.portableId);
               return (
                 <PressableScale
@@ -739,7 +767,6 @@ export const BackupScreen = () => {
                     <MaterialCommunityIcons name={selected ? 'checkbox-marked' : 'checkbox-blank-outline'} size={24} color={selected ? colors.primary : colors.textSecondary} />
                     <View style={{ flex: 1 }}>
                       <AppText variant="headline">{note.title}</AppText>
-                      <AppText variant="bodySmall" color={colors.textSecondary}>{note.folderName}</AppText>
                     </View>
                   </View>
                   {note.contentPreview ? <AppText variant="bodySmall" color={colors.textSecondary} numberOfLines={2}>{note.contentPreview}</AppText> : null}
@@ -748,7 +775,8 @@ export const BackupScreen = () => {
                   </AppText>
                 </PressableScale>
               );
-            }) : null}
+              }) : null}
+            </View>) : null}
             {importMode ? (
               <PrimaryButton
                 disabled={(importMode === 'selective' && selectedNoteIds.size === 0) || importState !== 'idle' || operationBusy}
