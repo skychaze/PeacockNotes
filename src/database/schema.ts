@@ -788,6 +788,19 @@ export const listNotesByFolder = async (
   return rows.map(mapNoteListItem);
 };
 
+export const updateNoteTitle = async (noteId: number, title: string): Promise<void> => {
+  const trimmedTitle = title.trim();
+  if (!trimmedTitle) throw new Error('Note title is required');
+  const db = await getDb();
+  await withWriteTransaction(db, async (txn) => {
+    const result = await txn.runAsync(
+      'UPDATE Notes SET title = ?, searchTitle = ?, updatedAt = ? WHERE id = ?;',
+      [trimmedTitle, normalizeSearchValue(trimmedTitle), nowIso(), noteId]
+    );
+    if (result.changes > 0) await advanceContentRevision(txn);
+  });
+};
+
 export const getNoteById = async (noteId: number): Promise<Note | null> => {
   const db = await getDb();
   const row = await db.getFirstAsync<NoteRow>(

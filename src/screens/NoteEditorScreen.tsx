@@ -124,6 +124,7 @@ export const NoteEditorScreen = () => {
   const [actionsGroupId, setActionsGroupId] = useState<string | null>(null);
   const [actionsFile, setActionsFile] = useState<NoteFileDraft | null>(null);
   const [renameTargetGroupId, setRenameTargetGroupId] = useState<string | null>(null);
+  const [renameTargetFileUri, setRenameTargetFileUri] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [detailsTargetGroupId, setDetailsTargetGroupId] = useState<string | null>(null);
 
@@ -133,6 +134,7 @@ export const NoteEditorScreen = () => {
   const initialDraftRef = useRef<NoteDraft>({ title: '', content: '', audios: [], files: [] });
   const skipUnsavedWarningRef = useRef(false);
   const isAutoSavingRef = useRef(false);
+  const persistedNoteIdRef = useRef<number | undefined>(route.params.noteId);
 
   const { folderId, noteId } = route.params;
   const createDefaultAudioName = (order: number) => t('editor.audioDefaultName', { index: order });
@@ -305,10 +307,10 @@ export const NoteEditorScreen = () => {
   const persistDraft = async (draft: NoteDraft, errorMessage: string): Promise<boolean> => {
     try {
       setIsSaving(true);
-      if (noteId) {
-        await updateNote(noteId, draft);
+      if (persistedNoteIdRef.current) {
+        await updateNote(persistedNoteIdRef.current, draft);
       } else {
-        await createNote(folderId, draft);
+        persistedNoteIdRef.current = await createNote(folderId, draft);
       }
 
       initialDraftRef.current = {
@@ -345,11 +347,7 @@ export const NoteEditorScreen = () => {
       files,
     };
 
-    const didSave = await persistDraft(draft, t('editor.saveError'));
-    if (didSave) {
-      skipUnsavedWarningRef.current = true;
-      navigation.goBack();
-    }
+    await persistDraft(draft, t('editor.saveError'));
   };
 
   const autoSaveBeforeExit = async () => {
@@ -762,25 +760,32 @@ export const NoteEditorScreen = () => {
   const startRenameAudioGroup = (groupId: string) => {
     const group = audioGroups.find((item) => item.groupId === groupId);
     setRenameTargetGroupId(groupId);
+    setRenameTargetFileUri(null);
     setRenameValue(group?.displayName ?? '');
     setActiveSheet('rename');
   };
 
-  const saveAudioRename = () => {
-    if (!renameTargetGroupId) {
+  const saveAttachmentRename = () => {
+    if (!renameTargetGroupId && !renameTargetFileUri) {
       return;
     }
 
     const trimmed = renameValue.trim();
     if (!trimmed) {
-      Alert.alert(t('editor.renameMissingTitle'), t('editor.renameMissingBody'));
+      Alert.alert(
+        t(renameTargetFileUri ? 'editor.fileRenameMissingTitle' : 'editor.renameMissingTitle'),
+        t(renameTargetFileUri ? 'editor.fileRenameMissingBody' : 'editor.renameMissingBody')
+      );
       return;
     }
 
-    setAudios((prev) =>
-      prev.map((audio) => (audio.groupId === renameTargetGroupId ? { ...audio, displayName: trimmed } : audio))
-    );
+    if (renameTargetGroupId) {
+      setAudios((prev) => prev.map((audio) => audio.groupId === renameTargetGroupId ? { ...audio, displayName: trimmed } : audio));
+    } else {
+      setFiles((prev) => prev.map((file) => file.uri === renameTargetFileUri ? { ...file, displayName: trimmed } : file));
+    }
     setRenameTargetGroupId(null);
+    setRenameTargetFileUri(null);
     setRenameValue('');
     closeSheet();
   };
@@ -918,6 +923,16 @@ export const NoteEditorScreen = () => {
 
   const fileActionRows: ActionSheetRow[] = actionsFile
     ? [
+        {
+          icon: 'pencil-outline',
+          label: t('action.rename'),
+          onPress: () => {
+            setRenameTargetGroupId(null);
+            setRenameTargetFileUri(actionsFile.uri);
+            setRenameValue(actionsFile.displayName);
+            setActiveSheet('rename');
+          },
+        },
         {
           icon: 'share-variant',
           label: t('editor.shareFile'),
@@ -1165,13 +1180,13 @@ export const NoteEditorScreen = () => {
         <BottomSheet
           visible
           onClose={closeSheet}
-          title={t('editor.renameTitle')}
+          title={t(renameTargetFileUri ? 'editor.fileRenameTitle' : 'editor.renameTitle')}
         >
         <View style={{ paddingHorizontal: ui.space.lg, gap: ui.space.md }}>
           <TextInput
             value={renameValue}
             onChangeText={setRenameValue}
-            placeholder={t('editor.renamePlaceholder')}
+            placeholder={t(renameTargetFileUri ? 'editor.fileRenamePlaceholder' : 'editor.renamePlaceholder')}
             placeholderTextColor={colors.textSecondary}
             style={{
               backgroundColor: colors.surfaceVariant,
@@ -1193,6 +1208,7 @@ export const NoteEditorScreen = () => {
             <PressableScale
               onPress={() => {
                 setRenameTargetGroupId(null);
+                setRenameTargetFileUri(null);
                 setRenameValue('');
                 closeSheet();
               }}
@@ -1203,7 +1219,7 @@ export const NoteEditorScreen = () => {
               </AppText>
             </PressableScale>
             <View style={{ width: 132 }}>
-              <PrimaryButton onPress={saveAudioRename}>{t('editor.renameSave')}</PrimaryButton>
+              <PrimaryButton onPress={saveAttachmentRename}>{t('editor.renameSave')}</PrimaryButton>
             </View>
           </View>
         </View>

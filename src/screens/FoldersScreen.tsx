@@ -5,6 +5,7 @@ import { useCallback, useMemo, useState } from 'react';
 import type { GestureResponderEvent } from 'react-native';
 import {
   Alert,
+  BackHandler,
   FlatList,
   StyleSheet,
   TextInput,
@@ -38,22 +39,24 @@ import {
   type SortDirection,
   type SortField,
 } from '../database/schema';
+import { getBackupDiscoverySnapshot, initializeBackupDiscovery, subscribeBackupDiscovery } from '../services/backupDiscovery';
 import { useLanguage } from '../i18n/LanguageContext';
 import { FOLDER_ACCENTS } from '../theme/colors';
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
 import type { FolderListItem } from '../types/models';
 import type { RootStackParamList } from '../types/navigation';
+import { formatBackupDate } from '../utils/backupDate';
 
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'Folders'>;
 
-type ActiveSheet = 'none' | 'sort' | 'menu' | 'create' | 'rename' | 'folderActions';
+type ActiveSheet = 'none' | 'sort' | 'menu' | 'create' | 'rename' | 'backupInfo';
 
 const SORT_FIELDS: SortField[] = ['custom', 'name', 'createdAt'];
 
 export const FoldersScreen = () => {
   const navigation = useNavigation<Navigation>();
-  const { colors, isDark } = useAppColors();
+  const { colors, isDark, toggleTheme } = useAppColors();
   const { t, language } = useLanguage();
   const { width: windowWidth } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -61,9 +64,10 @@ export const FoldersScreen = () => {
   const cardWidth = (windowWidth - ui.space.lg * 2 - ui.space.md) / 2;
 
   const [folders, setFolders] = useState<FolderListItem[]>([]);
+  const [backupDiscovery, setBackupDiscovery] = useState(getBackupDiscoverySnapshot());
   const [isLoading, setIsLoading] = useState(true);
   const [activeSheet, setActiveSheet] = useState<ActiveSheet>('none');
-  const [actionsFolder, setActionsFolder] = useState<FolderListItem | null>(null);
+  const [selectedFolderIds, setSelectedFolderIds] = useState<ReadonlySet<number>>(new Set());
   const [newFolderName, setNewFolderName] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const [renameFolderName, setRenameFolderName] = useState('');
@@ -77,6 +81,7 @@ export const FoldersScreen = () => {
   const listBottomPadding = Math.max(insets.bottom + 104, 126);
 
   const closeSheet = useCallback(() => setActiveSheet('none'), []);
+  const isSelecting = selectedFolderIds.size > 0;
 
   const menuRows: ActionSheetRow[] = useMemo(
     () => [
@@ -111,6 +116,30 @@ export const FoldersScreen = () => {
       void refreshFolders();
     }, [refreshFolders])
   );
+  useFocusEffect(useCallback(() => {
+    setBackupDiscovery(getBackupDiscoverySnapshot());
+    return subscribeBackupDiscovery(setBackupDiscovery);
+  }, []));
+
+  const openBackupInfo = async () => {
+    setBackupDiscovery(getBackupDiscoverySnapshot());
+    setActiveSheet('backupInfo');
+    try {
+      await initializeBackupDiscovery();
+    } catch (error) {
+      console.warn('Failed to load backup summary:', error);
+    } finally {
+      setBackupDiscovery(getBackupDiscoverySnapshot());
+    }
+  };
+
+  useFocusEffect(useCallback(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      BackHandler.exitApp();
+      return true;
+    });
+    return () => subscription.remove();
+  }, []));
 
   const onCreateFolder = async () => {
     const name = newFolderName.trim();
@@ -133,10 +162,11 @@ export const FoldersScreen = () => {
     }
   };
 
-  const onDeleteFolder = (folder: FolderListItem) => {
+  const onDeleteSelected = () => {
+    const ids = [...selectedFolderIds];
     Alert.alert(
       t('folder.deleteConfirmTitle'),
-      t('folder.deleteConfirmBody', { name: folder.name }),
+      t('selection.deleteFoldersBody', { count: ids.length }),
       [
         { text: t('common.cancel'), style: 'cancel' },
         {
@@ -144,7 +174,8 @@ export const FoldersScreen = () => {
           style: 'destructive',
           onPress: async () => {
             try {
-              await deleteFolder(folder.id);
+              for (const id of ids) await deleteFolder(id);
+              setSelectedFolderIds(new Set());
               await refreshFolders();
             } catch (error) {
               console.warn('Failed to delete folder:', error);
@@ -219,21 +250,23 @@ export const FoldersScreen = () => {
       action();
     };
 
-  const actionRows: ActionSheetRow[] = actionsFolder
-    ? [
-        {
-          icon: 'pencil-outline',
-          label: t('action.rename'),
-          onPress: () => onOpenRenameFolder(actionsFolder),
-        },
-        {
-          icon: 'trash-can-outline',
-          label: t('common.delete'),
-          destructive: true,
-          onPress: () => onDeleteFolder(actionsFolder),
-        },
-      ]
-    : [];
+  const toggleFolder = (id: number) => setSelectedFolderIds((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  const openSelectedRename = () => {
+    const id = [...selectedFolderIds][0];
+    const folder = folders.find((item) => item.id === id);
+    if (folder) onOpenRenameFolder(folder);
+  };
+
+  const newestBackup = backupDiscovery.value.collection?.complete
+    ? [...backupDiscovery.value.collection.archives]
+      .filter((archive) => archive.state === 'valid')
+      .sort((left, right) => (Date.parse(right.createdAt ?? '') || right.providerModifiedAt || 0) - (Date.parse(left.createdAt ?? '') || left.providerModifiedAt || 0))[0]
+    : null;
 
   return (
     <ScreenContainer>
@@ -281,16 +314,14 @@ export const FoldersScreen = () => {
                 style={{ width: cardWidth }}
               >
                 <PressableScale
-                  onPress={() =>
+                  accessibilityState={{ selected: selectedFolderIds.has(item.id) }}
+                  onPress={() => isSelecting ? toggleFolder(item.id) :
                     navigation.navigate('NotesList', {
                       folderId: item.id,
                       folderName: item.name,
                     })
                   }
-                  onLongPress={() => {
-                    setActionsFolder(item);
-                    setActiveSheet('folderActions');
-                  }}
+                  onLongPress={() => toggleFolder(item.id)}
                   style={{ flex: 1 }}
                 >
                   <GlassSurface
@@ -321,6 +352,7 @@ export const FoldersScreen = () => {
                       }}
                     >
                       <MaterialCommunityIcons name="folder" size={24} color={ink} />
+                      {selectedFolderIds.has(item.id) ? <MaterialCommunityIcons name="checkbox-marked-circle" size={24} color={colors.primary} /> : null}
                       {isReorderModeActive ? (
                         <View style={{ flexDirection: 'row', gap: ui.space.xs }}>
                           <IconButton
@@ -353,21 +385,21 @@ export const FoldersScreen = () => {
       </View>
 
       <TopBar>
-        <LanguageToggleButton />
-        <IconButton
-          icon="sort-variant"
-          accessibilityLabel={t('sort.title')}
-          onPress={() => setActiveSheet('sort')}
-        />
-        <View style={{ width: ui.space.sm }} />
-        <IconButton
-          icon="dots-vertical"
-          accessibilityLabel={t('drawer.quickMenu')}
-          onPress={() => setActiveSheet('menu')}
-        />
+        {isSelecting ? <>
+          <AppText variant="headline">{t('selection.count', { count: selectedFolderIds.size })}</AppText>
+          <IconButton icon="close" accessibilityLabel={t('common.cancel')} onPress={() => setSelectedFolderIds(new Set())} />
+          {selectedFolderIds.size === 1 ? <IconButton icon="pencil-outline" accessibilityLabel={t('action.rename')} onPress={openSelectedRename} /> : null}
+          <IconButton icon="trash-can-outline" accessibilityLabel={t('common.delete')} onPress={onDeleteSelected} />
+        </> : <>
+          <LanguageToggleButton />
+          <IconButton icon={isDark ? 'weather-sunny' : 'weather-night'} accessibilityLabel={isDark ? t('theme.useLight') : t('theme.useDark')} accessibilityState={{ checked: isDark }} onPress={toggleTheme} />
+          <IconButton icon="information-outline" accessibilityLabel={t('home.backupInfo')} onPress={() => void openBackupInfo()} />
+          <IconButton icon="sort-variant" accessibilityLabel={t('sort.title')} onPress={() => setActiveSheet('sort')} />
+          <IconButton icon="dots-vertical" accessibilityLabel={t('drawer.quickMenu')} onPress={() => setActiveSheet('menu')} />
+        </>}
       </TopBar>
 
-      <FAB icon="folder-plus" bottom={fabBottom} onPress={() => setActiveSheet('create')} />
+      {!isSelecting ? <FAB icon="folder-plus" bottom={fabBottom} onPress={() => setActiveSheet('create')} /> : null}
 
       <BottomSheet
         visible={activeSheet === 'sort'}
@@ -423,12 +455,13 @@ export const FoldersScreen = () => {
         rows={menuRows}
       />
 
-      <ActionSheet
-        visible={activeSheet === 'folderActions'}
-        onClose={closeSheet}
-        title={actionsFolder?.name}
-        rows={actionRows}
-      />
+      <BottomSheet visible={activeSheet === 'backupInfo'} onClose={closeSheet} title={t('home.backupInfo')}>
+        <View style={{ paddingHorizontal: ui.space.lg }}>
+          <AppText variant="body">{newestBackup
+            ? formatBackupDate(newestBackup.createdAt ?? newestBackup.providerModifiedAt ?? 0, language) ?? t('home.noBackup')
+            : t('home.noBackup')}</AppText>
+        </View>
+      </BottomSheet>
 
       <BottomSheet
         visible={activeSheet === 'create'}

@@ -1,6 +1,6 @@
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useEffect, useMemo, useState } from 'react';
-import { Platform, View, useColorScheme } from 'react-native';
+import { Platform, View } from 'react-native';
 import {
   NavigationContainer,
   DarkTheme,
@@ -12,7 +12,6 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Font from 'expo-font';
 import { StatusBar } from 'expo-status-bar';
 import { initDb } from './src/database/schema';
-import { getThemeColors } from './src/theme/colors';
 import { QualityProvider } from './src/theme/quality';
 import type { RootStackParamList } from './src/types/navigation';
 import { AppText } from './src/components/AppText';
@@ -32,6 +31,7 @@ import { installAutomaticBackupCatchUp } from './src/services/automaticBackup';
 import { initializeBackupDiscovery } from './src/services/backupDiscovery';
 import { finishBackupNotification } from './src/services/backupFolder';
 import { resumePendingBackupOperation } from './src/services/backupBackground';
+import { ThemeProvider, useTheme } from './src/theme/ThemeContext';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const navigationRef = createNavigationContainerRef<RootStackParamList>();
@@ -40,8 +40,7 @@ const AppNavigator = () => {
   const [isReady, setIsReady] = useState(false);
   const [isNavReady, setIsNavReady] = useState(false);
   const [hasSetupError, setHasSetupError] = useState(false);
-  const isDark = useColorScheme() === 'dark';
-  const colors = getThemeColors(isDark);
+  const { isDark, colors } = useTheme();
   const { hasShareIntent, shareIntent, isReady: isShareReady } = useShareIntentContext();
   const { t, isLanguageReady } = useLanguage();
   const sharedFiles = useMemo(() => shareIntent.files ?? [], [shareIntent.files]);
@@ -202,9 +201,11 @@ export default function App() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ShareIntentProvider>
         <LanguageProvider>
-          <QualityProvider>
-            <AppNavigator />
-          </QualityProvider>
+          <ThemeProvider>
+            <QualityProvider>
+              <AppNavigator />
+            </QualityProvider>
+          </ThemeProvider>
         </LanguageProvider>
       </ShareIntentProvider>
     </GestureHandlerRootView>

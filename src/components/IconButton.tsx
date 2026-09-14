@@ -1,5 +1,5 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import type { GestureResponderEvent } from 'react-native';
+import type { AccessibilityState, GestureResponderEvent } from 'react-native';
 import { PressableScale } from './PressableScale';
 import { useAppColors } from '../theme/useAppColors';
 import { ui } from '../theme/ui';
@@ -12,6 +12,7 @@ type IconButtonProps = {
   square?: boolean;
   size?: number;
   accessibilityLabel?: string;
+  accessibilityState?: AccessibilityState;
 };
 
 export const IconButton = ({
@@ -22,6 +23,7 @@ export const IconButton = ({
   square = false,
   size = 22,
   accessibilityLabel,
+  accessibilityState,
 }: IconButtonProps) => {
   const { colors } = useAppColors();
 
@@ -31,6 +33,7 @@ export const IconButton = ({
       disabled={disabled}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
+      accessibilityState={accessibilityState}
       style={{
         width: 40,
         height: 40,
