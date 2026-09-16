@@ -7,7 +7,7 @@ import {
 } from '../backup/automaticPolicy';
 import { getContentRevision } from '../database/schema';
 import { runAutomaticExport, type VerifiedBackup } from './backupExport';
-import { getBackupFolderState } from './backupFolder';
+import { getBackupFolderState, startBackupForegroundService, releaseBackupForegroundService } from './backupFolder';
 
 export type AutomaticBackupPhase =
   | 'disabled'
@@ -137,7 +137,13 @@ const runAutomaticBackupAttempt = async (): Promise<AutomaticBackupState> => {
     if (!state.enabled || driveAuthorizationInProgress) return state;
     await native.setStatus('running', attempt, null);
     try {
-      await runAutomaticExport();
+      const foreground = AppState.currentState === 'active';
+      if (foreground) await startBackupForegroundService();
+      try {
+        await runAutomaticExport();
+      } finally {
+        if (foreground) await releaseBackupForegroundService(true);
+      }
       await native.setStatus('verified', 0, null);
       return native.getState();
     } catch (error: unknown) {

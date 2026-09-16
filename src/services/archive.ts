@@ -1,4 +1,5 @@
 import { NativeModules, Platform } from 'react-native';
+import type { BackupProgressOwner } from './backupProgress';
 
 export const ARCHIVE_FORMAT_VERSION = 1 as const;
 export const ARCHIVE_DATABASE_VERSION = 1 as const;
@@ -17,6 +18,8 @@ export type CreateArchiveRequest = Readonly<{
   media: readonly ArchiveMediaSource[];
   contentRevision: number;
   createdAt: string;
+  operationId?: string;
+  operationKind?: string;
 }>;
 
 export type ArchiveLimits = Readonly<{
@@ -50,13 +53,20 @@ export type ArchiveSummary = Readonly<{
 export type PinMediaRequest = Readonly<{
   directoryUri: string;
   media: readonly ArchiveMediaSource[];
+  operationId?: string;
+  operationKind?: string;
 }>;
 
 export type ValidateArchiveRequest = Readonly<{
   archiveUri: string;
   stagingDirectoryUri?: string;
   limits?: ArchiveLimits;
+  mode?: ArchiveValidationMode;
+  operationId?: string;
+  operationKind?: string;
 }>;
+
+export type ArchiveValidationMode = 'stage' | 'verify_only';
 
 export type ArchiveHealth = 'valid' | 'incompatible' | 'damaged' | 'uncertain';
 export type ArchiveVerification = 'verified' | 'failed' | 'not_verified';
@@ -109,6 +119,8 @@ export type CommitSelectiveImportRequest = Readonly<{
   mediaDirectoryUri: string;
   operationKey: string;
   selectedNoteIds: readonly string[];
+  operationId?: string;
+  operationKind?: string;
 }>;
 
 export type RecoveryRestriction = Readonly<{
@@ -130,6 +142,8 @@ export type FullReplacementRequest = Readonly<{
   databaseUri: string;
   mediaDirectoryUri: string;
   operationKey: string;
+  operationId?: string;
+  operationKind?: string;
 }>;
 
 export type FullReplacementResult = Readonly<{
@@ -153,8 +167,8 @@ type NativeArchiveModule = {
   scanConnectedFolder(): Promise<BackupCollectionScan>;
   scanConnectedFolderDeep(): Promise<BackupCollectionScan>;
   deleteArchives(request: Readonly<{ uris: readonly string[] }>): Promise<Readonly<{ deletedCount: number }>>;
-  applyManagedRetention(): Promise<ManagedRetentionResult>;
-  previewImport(request: Readonly<{ archiveUri: string }>): Promise<ImportPreview>;
+  applyManagedRetention(request: Partial<BackupProgressOwner>): Promise<ManagedRetentionResult>;
+  previewImport(request: Readonly<{ archiveUri: string } & Partial<BackupProgressOwner>>): Promise<ImportPreview>;
   commitSelectiveImport(request: CommitSelectiveImportRequest): Promise<ImportResult>;
   commitFullReplacement(request: FullReplacementRequest): Promise<FullReplacementResult>;
   recoverFullReplacement(): Promise<Readonly<{ rolledBack: boolean }>>;
@@ -191,11 +205,11 @@ export const deleteBackupArchives = async (uris: readonly string[]): Promise<num
   return result.deletedCount;
 };
 
-export const applyManagedArchiveRetention = (): Promise<ManagedRetentionResult> =>
-  moduleOrThrow().applyManagedRetention();
+export const applyManagedArchiveRetention = (progress?: BackupProgressOwner): Promise<ManagedRetentionResult> =>
+  moduleOrThrow().applyManagedRetention({ ...progress });
 
-export const previewArchiveImport = (archiveUri: string): Promise<ImportPreview> =>
-  moduleOrThrow().previewImport({ archiveUri });
+export const previewArchiveImport = (archiveUri: string, progress?: BackupProgressOwner): Promise<ImportPreview> =>
+  moduleOrThrow().previewImport({ archiveUri, ...progress });
 
 export const commitSelectiveArchiveImport = (request: CommitSelectiveImportRequest): Promise<ImportResult> =>
   moduleOrThrow().commitSelectiveImport(request);

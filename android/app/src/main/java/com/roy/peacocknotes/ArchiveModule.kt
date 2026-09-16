@@ -26,11 +26,61 @@ import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.MessageDigest
+import java.security.DigestOutputStream
 import java.text.Normalizer
 import java.time.Instant
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
+
+enum class ArchiveValidationMode {
+  STAGE,
+  VERIFY_ONLY,
+}
+
+data class ArchiveValidationDigest(val sha256: String, val bytes: Long)
+
+class ArchiveValidationException(val code: String, message: String, cause: Throwable? = null) : Exception(message, cause)
+
+fun validateArchiveEntry(
+  input: InputStream,
+  expectedSha256: String,
+  expectedBytes: Long,
+  mode: ArchiveValidationMode,
+  output: OutputStream?,
+  onBytes: ((Long) -> Unit)? = null,
+): ArchiveValidationDigest {
+  val destination = if (mode == ArchiveValidationMode.STAGE) {
+    output ?: throw ArchiveValidationException("STAGING_UNAVAILABLE", "A staging output is required")
+  } else {
+    object : OutputStream() {
+      override fun write(value: Int) = Unit
+      override fun write(buffer: ByteArray, offset: Int, length: Int) = Unit
+    }
+  }
+  val digest = MessageDigest.getInstance("SHA-256")
+  val buffer = ByteArray(64 * 1024)
+  var total = 0L
+  try {
+    while (true) {
+      val count = input.read(buffer)
+      if (count < 0) break
+      if (count.toLong() > expectedBytes - total) throw ArchiveValidationException("EXPANSION_LIMIT_EXCEEDED", "Entry exceeds declared size")
+      total += count
+      destination.write(buffer, 0, count)
+      digest.update(buffer, 0, count)
+      onBytes?.invoke(count.toLong())
+    }
+  } catch (error: ArchiveValidationException) {
+    throw error
+  } catch (error: Exception) {
+    throw ArchiveValidationException("MALFORMED_ARCHIVE", "Archive media could not be read", error)
+  }
+  val actual = digest.digest().joinToString("") { "%02x".format(it) }
+  if (total != expectedBytes) throw ArchiveValidationException("SIZE_MISMATCH", "Entry size differs from inventory")
+  if (actual != expectedSha256) throw ArchiveValidationException("HASH_MISMATCH", "Hash differs from inventory")
+  return ArchiveValidationDigest(actual, total)
+}
 
 class ArchiveModule(private val context: ReactApplicationContext) : ReactContextBaseJavaModule(context) {
   companion object {
@@ -60,25 +110,32 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   }
 
   private val executor = Executors.newSingleThreadExecutor()
+  private var progress = BackupProgressReporter(null, null)
+
+  private fun <T> withProgress(request: ReadableMap, work: () -> T): T {
+    progress = progressReporter(request)
+    try { return work() } finally { progress = BackupProgressReporter(null, null) }
+  }
+
   override fun getName() = "Archive"
 
   @ReactMethod
   fun pinMedia(request: ReadableMap, promise: Promise) = executor.execute {
-    runCatching { pin(request) }
+    runCatching { withProgress(request) { pin(request) } }
       .onSuccess(promise::resolve)
       .onFailure { promise.reject(errorCode(it), it.message, it) }
   }
 
   @ReactMethod
   fun createArchive(request: ReadableMap, promise: Promise) = executor.execute {
-    runCatching { create(request) }
+    runCatching { withProgress(request) { create(request) } }
       .onSuccess(promise::resolve)
       .onFailure { promise.reject(errorCode(it), it.message, it) }
   }
 
   @ReactMethod
   fun validateArchive(request: ReadableMap, promise: Promise) = executor.execute {
-    runCatching { validate(request) }
+    runCatching { withProgress(request) { validate(request) } }
       .onSuccess(promise::resolve)
       .onFailure { promise.reject(errorCode(it), it.message, it) }
   }
@@ -112,22 +169,22 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   }
 
   @ReactMethod
-  fun applyManagedRetention(promise: Promise) = executor.execute {
-    runCatching { applyRetention() }
+  fun applyManagedRetention(request: ReadableMap, promise: Promise) = executor.execute {
+    runCatching { withProgress(request) { applyRetention() } }
       .onSuccess(promise::resolve)
       .onFailure { promise.reject(errorCode(it), it.message, it) }
   }
 
   @ReactMethod
   fun previewImport(request: ReadableMap, promise: Promise) = executor.execute {
-    runCatching { preview(request) }
+    runCatching { withProgress(request) { preview(request) } }
       .onSuccess(promise::resolve)
       .onFailure { promise.reject(errorCode(it), it.message, it) }
   }
 
   @ReactMethod
   fun commitSelectiveImport(request: ReadableMap, promise: Promise) = executor.execute {
-    runCatching { commitImport(request) }
+    runCatching { withProgress(request) { commitImport(request) } }
       .onSuccess(promise::resolve)
       .onFailure {
         Log.e("BackupRuntime", "[DEBUG-BR-IMPORT] commit failed code=${errorCode(it)} message=${it.message}", it)
@@ -137,7 +194,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
 
   @ReactMethod
   fun commitFullReplacement(request: ReadableMap, promise: Promise) = executor.execute {
-    runCatching { commitReplacement(request) }
+    runCatching { withProgress(request) { commitReplacement(request) } }
       .onSuccess(promise::resolve)
       .onFailure { promise.reject(errorCode(it), it.message, it) }
   }
@@ -339,7 +396,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     if (providerSize == null) putNull("bytes") else putDouble("bytes", providerSize.toDouble())
     if (modified == null) putNull("providerModifiedAt") else putDouble("providerModifiedAt", modified.toDouble())
     try {
-      val request = Arguments.createMap().apply { putString("archiveUri", uri) }
+      val request = Arguments.createMap().apply { putString("archiveUri", uri); putString("mode", "verify_only") }
       val validated = validate(request)
       putString("state", "valid")
       putString("verification", "verified")
@@ -361,6 +418,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   }
 
   private fun applyRetention(): com.facebook.react.bridge.WritableMap {
+    progress.startStep("scan", "scan_archives")
     val scan = scanFolder(deepValidation = true, reuseTrustedCache = true)
     if (!scan.getBoolean("complete")) {
       fail("RETENTION_SCAN_INCOMPLETE", "Managed retention requires a complete trustworthy folder scan")
@@ -381,6 +439,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     )
 
     var deleted = 0
+    progress.startStep("prune", "prune_archives", itemsTotal = candidates.size)
     candidates.forEach { candidate ->
       val id = DriveClient.idFromUri(candidate) ?: fail("RETENTION_POLICY_RESTRICTED", "Archive is not a Google Drive item")
       try { DriveClient(context).delete(id) } catch (error: Exception) {
@@ -388,6 +447,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         fail("PROVIDER_DELETE_FAILED", "Google Drive failed while applying managed retention", error)
       }
       deleted += 1
+      progress.addItem()
     }
     return Arguments.createMap().apply {
       putString("status", if (candidates.isEmpty()) "nothing_to_prune" else "applied")
@@ -413,6 +473,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     val directory = fileFromUri(requiredString(request, "directoryUri"))
     if (!directory.exists() && !directory.mkdirs()) fail("STAGING_UNAVAILABLE", "Cannot create capture directory")
     val media = parseMedia(request.getArray("media") ?: fail("INVALID_REQUEST", "media is required"))
+    progress.startStep("capture", "capture_media", itemsTotal = media.size)
     val result = Arguments.createArray()
     media.forEachIndexed { index, source ->
       val target = File(directory, "pin-$index")
@@ -422,6 +483,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       } catch (_: Exception) {
         open(source.uri).use { input -> FileOutputStream(target).use { output -> copyBounded(input, output, Long.MAX_VALUE) } }
       }
+      progress.addItem()
       result.pushMap(Arguments.createMap().apply {
         putString("portableId", source.portableId)
         putString("sourceUri", Uri.fromFile(target).toString())
@@ -441,6 +503,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     val work = newWorkDirectory("create")
     try {
       val sourceDatabase = materialize(databaseUri, File(work, "source.sqlite"), Long.MAX_VALUE)
+      progress.startStep("build", "hash_media", media.sumOf { fileFromUri(it.uri).length() })
       val hashedMedia = media.map { source ->
         val digest = open(source.uri).use(::sha256)
         if (digest.bytes > limits.maxMediaItemBytes) fail("MEDIA_LIMIT_EXCEEDED", "Media item exceeds limit")
@@ -451,6 +514,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       val mediaById = hashedMedia.associateBy { it.source.portableId }
       if (mediaById.size != hashedMedia.size) fail("DUPLICATE_IDENTITY", "Duplicate media portable identity")
 
+      progress.startStep("build", "prepare_database")
       val cleanDatabase = File(work, "content.sqlite")
       sanitizeDatabase(sourceDatabase, cleanDatabase, mediaById)
       val databaseDigest = FileInputStream(cleanDatabase).use(::sha256)
@@ -462,7 +526,9 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       val manifest = manifest(createdAt, revision, inventory, inventory.keys.count { it.startsWith("media/") })
       validateDatabase(cleanDatabase, inventory, limits)
       val archive = File(work, "archive.pnbak")
-      BufferedOutputStream(FileOutputStream(archive)).use { output ->
+      progress.startStep("build", "write_archive", inventory.values.sumOf { it.bytes })
+      val archiveHasher = MessageDigest.getInstance("SHA-256")
+      DigestOutputStream(BufferedOutputStream(FileOutputStream(archive)), archiveHasher).use { output ->
         ZipOutputStream(output).use { zip ->
           putFile(zip, DATABASE_PATH, cleanDatabase)
           val written = mutableSetOf<String>()
@@ -472,9 +538,11 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
           putBytes(zip, MANIFEST_PATH, manifest.toString().toByteArray(Charsets.UTF_8))
         }
       }
-      val archiveDigest = FileInputStream(archive).use(::sha256)
+      val archiveDigest = Digest(archiveHasher.digest().joinToString("") { "%02x".format(it) }, archive.length())
       if (archiveDigest.bytes > limits.maxArchiveBytes) fail("ARCHIVE_LIMIT_EXCEEDED", "Archive exceeds limit")
+      progress.startStep("build", "copy_archive", archive.length())
       copyToUri(archive, destinationUri)
+      progress.startStep("build", "verify_copy", archive.length())
       val readback = open(destinationUri).use(::sha256)
       if (archiveDigest != readback) fail("DESTINATION_VERIFICATION_FAILED", "Published archive readback differs")
       return summary(manifest, archiveDigest, inventory.values.sumOf { it.bytes })
@@ -493,6 +561,8 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     val archive = File(work, "incoming-${UUID.randomUUID()}.pnbak")
     val extracted = File(work, "validated-${UUID.randomUUID()}")
     try {
+      val sourceSize = sourceSize(archiveUri)
+      progress.startStep("verify", "read_archive", sourceSize)
       val archiveDigest = materializeDigest(archiveUri, archive, limits.maxArchiveBytes)
       val zip = try { ZipFile(archive) } catch (error: Exception) {
         fail("MALFORMED_ARCHIVE", "Archive cannot be opened", error)
@@ -512,7 +582,10 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         advertisedExpanded = checkedAdd(advertisedExpanded, size, limits.maxExpandedBytes)
       }
       if (!portablePaths.contains(portableIdentity(MANIFEST_PATH))) fail("MISSING_MANIFEST", "Manifest is missing")
-      ensureSpace(work, checkedAdd(archive.length(), advertisedExpanded, Long.MAX_VALUE))
+      val stagingBytes = if (request.optionalString("mode") == "verify_only")
+        headers.filter { it.fileName == DATABASE_PATH || it.fileName == MANIFEST_PATH }.sumOf { it.uncompressedSize }
+      else advertisedExpanded
+      ensureSpace(work, stagingBytes)
       if (!extracted.mkdirs()) fail("STAGING_UNAVAILABLE", "Cannot create extraction directory")
 
       val manifestBytes = readEntryBounded(zip, MANIFEST_PATH, MAX_MANIFEST_BYTES)
@@ -524,6 +597,8 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       val expectedPaths = inventory.keys.map(::portableIdentity).toMutableSet().apply { add(portableIdentity(MANIFEST_PATH)) }
       if (portablePaths != expectedPaths) fail("INVENTORY_MISMATCH", "ZIP entries do not exactly match the inventory")
 
+      progress.startStep("verify", "verify_files", inventory.values.sumOf { it.bytes }, inventory.size)
+      val stageMedia = request.optionalString("mode") != "verify_only"
       var expanded = 0L
       inventory.forEach { (path, expected) ->
         val limit = when {
@@ -532,12 +607,19 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
           else -> fail("UNEXPECTED_ENTRY", "Unsupported inventory path: $path")
         }
         if (expected.bytes > limit) fail("ENTRY_LIMIT_EXCEEDED", "Entry exceeds its allowed size: $path")
-        val target = File(extracted, path)
-        target.parentFile?.mkdirs()
+        val stage = path == DATABASE_PATH || stageMedia
         val actual = zip.getInputStream(zip.getFileHeader(path)).use { input ->
-          FileOutputStream(target).use { output -> copyAndHash(input, output, minOf(limit, expected.bytes), expected.bytes) }
+          if (stage) {
+            val target = File(extracted, path)
+            target.parentFile?.mkdirs()
+            FileOutputStream(target).use { output ->
+              validateArchiveEntry(input, expected.hex, expected.bytes, ArchiveValidationMode.STAGE, output, progress::addBytes)
+            }
+          } else {
+            validateArchiveEntry(input, expected.hex, expected.bytes, ArchiveValidationMode.VERIFY_ONLY, null, progress::addBytes)
+          }
         }
-        if (actual != expected) fail("HASH_MISMATCH", "Hash or size mismatch: $path")
+        progress.addItem()
         expanded = checkedAdd(expanded, actual.bytes, limits.maxExpandedBytes)
       }
       validateDatabase(File(extracted, DATABASE_PATH), inventory, limits)
@@ -555,6 +637,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     try {
       val validationRequest = Arguments.createMap().apply {
         putString("archiveUri", archiveUri)
+        putString("mode", "verify_only")
         putString("stagingDirectoryUri", Uri.fromFile(work).toString())
       }
       val summary = validate(validationRequest)
@@ -594,6 +677,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         putString("archiveUri", archiveUri); putString("stagingDirectoryUri", Uri.fromFile(work).toString())
       }
       val summary = validate(validationRequest)
+      progress.startStep("import", "restore_notes")
       if (summary.getString("archiveSha256") != expectedHash) fail("ARCHIVE_CHANGED", "The selected archive changed after preview")
       val extracted = work.listFiles()?.singleOrNull { it.isDirectory && it.name.startsWith("validated-") }
         ?: fail("STAGING_UNAVAILABLE", "Validated import staging is missing")
@@ -736,6 +820,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         putString("stagingDirectoryUri", Uri.fromFile(work).toString())
       }
       val summary = validate(validationRequest)
+      progress.startStep("import", "restore_notes")
       if (summary.getString("archiveSha256") != expectedHash) fail("ARCHIVE_CHANGED", "The selected archive changed after preview")
       val extracted = work.listFiles()?.singleOrNull { it.isDirectory && it.name.startsWith("validated-") }
         ?: fail("STAGING_UNAVAILABLE", "Validated replacement staging is missing")
@@ -1037,7 +1122,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       digest.update(file.relativeTo(snapshot).path.toByteArray(Charsets.UTF_8))
       FileInputStream(file).use { input ->
         val buffer = ByteArray(BUFFER_SIZE)
-        while (true) { val count = input.read(buffer); if (count < 0) break; digest.update(buffer, 0, count) }
+        while (true) { val count = input.read(buffer); if (count < 0) break; digest.update(buffer, 0, count); progress.addBytes(count.toLong()) }
       }
     }
     return digest.digest().joinToString("") { "%02x".format(it) }
@@ -1124,8 +1209,14 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   }
 
   private fun copyFileVerified(source: File, target: File, code: String) {
-    target.parentFile?.mkdirs(); source.copyTo(target, overwrite = true)
+    target.parentFile?.mkdirs()
+    progress.startStep("import", "copy_media", source.length())
+    FileInputStream(source).use { input ->
+      FileOutputStream(target).use { output -> copyBounded(input, output, Long.MAX_VALUE) }
+    }
+    progress.startStep("import", "verify_media", source.length() * 2)
     if (FileInputStream(source).use(::sha256) != FileInputStream(target).use(::sha256)) fail(code, "Copied file verification failed")
+    progress.startStep("import", "restore_notes")
   }
 
   private fun copyDirectoryVerified(source: File, target: File) {
@@ -1416,7 +1507,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   private fun putBytes(zip: ZipOutputStream, path: String, bytes: ByteArray) = bytes.inputStream().use { putStream(zip, path, it) }
   private fun putStream(zip: ZipOutputStream, path: String, input: InputStream) {
     zip.putNextEntry(ZipParameters().apply { fileNameInZip = path; compressionMethod = CompressionMethod.DEFLATE })
-    input.copyTo(zip, BUFFER_SIZE); zip.closeEntry()
+    copyBounded(input, zip, Long.MAX_VALUE); zip.closeEntry()
   }
 
   private fun readEntryBounded(zip: ZipFile, path: String, limit: Long): ByteArray {
@@ -1428,9 +1519,17 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     }
   }
 
+  private fun sourceSize(uri: String): Long? = when {
+    uri.startsWith("gdrive:") -> null
+    uri.startsWith("content:") -> runCatching {
+      context.contentResolver.openAssetFileDescriptor(Uri.parse(uri), "r")?.use { it.length.takeIf { size -> size >= 0 } }
+    }.getOrNull()
+    else -> fileFromUri(uri).length()
+  }
+
   private fun materialize(uri: String, target: File, limit: Long): File { open(uri).use { input -> FileOutputStream(target).use { copyBounded(input, it, limit) } }; return target }
   private fun materializeDigest(uri: String, target: File, limit: Long): Digest = open(uri).use { input -> FileOutputStream(target).use { copyAndHash(input, it, limit, null) } }
-  private fun copyToUri(source: File, uri: String) { FileInputStream(source).use { input -> openOutput(uri).use { output -> input.copyTo(output, BUFFER_SIZE) } } }
+  private fun copyToUri(source: File, uri: String) { FileInputStream(source).use { input -> openOutput(uri).use { output -> copyBounded(input, output, Long.MAX_VALUE) } } }
   private fun open(uri: String): InputStream = when {
     uri.startsWith("gdrive:") -> DriveClient.idFromUri(uri)?.let { DriveClient(context).download(it) }
       ?: fail("INVALID_URI", "Invalid Google Drive archive URI")
@@ -1446,11 +1545,11 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   private fun sha256(input: InputStream): Digest { val sink = object : OutputStream() { override fun write(b: Int) = Unit; override fun write(b: ByteArray, off: Int, len: Int) = Unit }; return copyAndHash(input, sink, Long.MAX_VALUE, null) }
   private fun copyAndHash(input: InputStream, output: OutputStream, limit: Long, exact: Long?): Digest {
     val digest = MessageDigest.getInstance("SHA-256"); val buffer = ByteArray(BUFFER_SIZE); var total = 0L
-    while (true) { val count = input.read(buffer); if (count < 0) break; total = checkedAdd(total, count.toLong(), limit); output.write(buffer, 0, count); digest.update(buffer, 0, count) }
+    while (true) { val count = input.read(buffer); if (count < 0) break; total = checkedAdd(total, count.toLong(), limit); output.write(buffer, 0, count); digest.update(buffer, 0, count); progress.addBytes(count.toLong()) }
     if (exact != null && total != exact) fail("SIZE_MISMATCH", "Entry size differs from inventory")
     return Digest(digest.digest().joinToString("") { "%02x".format(it) }, total)
   }
-  private fun copyBounded(input: InputStream, output: OutputStream, limit: Long) { val buffer = ByteArray(BUFFER_SIZE); var total = 0L; while (true) { val count = input.read(buffer); if (count < 0) return; total = checkedAdd(total, count.toLong(), limit); output.write(buffer, 0, count) } }
+  private fun copyBounded(input: InputStream, output: OutputStream, limit: Long) { val buffer = ByteArray(BUFFER_SIZE); var total = 0L; while (true) { val count = input.read(buffer); if (count < 0) return; total = checkedAdd(total, count.toLong(), limit); output.write(buffer, 0, count); progress.addBytes(count.toLong()) } }
   private fun checkedAdd(current: Long, addition: Long, limit: Long): Long { if (addition < 0 || current > limit - addition) fail("EXPANSION_LIMIT_EXCEEDED", "Archive exceeds configured limit"); return current + addition }
   private fun ensureSpace(directory: File, required: Long) { if (StatFs(directory.absolutePath).availableBytes < required) fail("INSUFFICIENT_STORAGE", "Insufficient available storage for staged archive operation") }
   private fun newWorkDirectory(label: String): File = File(context.cacheDir, "archive-$label-${UUID.randomUUID()}").also { if (!it.mkdirs()) fail("STAGING_UNAVAILABLE", "Cannot create staging directory") }
@@ -1463,6 +1562,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   private fun scalarCount(db: SQLiteDatabase, query: String): Long = db.rawQuery(query, null).use { if (it.moveToFirst()) it.getLong(0) else 0L }
   private fun ReadableMap.optionalString(key: String): String? = if (hasKey(key) && !isNull(key)) getString(key) else null
   private fun errorCode(error: Throwable) = when (error) {
+    is ArchiveValidationException -> error.code
     is ArchiveException -> error.code
     is DriveException -> error.code
     else -> "ARCHIVE_OPERATION_FAILED"

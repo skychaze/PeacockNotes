@@ -13,6 +13,8 @@ export type PublishBackupRequest = Readonly<{
   stagedUri: string;
   displayName: string;
   expectedBytes: number;
+  operationId?: string;
+  operationKind?: string;
 }>;
 
 export type PublishedBackup = Readonly<{
@@ -28,6 +30,7 @@ type BackupFolderNativeModule = {
   startBackupForegroundService(): Promise<void>;
   updateBackupNotification(message: string, progress: number): void;
   finishBackupNotification(success: boolean): void;
+
 };
 
 const nativeModule = NativeModules.BackupFolder as BackupFolderNativeModule | undefined;

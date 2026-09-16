@@ -26,6 +26,7 @@ import {
 } from './backupFolder';
 import { refreshBackupDiscovery } from './backupDiscovery';
 import { withMediaDeletionPaused } from '../utils/mediaFiles';
+import { beginBackupProgress, finishBackupProgress, type BackupProgressOwner } from './backupProgress';
 
 export type ExportProgress =
   | 'capturing'
@@ -54,7 +55,7 @@ const safeTimestamp = (value: string) => value.replace(/[:.]/g, '-');
 const safeIdentity = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '-');
 const operationId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-const captureContent = async (directoryUri: string): Promise<Capture> =>
+const captureContent = async (directoryUri: string, progress?: BackupProgressOwner): Promise<Capture> =>
   withMediaDeletionPaused(async () => {
     const db = await getDb();
     const databaseName = `${operationId()}.db`;
@@ -76,7 +77,7 @@ const captureContent = async (directoryUri: string): Promise<Capture> =>
         portableId: row.portableId,
         sourceUri: row.uri,
         kind: row.kind,
-      })) });
+      })), ...progress });
       return {
         databaseName,
         databaseUri: `file://${snapshot.databasePath}`,
@@ -99,7 +100,7 @@ const sameInventory = (left: ArchiveSummary, right: ArchiveSummary) =>
 
 const executeExport = async (
   onProgress: (progress: ExportProgress) => void = () => {},
-  identity?: Readonly<{ key: string; createdAt: string }>,
+  identity?: Readonly<{ key: string; createdAt: string; operationId: string; operationKind: string }>,
 ): Promise<VerifiedBackup> => {
   const root = FileSystem.cacheDirectory;
   if (!root) throw new Error('STAGING_UNAVAILABLE');
@@ -110,10 +111,15 @@ const executeExport = async (
   const name = `peacock-notes-${safeTimestamp(createdAt)}${identitySuffix}.pnbak`;
   await FileSystem.makeDirectoryAsync(work, { intermediates: true });
   let capture: Capture | null = null;
+  const progress = identity ? {
+    operationId: identity.operationId,
+    operationKind: identity.operationKind,
+  } satisfies BackupProgressOwner : null;
   try {
+    if (progress) await beginBackupProgress({ ...progress, phase: 'capture', step: 'capture' });
     console.info(`[BR-EXPORT] started name=${name}`);
     onProgress('capturing');
-    capture = await captureContent(work);
+    capture = await captureContent(work, progress ?? undefined);
     onProgress('building');
     const staged = await createArchive({
       databaseUri: capture.databaseUri,
@@ -121,15 +127,17 @@ const executeExport = async (
       media: capture.media,
       contentRevision: capture.revision,
       createdAt,
+      ...progress,
     });
     onProgress('publishing');
     const published: PublishedBackup = await publishBackupArchive({
       stagedUri: archiveUri,
       displayName: name,
       expectedBytes: staged.archiveBytes,
+      ...progress,
     });
     onProgress('verifying');
-    const readback = await validateArchive({ archiveUri: published.uri });
+    const readback = await validateArchive({ archiveUri: published.uri, mode: 'verify_only', ...progress });
     if (!sameInventory(staged, readback)) throw new Error('DESTINATION_VERIFICATION_FAILED');
     const verified = {
       name: published.name,
@@ -139,9 +147,11 @@ const executeExport = async (
       contentRevision: capture.revision,
     } satisfies VerifiedBackup;
     await AsyncStorage.setItem('backup.lastVerified', JSON.stringify(verified));
+    if (progress) finishBackupProgress({ ...progress, state: 'succeeded' });
     console.info(`[BR-EXPORT] verified uri=${verified.uri} bytes=${verified.bytes}`);
     return verified;
   } catch (error) {
+    if (progress) finishBackupProgress({ ...progress, state: 'failed' });
     console.warn('[BR-EXPORT] failed after remote publication may have occurred:', error);
     throw error;
   } finally {
@@ -165,6 +175,8 @@ class ExportOperationHandler implements BackupOperationHandler {
       this.verified = await executeExport(this.progress ?? undefined, {
         key: idempotencyKey,
         createdAt: operation.createdAt,
+        operationId: operation.id,
+        operationKind: operation.kind,
       });
       return { outcome: 'committed', checkpoint: 'verified', done: true } as const;
     } catch (error: unknown) {
@@ -187,7 +199,12 @@ class ExportOperationHandler implements BackupOperationHandler {
       const collection = await scanBackupCollection(true);
       const candidate = collection.archives.find((archive) => archive.name === expectedName && archive.state === 'valid');
       if (!candidate) return { outcome: 'not_committed' } as const;
-      const summary = await validateArchive({ archiveUri: candidate.uri });
+      const summary = await validateArchive({
+        archiveUri: candidate.uri,
+        mode: 'verify_only',
+        operationId: operation.id,
+        operationKind: operation.kind,
+      });
       const verified = {
         name: candidate.name,
         uri: candidate.uri,
@@ -217,16 +234,25 @@ class ManagedRetentionHandler implements BackupOperationHandler {
     return operation.checkpoint ? null : { name: 'scan_and_prune' };
   }
 
-  async runStep() {
+  async runStep({ operation }: Parameters<BackupOperationHandler['runStep']>[0]) {
+    const progress = {
+      operationId: operation.id,
+      operationKind: operation.kind,
+    } satisfies BackupProgressOwner;
+    await beginBackupProgress({ ...progress, phase: 'scan', step: 'scan_archives' });
+    let failed = false;
     try {
-      this.result = await applyManagedArchiveRetention();
+      this.result = await applyManagedArchiveRetention(progress);
       return { outcome: 'committed', checkpoint: 'retention_applied', done: true } as const;
-    } catch (error: unknown) {
+    } catch (error) {
+      failed = true;
       const code = typeof error === 'object' && error !== null && 'code' in error
         ? String(error.code)
         : error instanceof Error ? error.message : 'RETENTION_FAILED';
       const message = error instanceof Error ? error.message : 'Managed retention failed.';
       return { outcome: 'failed', code, message } as const;
+    } finally {
+      finishBackupProgress({ ...progress, state: failed ? 'failed' : 'succeeded' });
     }
   }
 

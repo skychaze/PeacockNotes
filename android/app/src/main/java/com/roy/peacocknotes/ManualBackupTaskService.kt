@@ -39,6 +39,17 @@ class ManualBackupTaskService : HeadlessJsTaskService() {
     } else {
       startForeground(ManualBackupForegroundService.NOTIFICATION_ID, notification)
     }
+    BackupProgressStore.setNotificationTarget(this, ManualBackupForegroundService.CHANNEL_ID, ManualBackupForegroundService.NOTIFICATION_ID)
+  }
+
+  override fun onDestroy() {
+    BackupProgressStore.clearNotificationTarget(ManualBackupForegroundService.NOTIFICATION_ID)
+    super.onDestroy()
+  }
+
+  override fun onTimeout(startId: Int, fgsType: Int) {
+    stopForeground(STOP_FOREGROUND_REMOVE)
+    stopSelf()
   }
 
   override fun getTaskConfig(intent: Intent?): HeadlessJsTaskConfig = HeadlessJsTaskConfig(

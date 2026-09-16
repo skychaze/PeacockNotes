@@ -43,9 +43,52 @@ class BackupFolderModule(private val reactContext: ReactApplicationContext) :
 
   init {
     reactContext.addActivityEventListener(this)
+    BackupProgressStore.attach(reactContext)
   }
 
   override fun getName() = "BackupFolder"
+
+  override fun invalidate() {
+    BackupProgressStore.detach(reactContext)
+    super.invalidate()
+  }
+
+  @ReactMethod
+  fun getBackupProgressSnapshot(promise: Promise) {
+    promise.resolve(BackupProgressStore.snapshot()?.toWritableMap())
+  }
+
+  @ReactMethod
+  fun beginBackupProgress(request: ReadableMap, promise: Promise) {
+    val operationId = request.optionalString("operationId")
+    val operationKind = request.optionalString("operationKind")
+    if (operationId.isNullOrBlank() || operationKind.isNullOrBlank()) {
+      promise.reject("INVALID_REQUEST", "operationId and operationKind are required")
+      return
+    }
+    val started = BackupProgressStore.registry.begin(
+      operationId,
+      operationKind,
+      request.optionalString("phase") ?: "working",
+      request.optionalString("step") ?: "working",
+      if (request.hasKey("bytesTotal") && !request.isNull("bytesTotal")) request.getDouble("bytesTotal").toLong() else null,
+      if (request.hasKey("itemsTotal") && !request.isNull("itemsTotal")) request.getInt("itemsTotal") else null,
+    )
+    if (started) promise.resolve(true) else promise.reject("BACKUP_PROGRESS_BUSY", "Another backup operation owns progress")
+  }
+
+  @ReactMethod
+  fun finishBackupProgress(request: ReadableMap) {
+    request.optionalString("operationId")?.let { operationId ->
+      BackupProgressStore.registry.finish(operationId, request.optionalString("state") ?: "succeeded")
+    }
+  }
+
+  @ReactMethod
+  fun addListener(eventName: String) = Unit
+
+  @ReactMethod
+  fun removeListeners(count: Int) = Unit
 
   @ReactMethod
   fun getFolderState(promise: Promise) = executor.execute {
@@ -104,12 +147,15 @@ class BackupFolderModule(private val reactContext: ReactApplicationContext) :
       }
       val displayName = string(request, "displayName")
       val drive = DriveClient(reactContext)
+      val progress = progressReporter(request)
+      progress.startStep("publish", "upload", expected)
       val item = try {
         drive.uploadResumable(
           folder.first,
           displayName,
           source,
           "application/octet-stream",
+          onProgress = { progress.update(bytesDone = it) },
         )
       } catch (uploadError: Throwable) {
         // A resumable PUT can commit remotely and then lose its response to a
