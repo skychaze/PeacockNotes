@@ -65,12 +65,19 @@ export const parseLatestRelease = (payload: unknown): ReleasedApk | null => {
   if (!isRecord(payload) || payload.draft === true || payload.prerelease === true) {
     return null;
   }
+  if (typeof payload.tag_name !== 'string') {
+    return null;
+  }
+  const tagMatch = /^v(.+)$/.exec(payload.tag_name) ?? /^V(.+)$/.exec(payload.tag_name);
+  if (!tagMatch) {
+    return null;
+  }
   if (!Array.isArray(payload.assets)) {
     return null;
   }
   return payload.assets
     .map(parseReleasedApk)
-    .filter((apk): apk is ReleasedApk => apk !== null)
+    .filter((apk): apk is ReleasedApk => apk !== null && apk.versionName === tagMatch[1])
     .reduce<ReleasedApk | null>(
       (newest, apk) => (newest === null || apk.versionCode > newest.versionCode ? apk : newest),
       null

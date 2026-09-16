@@ -48,6 +48,11 @@ const release = {
       browser_download_url: 'https://example.test/new.apk',
       size: 99,
     },
+    {
+      name: 'peacocknotes-v9.9.9-99.apk',
+      browser_download_url: 'https://example.test/stale.apk',
+      size: 999,
+    },
   ],
 };
 
@@ -55,6 +60,18 @@ const selected = parseLatestRelease(release);
 assert(selected !== null, 'a normal release must select an APK');
 assert(selected?.downloadUrl === 'https://example.test/new.apk', 'the highest version code must win');
 assert(selected?.sizeBytes === 99, 'the asset size must be carried over');
+assert(
+  parseLatestRelease({ ...release, tag_name: 'v1.1.5' }) === null,
+  'an APK whose version does not match the release tag must be rejected'
+);
+assert(
+  parseLatestRelease({ ...release, tag_name: 'V1.1.4' })?.downloadUrl === 'https://example.test/new.apk',
+  'uppercase release tags must use the matching APK'
+);
+assert(
+  parseLatestRelease({ ...release, tag_name: undefined }) === null,
+  'a release without a tag must be rejected'
+);
 
 assert(
   parseLatestRelease({ ...release, prerelease: true }) === null,
