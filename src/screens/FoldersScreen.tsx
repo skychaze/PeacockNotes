@@ -15,7 +15,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
-import Animated from 'react-native-reanimated';
+import Animated, { FadeIn } from 'react-native-reanimated';
 import { ActionSheet } from '../components/ActionSheet';
 import type { ActionSheetRow } from '../components/ActionSheet';
 import { AppText, getFontFamily } from '../components/AppText';
@@ -41,8 +41,10 @@ import {
   type SortField,
 } from '../database/schema';
 import { getBackupDiscoverySnapshot, initializeBackupDiscovery, subscribeBackupDiscovery } from '../services/backupDiscovery';
+import { getAppUpdateSnapshot, hasAppUpdate, subscribeAppUpdate } from '../services/appUpdate';
 import { useLanguage } from '../i18n/LanguageContext';
 import { FOLDER_ACCENTS } from '../theme/colors';
+import { useQuality } from '../theme/quality';
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
 import type { FolderListItem } from '../types/models';
@@ -58,6 +60,7 @@ const SORT_FIELDS: SortField[] = ['custom', 'name', 'createdAt'];
 export const FoldersScreen = () => {
   const navigation = useNavigation<Navigation>();
   const { colors, isDark, toggleTheme } = useAppColors();
+  const { motionEnabled } = useQuality();
   const { t, language } = useLanguage();
   const { width: windowWidth } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -66,6 +69,7 @@ export const FoldersScreen = () => {
 
   const [folders, setFolders] = useState<FolderListItem[]>([]);
   const [backupDiscovery, setBackupDiscovery] = useState(getBackupDiscoverySnapshot());
+  const [appUpdate, setAppUpdate] = useState(getAppUpdateSnapshot());
   const [isLoading, setIsLoading] = useState(true);
   const [activeSheet, setActiveSheet] = useState<ActiveSheet>('none');
   const [selectedFolderIds, setSelectedFolderIds] = useState<ReadonlySet<number>>(new Set());
@@ -81,6 +85,7 @@ export const FoldersScreen = () => {
   const fabBottom = Math.max(insets.bottom + 12, 22);
   const listBottomPadding = Math.max(insets.bottom + 104, 126);
   const appVersion = Constants.expoConfig?.version;
+  const hasUpdate = hasAppUpdate(appUpdate);
 
   const closeSheet = useCallback(() => setActiveSheet('none'), []);
   const isSelecting = selectedFolderIds.size > 0;
@@ -96,6 +101,11 @@ export const FoldersScreen = () => {
         icon: 'backup-restore',
         label: t('drawer.backupRestore'),
         onPress: () => navigation.navigate('Backup'),
+      },
+      {
+        icon: 'cellphone-arrow-down',
+        label: t('drawer.updates'),
+        onPress: () => navigation.navigate('AppUpdate'),
       },
     ],
     [navigation, t]
@@ -121,6 +131,10 @@ export const FoldersScreen = () => {
   useFocusEffect(useCallback(() => {
     setBackupDiscovery(getBackupDiscoverySnapshot());
     return subscribeBackupDiscovery(setBackupDiscovery);
+  }, []));
+  useFocusEffect(useCallback(() => {
+    setAppUpdate(getAppUpdateSnapshot());
+    return subscribeAppUpdate(setAppUpdate);
   }, []));
 
   const openBackupInfo = async () => {
@@ -391,9 +405,18 @@ export const FoldersScreen = () => {
       </View>
 
       <TopBar leading={appVersion ? (
-        <AppText variant="caption" color={colors.textSecondary} style={{ opacity: 0.7 }}>
-          v{appVersion}
-        </AppText>
+        <View style={{ gap: ui.space.xs }}>
+          <AppText variant="caption" color={colors.textSecondary} style={{ opacity: 0.7 }}>
+            v{appVersion}
+          </AppText>
+          {hasUpdate ? (
+            <Animated.View entering={motionEnabled ? FadeIn.duration(160) : undefined}>
+              <AppText variant="caption" color={colors.primary}>
+                {t('update.availableShort')}
+              </AppText>
+            </Animated.View>
+          ) : null}
+        </View>
       ) : null}>
         {isSelecting ? <>
           <AppText variant="headline">{t('selection.count', { count: selectedFolderIds.size })}</AppText>

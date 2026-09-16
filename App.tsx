@@ -25,10 +25,12 @@ import {
 import { ShareImportScreen } from './src/screens/ShareImportScreen';
 import { StorageUsageScreen } from './src/screens/StorageUsageScreen';
 import { BackupScreen } from './src/screens/BackupScreen';
+import { AppUpdateScreen } from './src/screens/AppUpdateScreen';
 import { ImportBackupScreen } from './src/screens/ImportBackupScreen';
 import { LanguageProvider, useLanguage } from './src/i18n/LanguageContext';
 import { recoverInterruptedFullReplacement } from './src/services/archive';
 import { installAutomaticBackupCatchUp } from './src/services/automaticBackup';
+import { checkForAppUpdate } from './src/services/appUpdate';
 import { initializeBackupDiscovery } from './src/services/backupDiscovery';
 import { finishBackupNotification } from './src/services/backupFolder';
 import { resumePendingBackupOperation } from './src/services/backupBackground';
@@ -102,6 +104,13 @@ const AppNavigator = () => {
       cancelled = true;
       uninstallAutomaticCatchUp?.();
     };
+  }, [hasSetupError, isReady]);
+
+  useEffect(() => {
+    if (!isReady || hasSetupError) return;
+    // Startup must never wait on the network: the check only updates the
+    // snapshot that the home badge and the Updates screen read.
+    void checkForAppUpdate();
   }, [hasSetupError, isReady]);
 
   useEffect(() => {
@@ -190,6 +199,7 @@ const AppNavigator = () => {
           <Stack.Screen name="Folders" component={FoldersScreen} />
           <Stack.Screen name="StorageUsage" component={StorageUsageScreen} />
           <Stack.Screen name="Backup" component={BackupScreen} />
+          <Stack.Screen name="AppUpdate" component={AppUpdateScreen} />
           <Stack.Screen name="ImportBackup" component={ImportBackupScreen} />
           <Stack.Screen name="NotesList" component={NotesListScreen} />
           <Stack.Screen name="NoteEditor" component={NoteEditorScreen} />
