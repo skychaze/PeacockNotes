@@ -2,10 +2,11 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { ActivityIndicator, Alert, ScrollView, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { buildArchiveTree, folderCheckState, resolvePreviewFolders, toggleArchiveNotes, type ArchiveTreeFolder } from '../backup/archiveTree';
 import { AppText } from '../components/AppText';
+import { BackupProgressCard } from '../components/BackupProgressCard';
 import { Card } from '../components/Card';
 import { LanguageToggleButton } from '../components/LanguageToggleButton';
 import { PressableScale } from '../components/PressableScale';
@@ -25,7 +26,7 @@ import {
   previewNewestArchive,
 } from '../services/backupImport';
 import { requestBackupNotificationPermissionOnce } from '../services/backupNotificationPermission';
-import { beginBackupProgress, createBackupProgressOperationId, finishBackupProgress } from '../services/backupProgress';
+import { beginBackupProgress, createBackupProgressOperationId, finishBackupProgress, getBackupProgressSnapshot, subscribeBackupProgress, type BackupProgressSnapshot } from '../services/backupProgress';
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
 import type { RootStackParamList } from '../types/navigation';
@@ -53,6 +54,7 @@ export const ImportBackupScreen = () => {
   const [selectedNoteIds, setSelectedNoteIds] = useState<ReadonlySet<string>>(new Set());
   const [expandedFolderIds, setExpandedFolderIds] = useState<ReadonlySet<string>>(new Set());
   const [state, setState] = useState<'idle' | 'previewing' | 'committing'>('idle');
+  const [liveProgress, setLiveProgress] = useState<BackupProgressSnapshot | null>(null);
   const [result, setResult] = useState<ImportResult | FullReplacementResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
@@ -60,6 +62,32 @@ export const ImportBackupScreen = () => {
 
   useEffect(() => () => { mountedRef.current = false; }, []);
   useEffect(() => subscribeBackupDiscovery(setDiscovery), []);
+  useFocusEffect(useCallback(() => {
+    let active = true;
+    let revision = 0;
+    const unsubscribe = subscribeBackupProgress((snapshot) => {
+      revision += 1;
+      if (active) setLiveProgress(snapshot?.state === 'running' ? snapshot : null);
+    });
+    const refresh = async () => {
+      const startedAt = revision;
+      try {
+        const snapshot = await getBackupProgressSnapshot();
+        if (active && revision === startedAt) setLiveProgress(snapshot?.state === 'running' ? snapshot : null);
+      } catch (error) {
+        console.warn('Failed to read backup progress:', error);
+      }
+    };
+    void refresh();
+    const appState = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') void refresh();
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+      appState.remove();
+    };
+  }, []));
   useFocusEffect(useCallback(() => { void initializeBackupDiscovery(); }, []));
 
   const runForegroundOperation = async <T,>(work: () => Promise<T>): Promise<T> => {
@@ -260,6 +288,7 @@ export const ImportBackupScreen = () => {
     <ScreenContainer>
       <ScrollView contentContainerStyle={{ paddingTop: insets.top + ui.space.sm + TOP_BAR_HEIGHT + ui.space.md, paddingHorizontal: ui.space.lg, paddingBottom: Math.max(insets.bottom + ui.space.xxl, ui.space.xxxl), gap: ui.space.lg }}>
         <AppText variant="display">{t('backup.import.title')}</AppText>
+        {liveProgress ? <BackupProgressCard progress={liveProgress} /> : null}
 
         {error ? <Card><AppText variant="body" color={colors.error}>{error}</AppText></Card> : null}
         {result ? (
