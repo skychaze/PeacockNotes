@@ -63,11 +63,12 @@ export const ImportBackupScreen = () => {
   useFocusEffect(useCallback(() => { void initializeBackupDiscovery(); }, []));
 
   const runForegroundOperation = async <T,>(work: () => Promise<T>): Promise<T> => {
-    if (operationInFlightRef.current || await getActiveBackupOperation()) throw new Error('BACKUP_OPERATION_BUSY');
+    if (operationInFlightRef.current) throw new Error('BACKUP_OPERATION_BUSY');
     operationInFlightRef.current = true;
     let serviceStarted = false;
     let completed = false;
     try {
+      if (await getActiveBackupOperation()) throw new Error('BACKUP_OPERATION_BUSY');
       await requestBackupNotificationPermissionOnce();
       await startBackupForegroundService();
       serviceStarted = true;

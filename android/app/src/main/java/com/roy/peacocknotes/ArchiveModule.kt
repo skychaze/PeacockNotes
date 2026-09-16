@@ -269,6 +269,8 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       // A full deep scan remains available for explicit recovery/debugging.
       // Managed retention calls the same routine with trusted-cache reuse so
       // unchanged verified archives do not get downloaded and parsed again.
+      // A cache miss during retention performs a health check without building
+      // a note tree, keeping the persisted scan metadata small.
       // Drive's immutable ID plus size/modified-time fingerprint invalidates
       // that trust when the provider changes an item.
       val cachedIsTrusted = cacheMatches &&
@@ -283,8 +285,8 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       var preview = if (cacheMatches) cachedItem?.optJSONObject("preview") else null
       val archive = if (shouldValidate) {
         deepValidated += 1
-        val scanned = scanArchive(uri, item.name, item.size, item.modifiedTime)
-        preview = scanned.preview
+        val scanned = scanArchive(uri, item.name, item.size, item.modifiedTime, includePreview = !reuseTrustedCache)
+        preview = scanned.preview ?: preview
         scanned.archive.also { value ->
           if (value.getString("state") == "valid") lightRecoveryPointFound = true
         }
@@ -406,7 +408,13 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     val preview: JSONObject?,
   )
 
-  private fun scanArchive(uri: String, name: String, providerSize: Long?, modified: Long?): ScannedArchive {
+  private fun scanArchive(
+    uri: String,
+    name: String,
+    providerSize: Long?,
+    modified: Long?,
+    includePreview: Boolean,
+  ): ScannedArchive {
     val archive = Arguments.createMap().apply {
       putString("uri", uri)
       putString("name", name)
@@ -414,12 +422,22 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       if (modified == null) putNull("providerModifiedAt") else putDouble("providerModifiedAt", modified.toDouble())
     }
     return try {
-      val preview = buildPreview(uri)
+      val summary = if (includePreview) null else validate(Arguments.createMap().apply {
+        putString("archiveUri", uri)
+        putString("mode", "verify_only")
+      })
+      val preview = if (includePreview) buildPreview(uri) else null
       archive.putString("state", "valid")
       archive.putString("verification", "verified")
       archive.putString("compatibility", "compatible")
-      archive.putString("createdAt", preview.getString("createdAt"))
-      if (providerSize == null) archive.putNull("bytes") else archive.putDouble("bytes", providerSize.toDouble())
+      val createdAt = preview?.optString("createdAt")?.takeIf(String::isNotBlank) ?: summary?.getString("createdAt")
+      if (createdAt == null) archive.putNull("createdAt") else archive.putString("createdAt", createdAt)
+      if (providerSize == null) {
+        val archiveBytes = summary?.getDouble("archiveBytes")
+        if (archiveBytes == null) archive.putNull("bytes") else archive.putDouble("bytes", archiveBytes)
+      } else {
+        archive.putDouble("bytes", providerSize.toDouble())
+      }
       ScannedArchive(archive, preview)
     } catch (error: Exception) {
       val code = errorCode(error)

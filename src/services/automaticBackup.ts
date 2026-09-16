@@ -34,11 +34,15 @@ export type AutomaticBackupState = Readonly<{
 }>;
 
 type AutomaticBackupNativeModule = {
-  getState(): Promise<AutomaticBackupState>;
-  setEnabled(enabled: boolean, intervalHours: AutomaticBackupIntervalHours): Promise<AutomaticBackupState>;
-  setInterval(intervalHours: AutomaticBackupIntervalHours): Promise<AutomaticBackupState>;
+  getState(): Promise<AutomaticBackupNativeState>;
+  setEnabled(enabled: boolean, intervalHours: AutomaticBackupIntervalHours): Promise<AutomaticBackupNativeState>;
+  setInterval(intervalHours: AutomaticBackupIntervalHours): Promise<AutomaticBackupNativeState>;
   setStatus(phase: AutomaticBackupPhase, attempt: number, errorCode: string | null): Promise<void>;
   constraintsMet(): Promise<{ connected: boolean; batteryOkay: boolean }>;
+};
+
+type AutomaticBackupNativeState = Omit<AutomaticBackupState, 'intervalHours'> & {
+  intervalHours?: unknown;
 };
 
 const nativeModule = NativeModules.AutomaticBackup as AutomaticBackupNativeModule | undefined;
@@ -79,7 +83,7 @@ const delay = (milliseconds: number) => new Promise<void>((resolve) => {
   setTimeout(resolve, milliseconds);
 });
 
-const normalizeAutomaticBackupState = (state: AutomaticBackupState): AutomaticBackupState => ({
+const normalizeAutomaticBackupState = (state: AutomaticBackupNativeState): AutomaticBackupState => ({
   ...state,
   intervalHours: isAutomaticBackupIntervalHours(state.intervalHours)
     ? state.intervalHours
