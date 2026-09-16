@@ -59,8 +59,14 @@ jobs:
             ls -la android/app/build/outputs/apk/release >&2
             exit 1
           fi
-          gh release create "$TAG_NAME" "$APK_PATH#Peacock Notes APK" \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --generate-notes \
-            --title "Peacock Notes $TAG_NAME"
+          if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" "$APK_PATH#Peacock Notes APK" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          else
+            gh release create "$TAG_NAME" "$APK_PATH#Peacock Notes APK" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --generate-notes \
+              --title "Peacock Notes $TAG_NAME"
+          fi
