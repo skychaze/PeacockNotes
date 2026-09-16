@@ -8,6 +8,17 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/7d13650a-3749-415c-bd06-664c7d47e2e0",
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0,
+      "requestHeaders": {
+        "expo-channel-name": "production"
+      }
+    },
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -55,7 +66,9 @@
           }
         }
       ],
-      "./plugins/withShareIntentFilterCleanup"
+      "./plugins/withShareIntentFilterCleanup",
+      "./plugins/withGradleJvmMemory",
+      "expo-font"
     ],
     "web": {
       "favicon": "./assets/favicon.png"
