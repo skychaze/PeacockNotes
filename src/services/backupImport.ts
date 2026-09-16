@@ -35,6 +35,7 @@ import {
   type ImportPreview,
   type ImportResult,
 } from './archive';
+import { beginBackupProgress, finishBackupProgress, type BackupProgressOwner } from './backupProgress';
 
 const liveDatabaseUri = async () => `file://${(await getDb()).databasePath}`;
 
@@ -54,6 +55,12 @@ class ImportOperationHandler implements BackupOperationHandler {
     if (!mediaDirectoryUri) {
       return { outcome: 'failed', code: 'STORAGE_UNAVAILABLE', message: 'App storage is unavailable.' } as const;
     }
+    const progress = {
+      operationId: operation.id,
+      operationKind: operation.kind,
+    } satisfies BackupProgressOwner;
+    await beginBackupProgress({ ...progress, phase: 'import', step: 'verify_archive' });
+    let failed = false;
     try {
       const payload = parseImportPayload(operation.payload);
       if (payload.mode === 'undo') {
@@ -73,6 +80,7 @@ class ImportOperationHandler implements BackupOperationHandler {
             databaseUri,
             mediaDirectoryUri,
             operationKey: idempotencyKey,
+            ...progress,
           }));
         } finally {
           await initDb();
@@ -92,17 +100,21 @@ class ImportOperationHandler implements BackupOperationHandler {
           databaseUri,
           mediaDirectoryUri,
           operationKey: idempotencyKey,
+          ...progress,
         }));
       } finally {
         await initDb();
       }
       return { outcome: 'committed', checkpoint: 'selected_batch_committed', done: true } as const;
     } catch (error: unknown) {
+      failed = true;
       const code = typeof error === 'object' && error !== null && 'code' in error
         ? String(error.code)
         : error instanceof Error ? error.message : 'IMPORT_FAILED';
       const message = error instanceof Error ? error.message : 'Import failed.';
       return { outcome: 'failed', code, message } as const;
+    } finally {
+      finishBackupProgress({ ...progress, state: failed ? 'failed' : 'succeeded' });
     }
   }
 
@@ -143,17 +155,17 @@ export const resumePendingImportOperation = async () => {
   return coordinator.resume(['import']);
 };
 
-export const browseArchiveForImport = async (): Promise<ImportPreview | null> => {
+export const browseArchiveForImport = async (): Promise<string | null> => {
   const result = await DocumentPicker.getDocumentAsync({
     type: 'application/octet-stream',
     copyToCacheDirectory: false,
   });
   if (result.canceled) return null;
-  return previewArchiveImport(result.assets[0].uri);
+  return result.assets[0].uri;
 };
 
-export const previewNewestArchive = (archiveUri: string): Promise<ImportPreview> =>
-  previewArchiveImport(archiveUri);
+export const previewNewestArchive = (archiveUri: string, progress?: BackupProgressOwner): Promise<ImportPreview> =>
+  previewArchiveImport(archiveUri, progress);
 
 const importNotes = async (
   payload: ImportPayload,

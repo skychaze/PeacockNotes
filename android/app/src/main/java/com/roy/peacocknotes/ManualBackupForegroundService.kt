@@ -20,6 +20,7 @@ class ManualBackupForegroundService : Service() {
   override fun onCreate() {
     super.onCreate()
     startAsForeground()
+    BackupProgressStore.setNotificationTarget(this, CHANNEL_ID, NOTIFICATION_ID)
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -52,6 +53,16 @@ class ManualBackupForegroundService : Service() {
     } else {
       startForeground(NOTIFICATION_ID, notification)
     }
+  }
+
+  override fun onDestroy() {
+    BackupProgressStore.clearNotificationTarget(NOTIFICATION_ID)
+    super.onDestroy()
+  }
+
+  override fun onTimeout(startId: Int, fgsType: Int) {
+    stopForeground(STOP_FOREGROUND_REMOVE)
+    stopSelf()
   }
 
   override fun onBind(intent: Intent?): IBinder? = null

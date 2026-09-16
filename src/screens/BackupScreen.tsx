@@ -2,7 +2,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, ScrollView, Switch, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, ScrollView, Switch, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppText } from '../components/AppText';
 import { Card } from '../components/Card';
@@ -17,7 +17,6 @@ import {
   disconnectBackupFolder,
   releaseBackupForegroundService,
   startBackupForegroundService,
-  updateBackupNotification,
 } from '../services/backupFolder';
 import { ProgressFill } from '../components/ProgressFill';
 import {
@@ -67,14 +66,17 @@ import { useAppColors } from '../theme/useAppColors';
 import type { RootStackParamList } from '../types/navigation';
 import { formatBackupDate } from '../utils/backupDate';
 
+import {
+  beginBackupProgress,
+  createBackupProgressOperationId,
+  finishBackupProgress,
+  getBackupProgressSnapshot,
+  subscribeBackupProgress,
+  type BackupProgressSnapshot,
+} from '../services/backupProgress';
+
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'Backup'>;
 
-const EXPORT_PROGRESS: Record<ExportProgress, number> = {
-  capturing: 10,
-  building: 35,
-  publishing: 70,
-  verifying: 92,
-};
 
 const IMPORT_PREVIEW_ERROR_KEYS: Record<string, string> = {
   DRIVE_AUTH_REQUIRED: 'backup.import.error.DRIVE_AUTH_REQUIRED',
@@ -91,6 +93,7 @@ export const BackupScreen = () => {
   const insets = useSafeAreaInsets();
   const { colors } = useAppColors();
   const { language, t } = useLanguage();
+  const [liveProgress, setLiveProgress] = useState<BackupProgressSnapshot | null>(null);
   const [discovery, setDiscovery] = useState(getBackupDiscoverySnapshot());
   const [isChoosing, setIsChoosing] = useState(false);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
@@ -123,6 +126,29 @@ export const BackupScreen = () => {
   useEffect(() => () => { mountedRef.current = false; }, []);
 
   useEffect(() => subscribeBackupDiscovery(setDiscovery), []);
+
+  useFocusEffect(useCallback(() => {
+    let active = true;
+    let revision = 0;
+    const unsubscribe = subscribeBackupProgress((snapshot) => {
+      revision += 1;
+      if (active) setLiveProgress(snapshot?.state === 'running' ? snapshot : null);
+    });
+    const refresh = async () => {
+      const startedAt = revision;
+      try {
+        const snapshot = await getBackupProgressSnapshot();
+        if (active && revision === startedAt) setLiveProgress(snapshot?.state === 'running' ? snapshot : null);
+      } catch (error) {
+        console.warn('Failed to read backup progress:', error);
+      }
+    };
+    void refresh();
+    const appState = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void refresh();
+    });
+    return () => { active = false; unsubscribe(); appState.remove(); };
+  }, []));
 
   const folder = discovery.value.folder;
   const collection = discovery.value.collection;
@@ -356,9 +382,8 @@ export const BackupScreen = () => {
     setVerifiedBackup(null);
     try {
       const result = await runForegroundOperation(() => exportBackup((progress) => {
-          setExportProgress(progress);
-          updateBackupNotification(t(`backup.export.progress.${progress}`), EXPORT_PROGRESS[progress]);
-        }));
+        setExportProgress(progress);
+      }));
       setVerifiedBackup(result);
       // A collection scan re-downloads and validates every archive. Refresh it
       // after the verified result is visible instead of holding the export UI
@@ -389,10 +414,17 @@ export const BackupScreen = () => {
     setReplacementResult(null);
     setImportPreview(null);
     try {
-      const preview = archiveUri
-        ? await previewNewestArchive(archiveUri)
-        : await browseArchiveForImport();
-      if (!preview) return;
+      const uri = archiveUri ?? await browseArchiveForImport();
+      if (!uri) return;
+      const preview = await runForegroundOperation(async () => {
+        const owner = { operationId: createBackupProgressOperationId(), operationKind: 'preview' };
+        await beginBackupProgress({ ...owner, phase: 'verify', step: 'read_archive' });
+        try {
+          return await previewNewestArchive(uri, owner);
+        } finally {
+          finishBackupProgress(owner);
+        }
+      });
       setImportPreview(preview);
       setImportMode(null);
       setExpandedFolderId(null);
@@ -523,7 +555,7 @@ export const BackupScreen = () => {
   };
 
   const isConnected = folder.status === 'connected';
-  const operationBusy = operationRunning || activeOperation !== null || exportProgress !== null || importState === 'committing' || undoState === 'committing' || isDeletingArchives;
+  const operationBusy = liveProgress !== null || importState === 'previewing' || operationRunning || activeOperation !== null || exportProgress !== null || importState === 'committing' || undoState === 'committing' || isDeletingArchives;
 
   useEffect(() => {
     if (!operationBusy) return;
@@ -581,6 +613,12 @@ export const BackupScreen = () => {
           files: result.restrictedFileCount,
         });
 
+  const progressTotal = liveProgress?.bytesTotal ?? liveProgress?.itemsTotal ?? null;
+  const progressDone = liveProgress?.bytesTotal != null ? liveProgress.bytesDone : liveProgress?.itemsDone ?? 0;
+  const progressPercent = progressTotal !== null && progressTotal > 0
+    ? Math.min(100, Math.floor(progressDone * 100 / progressTotal))
+    : null;
+
   return (
     <ScreenContainer>
       <ScrollView
@@ -593,6 +631,26 @@ export const BackupScreen = () => {
       >
         <View style={{ gap: ui.space.sm }}>
           <AppText variant="display">{t('header.backup')}</AppText>
+          {liveProgress ? (
+            <Card style={{ gap: ui.space.sm }}>
+              <AppText variant="headline">{t(`backup.progress.kind.${liveProgress.operationKind}`)}</AppText>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: ui.space.sm }}>
+                <AppText variant="bodySmall">{t(`backup.progress.step.${liveProgress.step}`)}</AppText>
+                {progressPercent === null
+                  ? <ActivityIndicator color={colors.primary} size="small" />
+                  : <AppText variant="bodySmall" color={colors.primary}>{progressPercent}%</AppText>}
+              </View>
+              {progressPercent !== null ? <ProgressFill progress={progressPercent / 100} trackColor={colors.border} fillColor={colors.primary} /> : null}
+              <AppText variant="caption" color={colors.textSecondary}>
+                {liveProgress.bytesTotal !== null
+                  ? `${formatBytes(liveProgress.bytesDone)} / ${formatBytes(liveProgress.bytesTotal)}`
+                  : liveProgress.bytesDone > 0
+                    ? formatBytes(liveProgress.bytesDone)
+                    : t('backup.progress.items', { done: liveProgress.itemsDone, total: liveProgress.itemsTotal ?? '?' })}
+              </AppText>
+              <AppText variant="caption" color={colors.textSecondary}>{t('backup.progress.background')}</AppText>
+            </Card>
+          ) : null}
           <AppText variant="body" color={colors.textSecondary}>
             {t('backup.intro')}
           </AppText>
@@ -641,17 +699,6 @@ export const BackupScreen = () => {
       <PrimaryButton onPress={() => void startExport()} disabled={!isConnected || operationBusy}>
             {exportProgress ? t(`backup.export.progress.${exportProgress}`) : t('backup.export.action')}
           </PrimaryButton>
-          {exportProgress ? (
-            <View style={{ gap: ui.space.xs }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: ui.space.sm }}>
-              <AppText variant="body" color={colors.textSecondary}>
-                {t(`backup.export.progress.${exportProgress}`)}
-              </AppText>
-                <AppText variant="body" color={colors.primary}>{EXPORT_PROGRESS[exportProgress]}%</AppText>
-              </View>
-              <ProgressFill progress={EXPORT_PROGRESS[exportProgress] / 100} trackColor={colors.border} fillColor={colors.primary} />
-            </View>
-          ) : null}
           {verifiedBackup ? (
             <View style={{ gap: ui.space.xs }}>
               <AppText variant="headline" color={colors.primary}>{t('backup.export.success')}</AppText>

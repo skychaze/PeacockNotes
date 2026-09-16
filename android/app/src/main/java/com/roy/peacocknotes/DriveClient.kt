@@ -185,7 +185,7 @@ class DriveClient(private val context: Context, private val accessToken: (() -> 
     }
   }
 
-  fun uploadResumable(parent: String, name: String, file: File, mime: String): Item {
+  fun uploadResumable(parent: String, name: String, file: File, mime: String, onProgress: (Long) -> Unit = {}): Item {
     val totalBytes = file.length()
     Log.i("BackupRuntime", "[DEBUG-BR-DRIVE] upload_start name=$name bytes=$totalBytes")
     val session = startUploadSession(parent, name, totalBytes, mime)
@@ -208,6 +208,7 @@ class DriveClient(private val context: Context, private val accessToken: (() -> 
           // for responses that omit `size`.
           val committed = parseUpload(result.body, name, totalBytes)
           Log.i("BackupRuntime", "[DEBUG-BR-DRIVE] upload_committed id=${committed.id} bytes=${committed.size}")
+          onProgress(totalBytes)
           return committed
         }
         result.status == RESUME_INCOMPLETE -> {
@@ -219,6 +220,7 @@ class DriveClient(private val context: Context, private val accessToken: (() -> 
             throw DriveException("DRIVE_UPLOAD_FAILED", "Google Drive returned an invalid upload offset.")
           }
           offset = next
+          onProgress(offset)
           retries = 0
         }
         result.status == 429 || result.status >= 500 -> {
@@ -230,10 +232,12 @@ class DriveClient(private val context: Context, private val accessToken: (() -> 
           if (status.status in 200..299) {
             val committed = parseUpload(status.body, name, totalBytes)
             Log.i("BackupRuntime", "[DEBUG-BR-DRIVE] upload_committed_after_retry id=${committed.id} bytes=${committed.size}")
+            onProgress(totalBytes)
             return committed
           }
           if (status.status != RESUME_INCOMPLETE) throw driveError(status.status, status.body)
           offset = status.nextOffset ?: offset
+          onProgress(offset)
         }
         else -> throw driveError(result.status, result.body)
       }
