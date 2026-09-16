@@ -11,7 +11,7 @@ import {
   type ReleasedApk,
 } from '../update/release';
 
-export const LATEST_RELEASE_API_URL =
+const LATEST_RELEASE_API_URL =
   'https://api.github.com/repos/skychaze/PeacockNotes/releases/latest';
 
 const RELEASE_REQUEST_HEADERS = {
@@ -43,8 +43,6 @@ export type AppUpdateSnapshot = Readonly<{
   error: AppUpdateError | null;
 }>;
 
-export type InstallOutcome = 'launched' | 'permission-required' | 'unavailable';
-
 type AppUpdaterNativeModule = {
   canRequestPackageInstalls?: () => Promise<boolean>;
 };
@@ -71,6 +69,8 @@ const setSnapshot = (partial: Partial<AppUpdateSnapshot>) => {
 };
 
 export const getAppUpdateSnapshot = () => snapshot;
+
+export const hasAppUpdate = (current: AppUpdateSnapshot) => current.release !== null;
 
 export const subscribeAppUpdate = (listener: (next: AppUpdateSnapshot) => void) => {
   listeners.add(listener);
@@ -101,6 +101,21 @@ const pruneCachedApks = async (keepName: string | null) => {
     );
   } catch {
     // Cache pruning is best-effort.
+  }
+};
+
+/** Finds an already verified APK so a completed download survives restarts. */
+const findDownloadedApk = async (release: ReleasedApk): Promise<string | null> => {
+  if (!FileSystem.cacheDirectory) {
+    return null;
+  }
+  const uri = `${FileSystem.cacheDirectory}${downloadFileName(release)}`;
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    const size = info.exists && !info.isDirectory ? Number(info.size ?? 0) : 0;
+    return size === release.sizeBytes ? uri : null;
+  } catch {
+    return null;
   }
 };
 
@@ -144,16 +159,22 @@ export const checkForAppUpdate = (): Promise<AppUpdateSnapshot> => {
       const available = release !== null && isUpdateAvailable(installed, release);
       await pruneCachedApks(available ? downloadFileName(release) : null);
       if (!available) {
+        downloadedFileUri = null;
         setSnapshot({ phase: 'current', installed, release: null, progress: 0, error: null });
         return;
       }
-      if (snapshot.release?.versionCode === release.versionCode && snapshot.phase === 'ready') {
-        setSnapshot({ installed, release, error: null });
+      downloadedFileUri = await findDownloadedApk(release);
+      if (downloadedFileUri) {
+        setSnapshot({ phase: 'ready', installed, release, progress: 1, error: null });
         return;
       }
       setSnapshot({ phase: 'available', installed, release, progress: 0, error: null });
     })
     .catch(() => {
+      if (snapshot.phase === 'ready' && downloadedFileUri) {
+        setSnapshot({ installed, error: 'check' });
+        return;
+      }
       setSnapshot({ phase: 'error', installed, error: 'check' });
     })
     .then(() => {
@@ -229,9 +250,9 @@ const canRequestPackageInstalls = async (): Promise<boolean> => {
  * allowed this app to install unknown apps yet, it opens that settings screen
  * instead and the install resumes automatically when the user comes back.
  */
-export const installAppUpdate = async (): Promise<InstallOutcome> => {
+export const installAppUpdate = async (): Promise<void> => {
   if (installInFlight || snapshot.phase !== 'ready' || !downloadedFileUri) {
-    return 'unavailable';
+    return;
   }
 
   installInFlight = true;
@@ -244,7 +265,7 @@ export const installAppUpdate = async (): Promise<InstallOutcome> => {
         IntentLauncher.ActivityAction.MANAGE_UNKNOWN_APP_SOURCES,
         { data: `package:${packageName}` }
       );
-      return 'permission-required';
+      return;
     }
 
     const contentUri = await FileSystem.getContentUriAsync(downloadedFileUri);
@@ -253,7 +274,6 @@ export const installAppUpdate = async (): Promise<InstallOutcome> => {
       type: APK_MIME_TYPE,
       flags: FLAG_GRANT_READ_URI_PERMISSION,
     });
-    return 'launched';
   } finally {
     installInFlight = false;
   }

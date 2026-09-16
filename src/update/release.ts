@@ -6,7 +6,6 @@ export type InstalledAppVersion = {
 export type ReleasedApk = InstalledAppVersion & {
   downloadUrl: string;
   sizeBytes: number;
-  digest: string | null;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -58,7 +57,6 @@ const parseReleasedApk = (asset: unknown): ReleasedApk | null => {
     ...identity,
     downloadUrl: asset.browser_download_url,
     sizeBytes: asset.size,
-    digest: typeof asset.digest === 'string' ? asset.digest : null,
   };
 };
 

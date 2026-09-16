@@ -42,13 +42,11 @@ const release = {
       name: 'peacocknotes-v1.1.3-13.apk',
       browser_download_url: 'https://example.test/old.apk',
       size: 30,
-      digest: 'sha256:old',
     },
     {
       name: 'peacocknotes-v1.1.4-14.apk',
       browser_download_url: 'https://example.test/new.apk',
       size: 99,
-      digest: 'sha256:new',
     },
   ],
 };
@@ -57,12 +55,6 @@ const selected = parseLatestRelease(release);
 assert(selected !== null, 'a normal release must select an APK');
 assert(selected?.downloadUrl === 'https://example.test/new.apk', 'the highest version code must win');
 assert(selected?.sizeBytes === 99, 'the asset size must be carried over');
-assert(selected?.digest === 'sha256:new', 'the asset digest must be carried over');
-
-const noDigest = parseLatestRelease({
-  assets: [{ name: 'peacocknotes-v1.1.4-14.apk', browser_download_url: 'https://example.test/a.apk', size: 99 }],
-});
-assert(noDigest?.digest === null, 'a missing digest must be allowed');
 
 assert(
   parseLatestRelease({ ...release, prerelease: true }) === null,

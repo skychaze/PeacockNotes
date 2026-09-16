@@ -41,7 +41,7 @@ import {
   type SortField,
 } from '../database/schema';
 import { getBackupDiscoverySnapshot, initializeBackupDiscovery, subscribeBackupDiscovery } from '../services/backupDiscovery';
-import { getAppUpdateSnapshot, subscribeAppUpdate } from '../services/appUpdate';
+import { getAppUpdateSnapshot, hasAppUpdate, subscribeAppUpdate } from '../services/appUpdate';
 import { useLanguage } from '../i18n/LanguageContext';
 import { FOLDER_ACCENTS } from '../theme/colors';
 import { useQuality } from '../theme/quality';
@@ -85,7 +85,7 @@ export const FoldersScreen = () => {
   const fabBottom = Math.max(insets.bottom + 12, 22);
   const listBottomPadding = Math.max(insets.bottom + 104, 126);
   const appVersion = Constants.expoConfig?.version;
-  const hasUpdate = appUpdate.release !== null;
+  const hasUpdate = hasAppUpdate(appUpdate);
 
   const closeSheet = useCallback(() => setActiveSheet('none'), []);
   const isSelecting = selectedFolderIds.size > 0;

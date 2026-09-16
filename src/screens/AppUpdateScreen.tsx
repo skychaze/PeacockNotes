@@ -18,7 +18,6 @@ import {
   getAppUpdateSnapshot,
   installAppUpdate,
   subscribeAppUpdate,
-  type AppUpdatePhase,
   type AppUpdateSnapshot,
 } from '../services/appUpdate';
 import { ui } from '../theme/ui';
@@ -26,17 +25,43 @@ import { useAppColors } from '../theme/useAppColors';
 import type { RootStackParamList } from '../types/navigation';
 
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'AppUpdate'>;
+type Translate = (key: string, params?: Record<string, string | number>) => string;
 
-const stateIcon = (phase: AppUpdatePhase): keyof typeof MaterialCommunityIcons.glyphMap => {
-  switch (phase) {
+type UpdatePresentation = {
+  icon: keyof typeof MaterialCommunityIcons.glyphMap;
+  status: string | null;
+  action: string | null;
+  busy: boolean;
+};
+
+const describeUpdate = (update: AppUpdateSnapshot, t: Translate): UpdatePresentation => {
+  switch (update.phase) {
+    case 'checking':
+      return { icon: 'update', status: t('update.checking'), action: null, busy: true };
     case 'current':
-      return 'check-circle-outline';
+      return { icon: 'check-circle-outline', status: t('update.latest'), action: null, busy: false };
     case 'available':
+      return {
+        icon: 'download-circle-outline',
+        status: update.error === 'download'
+          ? t('update.downloadError')
+          : t('update.available', { version: update.release?.versionName ?? '' }),
+        action: t('update.download'),
+        busy: false,
+      };
     case 'downloading':
+      return {
+        icon: 'download-circle-outline',
+        status: t('update.downloading', { percent: Math.round(update.progress * 100) }),
+        action: null,
+        busy: true,
+      };
     case 'ready':
-      return 'download-circle-outline';
+      return { icon: 'download-circle-outline', status: t('update.ready'), action: t('update.install'), busy: false };
+    case 'error':
+      return { icon: 'update', status: t('update.checkError'), action: t('update.retry'), busy: false };
     default:
-      return 'update';
+      return { icon: 'update', status: null, action: null, busy: false };
   }
 };
 
@@ -62,45 +87,10 @@ export const AppUpdateScreen = () => {
     else void checkForAppUpdate();
   };
 
+  const presentation = describeUpdate(update, t);
   const installedLabel = update.installed
     ? `v${update.installed.versionName} (${update.installed.versionCode})`
     : null;
-
-  const statusText = (() => {
-    switch (update.phase) {
-      case 'checking':
-        return t('update.checking');
-      case 'current':
-        return t('update.latest');
-      case 'available':
-        return update.release
-          ? t('update.available', { version: update.release.versionName })
-          : null;
-      case 'downloading':
-        return t('update.downloading', { percent: Math.round(update.progress * 100) });
-      case 'ready':
-        return t('update.ready');
-      case 'error':
-        return update.error === 'download' ? t('update.downloadError') : t('update.checkError');
-      default:
-        return null;
-    }
-  })();
-
-  const actionLabel = (() => {
-    switch (update.phase) {
-      case 'available':
-        return t('update.download');
-      case 'ready':
-        return t('update.install');
-      case 'error':
-        return t('update.retry');
-      default:
-        return null;
-    }
-  })();
-
-  const isBusy = update.phase === 'checking' || update.phase === 'downloading';
 
   return (
     <ScreenContainer>
@@ -137,16 +127,16 @@ export const AppUpdateScreen = () => {
               }}
             >
               <MaterialCommunityIcons
-                name={stateIcon(update.phase)}
+                name={presentation.icon}
                 size={22}
                 color={colors.primary}
               />
             </View>
             <View style={{ flex: 1, gap: ui.space.xs }}>
               {installedLabel ? <AppText variant="headline">{installedLabel}</AppText> : null}
-              {statusText ? (
+              {presentation.status ? (
                 <AppText variant="bodySmall" color={colors.textSecondary}>
-                  {statusText}
+                  {presentation.status}
                 </AppText>
               ) : null}
             </View>
@@ -161,9 +151,9 @@ export const AppUpdateScreen = () => {
           ) : null}
         </View>
 
-        {actionLabel ? (
+        {presentation.action ? (
           <View style={{ marginTop: ui.space.lg }}>
-            <PrimaryButton onPress={onAction}>{actionLabel}</PrimaryButton>
+            <PrimaryButton onPress={onAction}>{presentation.action}</PrimaryButton>
           </View>
         ) : null}
       </ScrollView>
@@ -172,7 +162,7 @@ export const AppUpdateScreen = () => {
         <LanguageToggleButton />
         <IconButton
           icon="refresh"
-          disabled={isBusy}
+          disabled={presentation.busy}
           accessibilityLabel={t('update.check')}
           onPress={() => void checkForAppUpdate()}
         />
