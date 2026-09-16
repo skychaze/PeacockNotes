@@ -12,6 +12,7 @@ Use this skill to build the release Android APK for Peacock Notes and archive re
 Bump the version in `app.json` only:
 1. `expo.version` (becomes `versionName`).
 2. `expo.android.versionCode`.
+3. `expo.runtimeVersion` (a literal string, set to the same version). `eas update` refuses the `appVersion` policy in this bare project, and a stale literal sends published updates to the wrong installs.
 
 `expo prebuild` writes both into `android/app/build.gradle`, so do not edit Gradle versions by hand.
 
