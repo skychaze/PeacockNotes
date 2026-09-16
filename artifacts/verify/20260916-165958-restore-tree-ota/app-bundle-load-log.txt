@@ -1,0 +1,24 @@
+09-16 17:00:00.979 W/unknown:BridgelessReact(32313): ReactHost{0}.startSurface(surfaceId = 0): Schedule
+09-16 17:00:00.980 W/unknown:BridgelessReact(32313): ReactHost{0}.attachSurface(surfaceId = 0)
+09-16 17:00:00.980 W/unknown:BridgelessReact(32313): ReactHost{0}.getOrCreateReactInstanceTask()
+09-16 17:00:00.980 W/unknown:BridgelessReact(32313): ReactHost{0}.getOrCreateReactInstanceTask(): Start
+09-16 17:00:00.980 W/unknown:BridgelessReact(32313): ReactHost{0}.getJSBundleLoader()
+09-16 17:00:00.980 W/unknown:BridgelessReact(32313): ReactHost{0}.isMetroRunning()
+09-16 17:00:01.001 W/unknown:BridgelessReact(32313): ReactHost{0}.isMetroRunning(): Async result = false
+09-16 17:00:01.002 W/unknown:BridgelessReact(32313): ReactHost{0}.getOrCreateReactContext(): Creating BridgelessReactContext
+09-16 17:00:01.004 W/unknown:BridgelessReact(32313): ReactHost{0}.getOrCreateReactInstanceTask(): Creating ReactInstance
+09-16 17:00:01.018 W/unknown:BridgelessReact(32313): ReactHost{0}.onHostResume(activity)
+09-16 17:00:01.018 W/unknown:BridgelessReact(32313): ReactContext.onHostResume()
+09-16 17:00:01.641 W/unknown:BridgelessReact(32313): ReactHost{0}.getOrCreateReactInstanceTask(): Loading JS Bundle
+09-16 17:00:01.645 W/unknown:BridgelessReact(32313): ReactHost{0}.getOrCreateReactInstanceTask(): Calling DevSupportManagerBase.onNewReactContextCreated(reactContext)
+09-16 17:00:01.724 W/unknown:BridgelessReact(32313): ReactHost{0}.startSurface(surfaceId = 0): Execute
+09-16 17:00:01.727 W/unknown:BridgelessReact(32313): ReactContext.onHostResume()
+09-16 17:00:01.728 W/unknown:BridgelessReact(32313): ReactHost{0}.getOrCreateReactInstanceTask(): Executing ReactInstanceEventListeners
+09-16 17:04:53.993 W/unknown:BridgelessReact(32313): ReactHost{0}.onUserLeaveHint(activity)
+09-16 17:04:53.995 W/unknown:BridgelessReact(32313): ReactHost{0}.onHostPause(activity)
+09-16 17:04:53.997 W/unknown:BridgelessReact(32313): ReactContext.onHostPause()
+09-16 17:06:39.013 W/unknown:BridgelessReact(32313): ReactHost{0}.onHostResume(activity)
+09-16 17:06:39.017 W/unknown:BridgelessReact(32313): ReactContext.onHostResume()
+
+
+adb reverse --list output above (empty = no host:8081 bridge to the emulator)

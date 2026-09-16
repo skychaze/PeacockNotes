@@ -1,0 +1,51 @@
+Environment findings, 2026-09-16 17:10 (session t3-b19ad686a1c9e55cad2db2d5)
+
+STOP CONDITION HIT: the app is still running its cached OLD JS bundle; the new
+selective-import tree UI never rendered. Reporting per instructions.
+
+Timeline
+- 16:59:58  open com.roy.peacocknotes --foreground --relaunch -> app process 32313
+- ~17:00:15  metro reload -> "Reloaded React Native apps via http://localhost:8081/reload"
+- App log (process 32313, see app-bundle-load-log.txt):
+    17:00:00.980  getJSBundleLoader()
+    17:00:00.980  isMetroRunning()
+    17:00:01.001  isMetroRunning(): Async result = false
+    17:00:01.641  Loading JS Bundle        <- from the dev client's local cache
+  No React instance recreation follows the metro reload; the app never re-fetched.
+- adb reverse --list is EMPTY: the emulator has no host:8081 bridge, so on-device
+  localhost:8081 cannot reach the host Metro. That is why isMetroRunning is false
+  and the cached bundle is used. `metro reload` posts to the host's own
+  localhost:8081, which succeeds, but no connected app exists to receive it.
+
+Metro itself is fine
+- One Metro, cwd /home/roy/Code_Projects/Note_app, serving :8081
+  (see metro-bundle-check.txt).
+- Fetched index.bundle contains the CURRENT tree markers:
+  folderCheckState / buildArchiveTree / toggleArchiveNotes / minus-box (18 hits),
+  and backup.import.folderExpand strings. So the new UI would render if the app
+  actually loaded this bundle.
+
+Running UI is the OLD stale bundle
+- Selective list after "Choose specific notes" renders the folder row as a
+  single Button node "󰅂, Fixture, 1": chevron + name + count, NO checkbox node,
+  no "Expand Fixture" label. Current source (src/screens/BackupScreen.tsx:470-540)
+  renders a separate chevron Pressable, a role="checkbox" tri-state Pressable
+  (checkbox-blank-outline / checkbox-marked / minus-box), and a name Pressable.
+- tree-collapsed.png is pixel-for-pixel the same UI as the previous run's
+  stale-bundle capture (artifacts/verify/20260916-162909-restore-tree-ota/
+  tree-collapsed.png), confirming the same cached bundle revision.
+- Confirm button shows "Import 1 selected notes" immediately; folder checkbox
+  behaviors (select-all, indeterminate, expand does not change selection) were
+  NOT exercised because the old row has no checkbox. Per instructions, stopped
+  instead of testing the old UI's behavior.
+
+Not produced (stopped at the stale-UI gate): tree-expanded.png,
+tree-folder-selected.png, tree-note-indeterminate.png.
+
+Import flow state when stopped: selective mode card open, nothing imported; no
+import was confirmed. Archive used to reach it: Downloads/VERIFY-250MB.pnbak
+
+Suggested fix (not performed, per stop instruction): bridge the port, e.g.
+`adb reverse tcp:8081 tcp:8081`, then agent-device open --relaunch, then rerun
+the import flow. Or bind the session to the emulator loopback alias via the
+harness (`metro prepare --metro-host 10.0.2.2 --metro-port 8081` style hint).

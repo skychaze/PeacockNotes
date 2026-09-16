@@ -1,0 +1,5 @@
+Command:
+/home/roy/.t3/userdata/device/bin/agent-device metro reload --platform android --serial emulator-5554 --config /home/roy/.t3/userdata/device/hosts/25bf8e1a2393f1108d37029b.json --session t3-b19ad686a1c9e55cad2db2d5
+
+Output:
+Reloaded React Native apps via http://localhost:8081/reload

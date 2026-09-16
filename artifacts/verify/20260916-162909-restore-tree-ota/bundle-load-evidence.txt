@@ -1,0 +1,35 @@
+09-16 13:54:42.557 W/unknown:BridgelessReact(15489): ReactHost{0}.getOrCreateReactInstanceTask()
+09-16 13:54:42.557 W/unknown:BridgelessReact(15489): ReactHost{0}.getOrCreateReactInstanceTask(): Start
+09-16 13:54:42.558 W/unknown:BridgelessReact(15489): ReactHost{0}.getJSBundleLoader()
+09-16 13:54:42.558 W/unknown:BridgelessReact(15489): ReactHost{0}.isMetroRunning()
+09-16 13:54:42.559 D/CompatChangeReporter(15489): Compat change id reported: 377864165; UID 10225; state: ENABLED
+09-16 13:54:42.560 D/DesktopModeFlags(15489): Toggle override initialized to: OVERRIDE_UNSET
+09-16 13:54:42.562 W/unknown:ReconnectingWebSocket(15489): Couldn't connect to "ws://10.0.2.2:8081/message?device=sdk_gphone64_x86_64%20-%2016%20-%20API%2036&app=com.roy.peacocknotes&clientid=BridgelessDevSupportManager", will silently retry
+09-16 13:54:42.563 W/unknown:ReactNative(15489): The packager does not seem to be running as we got an IOException requesting its status: CLEARTEXT communication to 10.0.2.2 not permitted by network security policy
+09-16 13:54:42.563 W/unknown:BridgelessReact(15489): ReactHost{0}.isMetroRunning(): Async result = false
+09-16 13:54:42.564 W/unknown:BridgelessReact(15489): ReactHost{0}.getOrCreateReactContext(): Creating BridgelessReactContext
+09-16 13:54:42.564 W/unknown:BridgelessReact(15489): ReactHost{0}.getOrCreateReactInstanceTask(): Creating ReactInstance
+09-16 13:54:42.568 I/oy.peacocknotes(15489): hiddenapi: Accessing hidden method Landroid/view/ViewGroup;->makeOptionalFitsSystemWindows()V (runtime_flags=0, domain=platform, api=unsupported) from Landroidx/appcompat/widget/ViewUtils; (domain=app) using reflection: allowed
+09-16 13:54:42.571 W/WindowOnBackDispatcher(15489): OnBackInvokedCallback is not enabled for the application.
+09-16 13:54:42.571 W/WindowOnBackDispatcher(15489): Set 'android:enableOnBackInvokedCallback="true"' in the application manifest.
+09-16 13:54:42.575 W/unknown:BridgelessReact(15489): ReactHost{0}.onHostResume(activity)
+09-16 13:54:42.575 W/unknown:ReactNative(15489): Packager connection already open, nooping.
+09-16 13:54:42.575 W/unknown:BridgelessReact(15489): ReactContext.onHostResume()
+09-16 13:54:42.580 D/nativeloader(15489): Load /data/app/~~a4xlNkzohyrRhInGhMNGmA==/com.roy.peacocknotes-zMinTqXsXNnxnimNvRh3JQ==/base.apk!/lib/x86_64/libhermes.so using class loader ns clns-9 (caller=/data/app/~~a4xlNkzohyrRhInGhMNGmA==/com.roy.peacocknotes-zMinTqXsXNnxnimNvRh3JQ==/base.apk!classes20.dex): ok
+09-16 13:54:42.581 D/nativeloader(15489): Load /data/app/~~a4xlNkzohyrRhInGhMNGmA==/com.roy.peacocknotes-zMinTqXsXNnxnimNvRh3JQ==/base.apk!/lib/x86_64/libhermestooling.so using class loader ns clns-9 (caller=/data/app/~~a4xlNkzohyrRhInGhMNGmA==/com.roy.peacocknotes-zMinTqXsXNnxnimNvRh3JQ==/base.apk!classes20.dex): ok
+09-16 13:54:42.581 D/jni_lib_merge(15489): Entering merged library JNI_OnLoad.
+09-16 13:54:42.581 D/jni_lib_merge(15489): Preparing 4 pre-merged libs (including stub)
+09-16 13:54:42.581 D/jni_lib_merge(15489): Preparing to register libhermes_executor_so.  onload_func: 0x7c71d5cab730
+09-16 13:54:42.581 D/jni_lib_merge(15489): Preparing to register libhermesinstancejni_so.  onload_func: 0x7c71d5cb2db0
+09-16 13:54:42.581 D/jni_lib_merge(15489): Preparing to register libjsijniprofiler_so.  onload_func: 0x7c71d5cb3540
+09-16 13:54:42.581 D/jni_lib_merge(15489): About to register 3 actual methods.
+09-16 13:54:42.581 W/HWUI    (15489): Unknown dataspace 0
+09-16 13:54:42.631 D/nativeloader(15489): Load /data/app/~~a4xlNkzohyrRhInGhMNGmA==/com.roy.peacocknotes-zMinTqXsXNnxnimNvRh3JQ==/base.apk!/lib/x86_64/libexpo-av.so using class loader ns clns-9 (caller=/data/app/~~a4xlNkzohyrRhInGhMNGmA==/com.roy.peacocknotes-zMinTqXsXNnxnimNvRh3JQ==/base.apk!classes20.dex): ok
+09-16 13:54:42.708 I/ExpoModulesCore(15489): ✅ AppContext was initialized
+09-16 13:54:42.757 D/InsetsController(15489): hide(ime(), fromIme=false)
+09-16 13:54:42.757 I/ImeTracker(15489): com.roy.peacocknotes:79b3a7ab: onCancelled at PHASE_CLIENT_ALREADY_HIDDEN
+09-16 13:54:42.803 W/unknown:BridgelessReact(15489): ReactHost{0}.getOrCreateReactInstanceTask(): Loading JS Bundle
+09-16 13:54:42.808 W/unknown:BridgelessReact(15489): ReactHost{0}.getOrCreateReactInstanceTask(): Calling DevSupportManagerBase.onNewReactContextCreated(reactContext)
+09-16 13:54:42.824 W/unknown:BridgelessReact(15489): ReactHost{0}.startSurface(surfaceId = 0): Execute
+09-16 13:54:42.826 W/unknown:ReactNative(15489): Packager connection already open, nooping.
+09-16 13:54:42.827 W/unknown:BridgelessReact(15489): ReactContext.onHostResume()

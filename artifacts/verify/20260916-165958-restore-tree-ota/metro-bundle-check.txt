@@ -1,0 +1,28 @@
+Metro health and served-bundle checks (run from repo root, 2026-09-16 ~17:07).
+
+1. Server process
+   $ ps aux | grep -i -E "expo start|metro"
+   roy 211796 16:58 npm exec expo start --port 8081
+   roy 211825 16:58 node /home/roy/Code_Projects/Note_app/node_modules/.bin/expo start --port 8081
+   $ ls -l /proc/211825/cwd
+   /proc/211825/cwd -> /home/roy/Code_Projects/Note_app
+
+2. Status
+   $ curl -s http://localhost:8081/status
+   packager-status:running
+
+3. Bundle fetch (current working tree markers present)
+   $ curl -s -o /tmp/opencode/peacock-verify/metro-bundle.js -w "http_code=%{http_code} size=%{size_download} time=%{time_total}s\n" \
+       "http://localhost:8081/index.bundle?platform=android&dev=true&minify=false&modulesOnly=false&runModule=true&app=com.roy.peacocknotes"
+   http_code=200 size=10639073 time=7.79s
+
+   $ grep -c -E "folderCheckState|buildArchiveTree|toggleArchiveNotes|minus-box" metro-bundle.js
+   18
+   $ grep -o "backup.import.folderExpand" metro-bundle.js | head -2
+   backup.import.folderExpand
+   backup.import.folderExpand
+
+   => Metro on :8081 is serving the CURRENT working tree JS (the tri-state
+      folder checkbox code is in the served bundle). The stale UI is therefore
+      an app-side (cached bundle / unreachable Metro) problem, not a Metro
+      content problem.

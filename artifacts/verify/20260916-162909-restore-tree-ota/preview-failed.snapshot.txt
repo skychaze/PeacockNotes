@@ -1,0 +1,18 @@
+Page: com.roy.peacocknotes
+App: com.roy.peacocknotes
+Snapshot: 12 visible nodes (37 total)
+Collapsed 25 Android helper nodes from the agent-facing text snapshot; use --raw or --json for the full hierarchy.
+@e1 [scroll-area] [scrollable]
+@e2 [scroll-area] "Newest valid recovery point, Sep 16, 2026 - 1:12 PM, Export a backup now, Captures a fixed copy of notes and media, uploads it to Google Drive, then reads it back to verify., Backup verified, peacock-notes-2026-09-16T07-42-59-515Z-1789544579513-7nhzlzbq22s-start-export_and_verify.pnbak, Import notes, Use the newest valid archive or choose one. The archive and available storage are checked before any content changes., Google Drive could not provide this archive., Backup collection, Managed retention completed safely. No verified archive needed pruning., 󰄱, Sep 16, 2026 - 1:52 AM, Valid, peacock-notes-2026-09-15T20-22-25-994Z-1789503745993-hdegjtvd7yb-start-export_and_verify.pnbak, 93.1 MB · Verified · Compatible, Scan again, Import a local archive file, Preview newest valid archive, Export Backup" [scrollable]
+  [content above scroll-area hidden]
+  [content below scroll-area hidden]
+@e7 [button] "Export Backup"
+@e13 [button] "Preview newest valid archive"
+@e15 [button] "Import a local archive file"
+@e19 [button] "Scan again"
+@e22 [checkbox] "Select archives: peacock-notes-2026-09-16T07-42-59-515Z-1789544579513-7nhzlzbq22s-start-export_and_verify.pnbak"
+@e28 [checkbox] "Select archives: peacock-notes-2026-09-15T20-22-25-994Z-1789503745993-hdegjtvd7yb-start-export_and_verify.pnbak"
+@e33 [button] "Back"
+@e34 [text] "󰁍"
+@e35 [button] "বাংলা"
+@e36 [text] "󰗊"

@@ -1,0 +1,24 @@
+Page: com.roy.peacocknotes
+App: com.roy.peacocknotes
+Snapshot: 20 visible nodes (44 total)
+Collapsed 24 Android helper nodes from the agent-facing text snapshot; use --raw or --json for the full hierarchy.
+@e1 [scroll-area] [scrollable]
+@e2 [scroll-area] "Folders, 󰉋, Just for checking, 1 notes, Test 4, Test 5, 2 notes, Test 1, Test 3, Test 2, Test 0" [scrollable]
+@e4 [group] "󰉋, Test 0, 2 notes"
+@e8 [group] "󰉋, Test 2, 2 notes"
+@e12 [group] "󰉋, Test 3, 1 notes"
+@e16 [group] "󰉋, Test 1, 2 notes"
+@e20 [group] "󰉋, Test 5, 2 notes"
+@e24 [group] "󰉋, Test 4, 1 notes"
+@e28 [group] "󰉋, Just for checking, 1 notes"
+@e32 [button] "বাংলা"
+@e33 [text] "󰗊"
+@e35 [button] "Use dark theme"
+@e36 [text] "󰖔"
+@e37 [button] "Latest backup"
+@e38 [text] "󰋽"
+@e39 [button] "Sort by"
+@e40 [text] "󰒿"
+@e41 [button] "Quick Menu"
+@e42 [text] "󰇙"
+@e43 [button] "󰉗"

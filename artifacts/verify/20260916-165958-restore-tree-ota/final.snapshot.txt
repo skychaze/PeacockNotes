@@ -1,0 +1,17 @@
+Page: com.roy.peacocknotes
+App: com.roy.peacocknotes
+Snapshot: 12 visible nodes (42 total)
+Collapsed 30 Android helper nodes from the agent-facing text snapshot; use --raw or --json for the full hierarchy.
+@e1 [scroll-area] [scrollable]
+@e2 [scroll-area] "Managed retention completed safely. No verified archive needed pruning., 󱥿, Google Drive connected, Peacock Notes stores backups in its Google Drive collection., Google Drive collection, Peacock Notes Backups, The Drive connection reference is stored only on this device., Disconnect, Reconnect Google Drive, 󰄱, Sep 14, 2026 - 12:11 AM, Valid, peacock-notes-2026-09-13T18-41-27-127Z-1789324887115-us51n8pwty-start-export_and_verify.pnbak, 1.3 KB · Verified · Compatible, Sep 14, 2026 - 12:19 AM, peacock-notes-2026-09-13T18-49-13-228Z-1789325353122-111sgm5njb4c-start-export_and_verify.pnbak, 40.9 MB · Verified · Compatible, Sep 14, 2026 - 12:27 AM, peacock-notes-2026-09-13T18-57-42-382Z-1789325862376-hfezqljerwm-start-export_and_verify.pnbak, 93 MB · Verified · Compatible, Sep 16, 2026 - 1:09 AM, peacock-notes-2026-09-15T19-39-06-913Z-1789501146907-ecuwhv1y98t-start-export_and_verify.pnbak, 236.7 MB · Verified · Compatible" [scrollable]
+  [content above scroll-area hidden]
+@e4 [checkbox] "Select archives: peacock-notes-2026-09-15T19-39-06-913Z-1789501146907-ecuwhv1y98t-start-export_and_verify.pnbak"
+@e10 [checkbox] "Select archives: peacock-notes-2026-09-13T18-57-42-382Z-1789325862376-hfezqljerwm-start-export_and_verify.pnbak"
+@e16 [checkbox] "Select archives: peacock-notes-2026-09-13T18-49-13-228Z-1789325353122-111sgm5njb4c-start-export_and_verify.pnbak"
+@e22 [checkbox] "Select archives: peacock-notes-2026-09-13T18-41-27-127Z-1789324887115-us51n8pwty-start-export_and_verify.pnbak"
+@e33 [button] "Reconnect Google Drive"
+@e35 [button] "Disconnect"
+@e38 [button] "Back"
+@e39 [text] "󰁍"
+@e40 [button] "বাংলা"
+@e41 [text] "󰗊"

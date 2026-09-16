@@ -1,0 +1,14 @@
+Page: com.roy.peacocknotes
+App: com.roy.peacocknotes
+Snapshot: 9 visible nodes (24 total)
+Collapsed 15 Android helper nodes from the agent-facing text snapshot; use --raw or --json for the full hierarchy.
+@e1 [scroll-area] [scrollable]
+@e2 [scroll-area] "Backup, Keep verified backups in Google Drive or import notes from an archive., Automatic backup, Backs up changes after 24 hours since the last verified backup, when network and battery allow. Timing may vary., Off. No future automatic attempts will be scheduled., Newest valid recovery point, Sep 16, 2026 - 1:12 PM, Export a backup now, Captures a fixed copy of notes and media, uploads it to Google Drive, then reads it back to verify., Backup verified, peacock-notes-2026-09-16T07-42-59-515Z-1789544579513-7nhzlzbq22s-start-export_and_verify.pnbak, Import notes, Use the newest valid archive or choose one. The archive and available storage are checked before any content changes., Export Backup" [scrollable]
+  [content below scroll-area hidden]
+@e7 [switch] "Automatic backup"
+@e13 [button] "Export Backup"
+@e19 [button] "Preview newest valid archive"
+@e20 [button] "Back"
+@e21 [text] "󰁍"
+@e22 [button] "বাংলা"
+@e23 [text] "󰗊"

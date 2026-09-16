@@ -1,0 +1,42 @@
+Environment findings, 2026-09-16 (session t3-b19ad686a1c9e55cad2db2d5)
+
+1. The app is NOT running the current working tree JS.
+   - Installed package: com.roy.peacocknotes versionName=1.1.1, DEBUGGABLE, lastUpdateTime 2026-09-16 13:12:15.
+   - App process 15489 started 13:54:42 and loaded its JS with Metro unreachable:
+     "isMetroRunning(): Async result = false" then "...getOrCreateReactInstanceTask(): Loading JS Bundle"
+     (see bundle-load-evidence.txt). The JS therefore came from the dev client's local bundle cache.
+   - Current tree files with the tri-state checkbox work were modified after that:
+     src/screens/BackupScreen.tsx mtime 2026-09-16 16:27:44, src/backup/archiveTree.ts 16:28:07.
+   - Running UI proves a different revision: the folder row is one Android Button node
+     labeled "󰅂, Fixture, 1" with no separate checkbox node and no "Expand <folder>"
+     accessibility labels; the current source renders a chevron Pressable, a
+     role="checkbox" Pressable, and a labelled name Pressable.
+   - agent-device metro reload reported success but the app kept the same bundle and state.
+
+2. Metro on :8081 cannot serve the current tree.
+   - Process 44270 (expo start, started 12:07 via /tmp/verify-metro.pid) has cwd
+     /home/roy/.t3/worktrees/Note_app/t3code-6bd1d268 (deleted).
+   - Bundle fetch now fails: {"type":"UnableToResolveError", ... Unable to resolve module ./index ...}
+   - /tmp/verify-metro.log ends with "Error: Cannot find module 'send'" from ServeStaticMiddleware.
+   - So the "Metro serves the CURRENT working tree" premise is false.
+
+3. The newest valid Drive archive is not readable.
+   - Tapping "Preview newest valid archive" runs then fails with
+     DriveException 404 "File not found: 1REpT8a_1obUmYYacedmSTRIoNsU_AFN1" (code DRIVE_API_FAILED);
+     UI shows "Google Drive could not provide this archive." (drive-404-evidence.txt,
+     preview-failed-drive-404.png / preview-failed.snapshot.txt).
+   - The system document picker's Drive root (priyanshuroy777@gmail.com) shows an empty
+     My Drive, so no archive is fetchable from Drive.
+   - A pre-existing local archive was used instead: Downloads/VERIFY-250MB.pnbak
+     (via "Import a local archive file"), to reach the selective list. Nothing was
+     imported; Cancel was pressed and the archive was left untouched.
+
+4. What the running (stale) bundle showed, for reference only:
+   - Selective list renders one folder row "Fixture" (chevron + name + count, NO checkbox)
+     with one note "250 MB fixture"; chevron expand/collapse works; note row has a
+     checkbox; note toggle changes the button to "Import 0 selected notes" [disabled];
+     folder row never shows an indeterminate state because it has no checkbox.
+   - The archive has only one folder, so cross-folder isolation is untestable.
+
+Outcome: the requested behaviors (folder checkbox tri-state on the current tree JS
+against old native) could not be verified; the app never ran the current tree JS.

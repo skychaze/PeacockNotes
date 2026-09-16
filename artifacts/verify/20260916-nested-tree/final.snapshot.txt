@@ -1,0 +1,29 @@
+Warning: android snapshots are slow in this run: p95 1683ms over 404 captures. Possible causes: device load, app or dev server stuck, helper fallback, or stale daemon.
+Page: com.roy.peacocknotes
+App: com.roy.peacocknotes
+Snapshot: 22 visible nodes (53 total)
+Collapsed 31 Android helper nodes from the agent-facing text snapshot; use --raw or --json for the full hierarchy.
+@e1 [scroll-area] [scrollable]
+@e2 [scroll-area] "Add every archived note. No current note is deleted or changed., Destructive full replacement, Deletes all current notes and media, then replaces them with the archive. Language, backup folder, and other device-local settings stay unchanged. A verified safety snapshot is created first., Cancel, Replace all current content, Import 3 selected notes, Personal, 󰄲, 󰅂, TODO note, Work, Top level todo, 0 audio · 0 files, Draft note, Work / 2025, Nested draft, 󰅀, Choose specific notes, Additive import" [scrollable]
+  [content above scroll-area hidden]
+  [content below scroll-area hidden]
+@e3 [button] "Additive import"
+@e6 [button] "Choose specific notes"
+@e8 [button] "Collapse Work"
+@e10 [checkbox] "󰄲"
+@e12 [button] "Collapse Work"
+@e15 [button] "Collapse 2025"
+@e17 [checkbox] "󰄲"
+@e19 [button] "Collapse 2025"
+@e22 [checkbox] "󰄲, Draft note, Work / 2025, Nested draft, 0 audio · 0 files"
+@e28 [checkbox] "󰄲, TODO note, Work, Top level todo, 0 audio · 0 files"
+@e34 [button] "Expand Personal"
+@e36 [checkbox] "󰄲"
+@e38 [button] "Expand Personal"
+@e41 [button] "Import 3 selected notes"
+@e45 [button] "Replace all current content"
+@e47 [group] "Cancel"
+@e49 [button] "Back"
+@e50 [text] "󰁍"
+@e51 [button] "বাংলা"
+@e52 [text] "󰗊"
