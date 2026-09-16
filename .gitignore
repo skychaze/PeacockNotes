@@ -38,7 +38,7 @@ yarn-error.*
 
 # generated native folders
 /ios
-/android
+# android/ is tracked: it carries custom native modules and release tasks
 
 # release binaries (use GitHub Releases, not git)
 /releases/**/*.apk
