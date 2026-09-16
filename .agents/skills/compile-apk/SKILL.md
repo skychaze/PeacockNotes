@@ -58,7 +58,14 @@ cd android
 For each release:
 1. Create a folder in `releases/v<version>-<code>/`.
 2. Ensure the APK exists in that folder.
-3. Create `patch-notes.md` in that folder describing features, bug fixes, and notes.
+3. Create `patch-notes.md` in that folder covering every user-visible change: features, bug fixes, compatibility notes, and any over-the-air updates delivered under this runtime version. Commit it before tagging. The release workflow refuses a tag whose commit has no patch notes, and otherwise publishes the file as the GitHub release body.
+
+## Over-the-air Updates
+
+JavaScript-only changes ship with `eas update` and have no tag of their own, so they never produce a GitHub release. Keep the release notes complete anyway:
+
+1. Append each OTA change to the `patch-notes.md` of the release folder whose runtime version it targets. The runtime version is the literal `expo.runtimeVersion`, which matches `expo.version`.
+2. Use the same summary for the EAS update message and the patch-notes entry, so the update log and the release notes agree.
 
 ## Verify the Build
 

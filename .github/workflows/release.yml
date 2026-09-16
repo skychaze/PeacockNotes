@@ -15,6 +15,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify patch notes exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG_NAME#[vV]}"
+          NOTES_FILE=$(find releases -mindepth 2 -maxdepth 2 -path "releases/v${VERSION}-*/patch-notes.md" -print -quit)
+          if [ -n "$NOTES_FILE" ]; then
+            echo "Found patch notes at $NOTES_FILE"
+          elif gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG_NAME already exists; re-running without patch notes" >&2
+          else
+            echo "::error::Missing patch notes for $TAG_NAME. Add releases/v${VERSION}-<versionCode>/patch-notes.md, commit it, move the tag with 'git tag -f $TAG_NAME', and push it again."
+            exit 1
+          fi
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -48,7 +64,7 @@ jobs:
         working-directory: android
         run: ./gradlew assembleRelease
 
-      - name: Create release with generated notes and APK
+      - name: Create release with patch notes and APK
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
@@ -59,14 +75,27 @@ jobs:
             ls -la android/app/build/outputs/apk/release >&2
             exit 1
           fi
+          VERSION="${TAG_NAME#[vV]}"
+          NOTES_FILE=$(find releases -mindepth 2 -maxdepth 2 -path "releases/v${VERSION}-*/patch-notes.md" -print -quit)
+          if [ -n "$NOTES_FILE" ]; then
+            NOTES_ARGS=(--notes-file "$NOTES_FILE")
+          else
+            echo "No patch notes found at releases/v${VERSION}-*/patch-notes.md; falling back to generated notes" >&2
+            NOTES_ARGS=(--generate-notes)
+          fi
           if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" "$APK_PATH#Peacock Notes APK" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
+            if [ -n "$NOTES_FILE" ]; then
+              gh release edit "$TAG_NAME" \
+                --repo "$GITHUB_REPOSITORY" \
+                --notes-file "$NOTES_FILE"
+            fi
           else
             gh release create "$TAG_NAME" "$APK_PATH#Peacock Notes APK" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
-              --generate-notes \
+              "${NOTES_ARGS[@]}" \
               --title "Peacock Notes $TAG_NAME"
           fi
