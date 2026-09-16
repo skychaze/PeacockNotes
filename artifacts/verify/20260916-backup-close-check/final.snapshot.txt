@@ -1,0 +1,13 @@
+Page: com.roy.peacocknotes
+App: com.roy.peacocknotes
+Snapshot: 8 visible nodes (23 total)
+Collapsed 15 Android helper nodes from the agent-facing text snapshot; use --raw or --json for the full hierarchy.
+@e1 [scroll-area] [scrollable]
+@e2 [scroll-area] "Backup, Sign in to Google Drive once. Peacock Notes creates its backup folder and uploads verified archives directly there., Automatic backup, When enabled, the app attempts a backup after changed content has gone 24 hours without a verified archive and network and battery conditions allow it. This is not an exact daily schedule or cloud sync., Off. No future automatic attempts will be scheduled., Newest valid recovery point, Sep 14, 2026 - 12:27 AM, Export a backup now, Captures a fixed copy of notes and media, uploads it to Google Drive, then reads it back to verify., Uploading to Google Drive..., 70%, Import notes, Use the newest valid archive or choose one. The archive and available storage are checked before any content changes." [scrollable]
+  [content below scroll-area hidden]
+@e7 [switch] "Automatic backup" [disabled]
+@e13 [button] "Uploading to Google Drive..." [disabled]
+@e19 [button] "Back"
+@e20 [text] "󰁍"
+@e21 [button] "বাংলা"
+@e22 [text] "󰗊"
