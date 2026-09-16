@@ -2,9 +2,11 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, AppState, ScrollView, Switch, View } from 'react-native';
+import { Alert, AppState, ScrollView, Switch, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppText } from '../components/AppText';
+import { BackupProgressCard } from '../components/BackupProgressCard';
+import { BackupTestingNotice } from '../components/BackupTestingNotice';
 import { Card } from '../components/Card';
 import { LanguageToggleButton } from '../components/LanguageToggleButton';
 import { PressableScale } from '../components/PressableScale';
@@ -18,7 +20,6 @@ import {
   releaseBackupForegroundService,
   startBackupForegroundService,
 } from '../services/backupFolder';
-import { ProgressFill } from '../components/ProgressFill';
 import {
   exportBackup,
   clearLastVerifiedBackupIfDeleted,
@@ -484,12 +485,6 @@ export const BackupScreen = () => {
     const unit = Math.min(Math.floor(Math.log(Math.max(bytes, 1)) / Math.log(1024)), units.length - 1);
     return `${new Intl.NumberFormat(language === 'bn' ? 'bn-BD' : 'en-US', { maximumFractionDigits: 1 }).format(bytes / 1024 ** unit)} ${units[unit]}`;
   };
-  const progressTotal = liveProgress?.bytesTotal ?? liveProgress?.itemsTotal ?? null;
-  const progressDone = liveProgress?.bytesTotal != null ? liveProgress.bytesDone : liveProgress?.itemsDone ?? 0;
-  const progressPercent = progressTotal !== null && progressTotal > 0
-    ? Math.min(100, Math.floor(progressDone * 100 / progressTotal))
-    : null;
-
   return (
     <ScreenContainer>
       <ScrollView
@@ -502,26 +497,7 @@ export const BackupScreen = () => {
       >
         <View style={{ gap: ui.space.sm }}>
           <AppText variant="display">{t('header.backup')}</AppText>
-          {liveProgress ? (
-            <Card style={{ gap: ui.space.sm }}>
-              <AppText variant="headline">{t(`backup.progress.kind.${liveProgress.operationKind}`)}</AppText>
-              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: ui.space.sm }}>
-                <AppText variant="bodySmall">{t(`backup.progress.step.${liveProgress.step}`)}</AppText>
-                {progressPercent === null
-                  ? <ActivityIndicator color={colors.primary} size="small" />
-                  : <AppText variant="bodySmall" color={colors.primary}>{progressPercent}%</AppText>}
-              </View>
-              {progressPercent !== null ? <ProgressFill progress={progressPercent / 100} trackColor={colors.border} fillColor={colors.primary} /> : null}
-              <AppText variant="caption" color={colors.textSecondary}>
-                {liveProgress.bytesTotal !== null
-                  ? `${formatBytes(liveProgress.bytesDone)} / ${formatBytes(liveProgress.bytesTotal)}`
-                  : liveProgress.bytesDone > 0
-                    ? formatBytes(liveProgress.bytesDone)
-                    : t('backup.progress.items', { done: liveProgress.itemsDone, total: liveProgress.itemsTotal ?? '?' })}
-              </AppText>
-              <AppText variant="caption" color={colors.textSecondary}>{t('backup.progress.background')}</AppText>
-            </Card>
-          ) : null}
+          {liveProgress ? <BackupProgressCard progress={liveProgress} /> : null}
         </View>
 
         <Card style={{ gap: ui.space.md }}>
@@ -793,6 +769,8 @@ export const BackupScreen = () => {
             </PressableScale>
           ) : null}
         </Card>
+
+        <BackupTestingNotice />
 
         <AppText variant="bodySmall" color={colors.textSecondary}>
           {t('backup.deviceLocal')}
