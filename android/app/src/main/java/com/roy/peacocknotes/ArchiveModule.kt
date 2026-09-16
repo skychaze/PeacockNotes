@@ -687,6 +687,10 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     if (entry.optString("uri") != archiveUri) return
     entry.put("archiveSha256", preview.optString("archiveSha256"))
     entry.put("preview", preview)
+    entry.put("state", "valid")
+    entry.put("verification", "verified")
+    entry.put("compatibility", "compatible")
+    entry.put("createdAt", preview.optString("createdAt"))
     cached[archiveId] = entry
     saveScanCache(folderId, cached.values.toList())
   }
