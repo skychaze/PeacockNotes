@@ -17,13 +17,13 @@ Bump the version in `app.json` only:
 
 ## Sync Native Project
 
-`android/` is generated from `app.json` and is gitignored. Config plugin changes (share intent filters, permissions, icons) only reach the APK after a prebuild:
+`android/` is committed, so a clean checkout builds without regenerating it. Config plugin changes (share intent filters, permissions, icons) and version bumps only reach the APK after a prebuild:
 
 ```bash
 npx expo prebuild --platform android --no-install
 ```
 
-Run this before every release build. It keeps manual Gradle customizations (signing, archive tasks) but rewrites generated files such as `AndroidManifest.xml` and the version fields.
+Run this before tagging a release and commit the rewritten files. Never pass `--clean`: the project owns native files and custom package registration under `android/app/src/main/java/com/roy/peacocknotes/`. The release workflow builds the committed project as-is.
 
 Verify the manifest carries the configured share filters before building:
 
@@ -32,7 +32,6 @@ grep -c 'android.intent.action.SEND' android/app/src/main/AndroidManifest.xml
 ```
 
 ## Prerequisites
-Syncing messages...
 
 1. Ensure Java Development Kit (JDK) is active.
 2. Ensure Android SDK is active.
@@ -41,7 +40,7 @@ Syncing messages...
 ## Compile Steps
 
 1. Open a terminal in the project root directory.
-2. Sync the native project (see above).
+2. Sync the native project if `app.json` or config plugins changed (see above).
 3. Change directory to android.
 4. Run the assemble release command:
 

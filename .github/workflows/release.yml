@@ -28,7 +28,6 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - run: npm ci
-      - run: npx expo prebuild --platform android --no-install
 
       - name: Configure release signing
         env:
@@ -55,7 +54,11 @@ jobs:
           TAG_NAME: ${{ github.ref_name }}
         run: |
           APK_PATH=$(find android/app/build/outputs/apk/release -name 'peacocknotes-*.apk' -print -quit)
-          test -n "$APK_PATH"
+          if [ -z "$APK_PATH" ]; then
+            echo "No versioned APK produced; release output:" >&2
+            ls -la android/app/build/outputs/apk/release >&2
+            exit 1
+          fi
           gh release create "$TAG_NAME" "$APK_PATH#Peacock Notes APK" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \

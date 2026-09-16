@@ -32,5 +32,4 @@ jobs:
           node-version: '20'
           cache: npm
       - run: npm ci
-      - run: npx expo prebuild --platform android --no-install
       - run: npm run verify:recovery
