@@ -153,6 +153,8 @@ export const checkForAppUpdate = (): Promise<AppUpdateSnapshot> => {
     return Promise.resolve(snapshot);
   }
 
+  const verifiedFileUri = downloadedFileUri;
+  const knownRelease = snapshot.release;
   setSnapshot({ phase: 'checking', installed, error: null });
   inFlightCheck = fetchLatestRelease()
     .then(async (release) => {
@@ -171,8 +173,9 @@ export const checkForAppUpdate = (): Promise<AppUpdateSnapshot> => {
       setSnapshot({ phase: 'available', installed, release, progress: 0, error: null });
     })
     .catch(() => {
-      if (snapshot.phase === 'ready' && downloadedFileUri) {
-        setSnapshot({ installed, error: 'check' });
+      if (verifiedFileUri && knownRelease) {
+        downloadedFileUri = verifiedFileUri;
+        setSnapshot({ phase: 'ready', installed, release: knownRelease, progress: 1, error: 'check' });
         return;
       }
       setSnapshot({ phase: 'error', installed, error: 'check' });
