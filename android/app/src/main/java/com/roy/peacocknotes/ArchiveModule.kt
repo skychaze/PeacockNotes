@@ -85,7 +85,7 @@ fun validateArchiveEntry(
 class ArchiveModule(private val context: ReactApplicationContext) : ReactContextBaseJavaModule(context) {
   companion object {
     private const val FORMAT_VERSION = 1
-    private const val DATABASE_VERSION = 1
+    private const val DATABASE_VERSION = 2
     private val SUPPORTED_DATABASE_VERSIONS = setOf(1, 2)
     private const val MANIFEST_PATH = "manifest.json"
     private const val DATABASE_PATH = "database/content.sqlite"
@@ -644,20 +644,34 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       val extracted = work.listFiles()?.singleOrNull { it.isDirectory && it.name.startsWith("validated-") }
         ?: fail("STAGING_UNAVAILABLE", "Validated import staging is missing")
       val db = SQLiteDatabase.openDatabase(File(extracted, DATABASE_PATH).path, null, SQLiteDatabase.OPEN_READONLY)
+      val folders = Arguments.createArray()
       val notes = Arguments.createArray()
       try {
-        db.rawQuery("SELECT n.portableId,n.title,substr(n.content,1,180),n.updatedAt,f.name,f.portableId,(SELECT COUNT(*) FROM NoteAudios a WHERE a.notePortableId=n.portableId),(SELECT COUNT(*) FROM NoteFiles x WHERE x.notePortableId=n.portableId) FROM Notes n JOIN Folders f ON f.portableId=n.folderPortableId ORDER BY n.updatedAt DESC,n.portableId", null).use { cursor ->
+        val parentColumn = if (hasColumn(db, "Folders", "parentPortableId")) "parentPortableId" else "NULL"
+        val folderRows = linkedMapOf<String, ArchivedFolderRow>()
+        db.rawQuery("SELECT portableId,$parentColumn,name,createdAt,sortOrder FROM Folders ORDER BY sortOrder,portableId", null).use { cursor ->
+          while (cursor.moveToNext()) folderRows[cursor.getString(0)] = ArchivedFolderRow(
+            cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getString(3), cursor.getInt(4),
+          )
+        }
+        folderRows.values.forEach { folder ->
+          folders.pushMap(Arguments.createMap().apply {
+            putString("portableId", folder.portableId); putString("parentPortableId", folder.parentPortableId)
+            putString("name", folder.name); putInt("sortOrder", folder.sortOrder)
+            putArray("path", Arguments.createArray().apply { folderPath(folder.portableId, folderRows).forEach(::pushString) })
+          })
+        }
+        db.rawQuery("SELECT n.portableId,n.folderPortableId,n.title,substr(n.content,1,180),n.updatedAt,(SELECT COUNT(*) FROM NoteAudios a WHERE a.notePortableId=n.portableId),(SELECT COUNT(*) FROM NoteFiles x WHERE x.notePortableId=n.portableId) FROM Notes n JOIN Folders f ON f.portableId=n.folderPortableId ORDER BY f.sortOrder,f.portableId,n.sortOrder,n.portableId", null).use { cursor ->
           while (cursor.moveToNext()) notes.pushMap(Arguments.createMap().apply {
-            putString("portableId", cursor.getString(0)); putString("title", cursor.getString(1))
-            putString("contentPreview", cursor.getString(2)?.take(180) ?: ""); putString("updatedAt", cursor.getString(3))
-            putString("folderName", cursor.getString(4)); putString("folderPortableId", cursor.getString(5))
-            putInt("audioCount", cursor.getInt(6)); putInt("fileCount", cursor.getInt(7))
+            putString("portableId", cursor.getString(0)); putString("folderPortableId", cursor.getString(1)); putString("title", cursor.getString(2))
+            putString("contentPreview", cursor.getString(3)?.take(180) ?: ""); putString("updatedAt", cursor.getString(4))
+            putInt("audioCount", cursor.getInt(5)); putInt("fileCount", cursor.getInt(6))
           })
         }
       } finally { db.close() }
       return Arguments.createMap().apply {
         putString("archiveUri", archiveUri); putString("archiveSha256", summary.getString("archiveSha256"))
-        putString("createdAt", summary.getString("createdAt")); putArray("notes", notes)
+        putString("createdAt", summary.getString("createdAt")); putArray("folders", folders); putArray("notes", notes)
       }
     } finally { work.deleteRecursively() }
   }
@@ -728,12 +742,12 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         try {
           applyMediaRestrictions(live, restrictions)
           selected.sorted().forEach { noteId ->
-            val note = source.rawQuery("SELECT n.portableId,n.folderPortableId,n.title,n.content,n.createdAt,n.updatedAt,n.sortOrder,f.name,f.createdAt,f.sortOrder FROM Notes n JOIN Folders f ON f.portableId=n.folderPortableId WHERE n.portableId=?", arrayOf(noteId)).use { cursor ->
+            val note = source.rawQuery("SELECT n.portableId,n.folderPortableId,n.title,n.content,n.createdAt,n.updatedAt,n.sortOrder FROM Notes n WHERE n.portableId=?", arrayOf(noteId)).use { cursor ->
               if (!cursor.moveToFirst()) fail("INVALID_SELECTION", "Selected note is missing")
               List(cursor.columnCount) { index -> if (cursor.isNull(index)) null else cursor.getString(index) }
             }
             val sourceFolderPortableId = note[1]!!
-            val folderId = ensureImportedFolder(live, sourceFolderPortableId, note[7]!!, note[8]!!, note[9]!!.toInt())
+            val folderId = ensureImportedFolderChain(source, live, sourceFolderPortableId)
             if (folderId <= 0L) fail("IMPORT_DEPENDENCY_FAILED", "The imported folder could not be resolved")
             Log.i(
               "BackupRuntime",
@@ -893,7 +907,8 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   }
 
   private fun copyReplacementFolders(source: SQLiteDatabase, target: SQLiteDatabase) {
-    copyRows(source, target, "SELECT portableId,name,createdAt,sortOrder FROM Folders ORDER BY portableId", "INSERT INTO Folders(portableId,name,createdAt,sortOrder) VALUES(?,?,?,?)", 4)
+    val parentColumn = if (hasColumn(source, "Folders", "parentPortableId")) "parentPortableId" else "NULL"
+    copyRows(source, target, "SELECT portableId,$parentColumn,name,createdAt,sortOrder FROM Folders ORDER BY portableId", "INSERT INTO Folders(portableId,parentPortableId,name,createdAt,sortOrder) VALUES(?,?,?,?,?)", 5)
   }
 
   private fun copyReplacementNotes(source: SQLiteDatabase, target: SQLiteDatabase) {
@@ -1044,7 +1059,10 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         db.execSQL("PRAGMA foreign_keys=OFF")
         listOf("RecoveryProvenance", "NoteAudios", "NoteFiles", "Notes", "Folders").forEach { db.execSQL("DELETE FROM $it") }
         db.execSQL("DELETE FROM sqlite_sequence WHERE name IN ('Folders','Notes','NoteAudios','NoteFiles')")
-        db.execSQL("INSERT INTO Folders SELECT * FROM prior.Folders")
+        // Snapshots taken before the folder hierarchy column existed still undo;
+        // their folders are all roots.
+        val priorParentColumn = if (hasColumn(db, "prior.Folders", "parentPortableId")) "parentPortableId" else "NULL"
+        db.execSQL("INSERT INTO Folders(id,portableId,parentPortableId,name,createdAt,sortOrder) SELECT id,portableId,$priorParentColumn,name,createdAt,sortOrder FROM prior.Folders")
         copyPriorNotes(db)
         db.execSQL("INSERT INTO NoteAudios SELECT * FROM prior.NoteAudios")
         db.execSQL("INSERT INTO NoteFiles SELECT * FROM prior.NoteFiles")
@@ -1280,12 +1298,49 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     putBoolean("recoveryComplete", audio == 0 && files == 0)
   }
 
-  private fun ensureImportedFolder(db: SQLiteDatabase, portableId: String, name: String, createdAt: String, sortOrder: Int): Long {
-    db.rawQuery("SELECT id FROM Folders WHERE portableId=?", arrayOf(portableId)).use { if (it.moveToFirst()) return it.getLong(0) }
-    val statement = db.compileStatement("INSERT INTO Folders(portableId,name,createdAt,sortOrder) VALUES(?,?,?,?)")
-    statement.bindString(1, portableId); statement.bindString(2, name); statement.bindString(3, createdAt); statement.bindLong(4, sortOrder.toLong())
+  private data class ArchivedFolderRow(
+    val portableId: String,
+    val parentPortableId: String?,
+    val name: String,
+    val createdAt: String,
+    val sortOrder: Int,
+  )
+
+  private fun folderPath(portableId: String, folders: Map<String, ArchivedFolderRow>, visited: MutableSet<String> = mutableSetOf()): List<String> {
+    if (!visited.add(portableId)) fail("BROKEN_REFERENCE", "Folder hierarchy contains a cycle")
+    val folder = folders[portableId] ?: fail("BROKEN_REFERENCE", "Folder hierarchy is missing a parent")
+    return (folder.parentPortableId?.let { folderPath(it, folders, visited) } ?: emptyList()) + folder.name
+  }
+
+  // Recreates the archived folder and its missing ancestors from the root down.
+  // An existing local folder is reused only when its parent matches, so equal
+  // display names from different archive paths never merge.
+  private fun ensureImportedFolderChain(source: SQLiteDatabase, live: SQLiteDatabase, portableId: String): Long {
+    val parentColumn = if (hasColumn(source, "Folders", "parentPortableId")) "parentPortableId" else "NULL"
+    val folder = source.rawQuery("SELECT portableId,$parentColumn,name,createdAt,sortOrder FROM Folders WHERE portableId=?", arrayOf(portableId)).use {
+      if (!it.moveToFirst()) fail("IMPORT_DEPENDENCY_FAILED", "Archived folder is missing")
+      ArchivedFolderRow(it.getString(0), it.getString(1), it.getString(2), it.getString(3), it.getInt(4))
+    }
+    folder.parentPortableId?.let { parentId -> ensureImportedFolderChain(source, live, parentId) }
+    val liveParentColumn = if (hasColumn(live, "Folders", "parentPortableId")) "parentPortableId" else "NULL"
+    live.rawQuery("SELECT id,$liveParentColumn FROM Folders WHERE portableId=?", arrayOf(portableId)).use {
+      if (it.moveToFirst()) {
+        if (it.getString(1) != folder.parentPortableId) fail("IMPORT_DEPENDENCY_FAILED", "Folder identity has a different parent locally")
+        return it.getLong(0)
+      }
+    }
+    val statement = live.compileStatement("INSERT INTO Folders(portableId,parentPortableId,name,createdAt,sortOrder) VALUES(?,?,?,?,?)")
+    statement.bindString(1, folder.portableId)
+    if (folder.parentPortableId == null) statement.bindNull(2) else statement.bindString(2, folder.parentPortableId)
+    statement.bindString(3, folder.name); statement.bindString(4, folder.createdAt); statement.bindLong(5, folder.sortOrder.toLong())
     return statement.executeInsert()
   }
+
+  private fun hasColumn(db: SQLiteDatabase, table: String, column: String): Boolean =
+    db.rawQuery("PRAGMA table_info($table)", null).use { cursor ->
+      while (cursor.moveToNext()) if (cursor.getString(1) == column) return@use true
+      false
+    }
 
   private fun mediaMatches(source: SQLiteDatabase, live: SQLiteDatabase, sourceNoteId: String, liveNoteId: Long): Boolean {
     return listOf("NoteAudios", "NoteFiles").all { table ->
@@ -1348,13 +1403,17 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     val output = SQLiteDatabase.openOrCreateDatabase(target, null)
     try {
       output.execSQL("PRAGMA foreign_keys=ON")
+      output.execSQL("PRAGMA defer_foreign_keys=ON")
       output.execSQL("PRAGMA user_version=$DATABASE_VERSION")
-      output.execSQL("CREATE TABLE Folders(portableId TEXT PRIMARY KEY,name TEXT NOT NULL,createdAt TEXT NOT NULL,sortOrder INTEGER NOT NULL)")
+      output.execSQL("CREATE TABLE Folders(portableId TEXT PRIMARY KEY,parentPortableId TEXT,name TEXT NOT NULL,createdAt TEXT NOT NULL,sortOrder INTEGER NOT NULL,FOREIGN KEY(parentPortableId) REFERENCES Folders(portableId))")
       output.execSQL("CREATE TABLE Notes(portableId TEXT PRIMARY KEY,folderPortableId TEXT NOT NULL,title TEXT NOT NULL,content TEXT,createdAt TEXT NOT NULL,updatedAt TEXT NOT NULL,sortOrder INTEGER NOT NULL,FOREIGN KEY(folderPortableId) REFERENCES Folders(portableId))")
       output.execSQL("CREATE TABLE NoteAudios(portableId TEXT PRIMARY KEY,notePortableId TEXT NOT NULL,mediaPath TEXT NOT NULL,displayName TEXT,groupId TEXT,segmentIndex INTEGER,orderIndex INTEGER NOT NULL,createdAt TEXT NOT NULL,FOREIGN KEY(notePortableId) REFERENCES Notes(portableId))")
       output.execSQL("CREATE TABLE NoteFiles(portableId TEXT PRIMARY KEY,notePortableId TEXT NOT NULL,mediaPath TEXT NOT NULL,displayName TEXT,mimeType TEXT,orderIndex INTEGER NOT NULL,createdAt TEXT NOT NULL,FOREIGN KEY(notePortableId) REFERENCES Notes(portableId))")
       output.beginTransaction()
-      copyRows(input, output, "SELECT portableId,name,createdAt,sortOrder FROM Folders", "INSERT INTO Folders VALUES(?,?,?,?)", 4)
+      val parentColumn = if (hasColumn(input, "Folders", "parentPortableId")) {
+        "CASE WHEN F.parentPortableId IS NULL OR EXISTS (SELECT 1 FROM Folders P WHERE P.portableId = F.parentPortableId) THEN F.parentPortableId ELSE NULL END"
+      } else "NULL"
+      copyRows(input, output, "SELECT F.portableId,$parentColumn,F.name,F.createdAt,F.sortOrder FROM Folders F", "INSERT INTO Folders VALUES(?,?,?,?,?)", 5)
       copyRows(input, output, "SELECT n.portableId,f.portableId,n.title,n.content,n.createdAt,n.updatedAt,n.sortOrder FROM Notes n JOIN Folders f ON f.id=n.folderId", "INSERT INTO Notes VALUES(?,?,?,?,?,?,?)", 7)
       copyMediaRows(input, output, media, true)
       copyMediaRows(input, output, media, false)

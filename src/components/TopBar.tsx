@@ -1,4 +1,4 @@
-import type { PropsWithChildren } from 'react';
+import type { PropsWithChildren, ReactNode } from 'react';
 import { View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassSurface } from './GlassSurface';
@@ -10,9 +10,10 @@ export const TOP_BAR_HEIGHT = 56;
 
 type TopBarProps = PropsWithChildren<{
   onBack?: () => void;
+  leading?: ReactNode;
 }>;
 
-export const TopBar = ({ onBack, children }: TopBarProps) => {
+export const TopBar = ({ onBack, leading, children }: TopBarProps) => {
   const insets = useSafeAreaInsets();
   const { t } = useLanguage();
 
@@ -30,25 +31,26 @@ export const TopBar = ({ onBack, children }: TopBarProps) => {
         justifyContent: 'space-between',
       }}
     >
-      {onBack ? (
-        <GlassSurface
-          radius={ui.radius.pill}
-          contentStyle={{
-            width: TOP_BAR_HEIGHT,
-            height: TOP_BAR_HEIGHT,
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <IconButton
-            icon="arrow-left"
-            onPress={onBack}
-            accessibilityLabel={t('common.back')}
-          />
-        </GlassSurface>
-      ) : (
-        <View />
-      )}
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: ui.space.sm }}>
+        {onBack ? (
+          <GlassSurface
+            radius={ui.radius.pill}
+            contentStyle={{
+              width: TOP_BAR_HEIGHT,
+              height: TOP_BAR_HEIGHT,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <IconButton
+              icon="arrow-left"
+              onPress={onBack}
+              accessibilityLabel={t('common.back')}
+            />
+          </GlassSurface>
+        ) : null}
+        {leading}
+      </View>
 
       <GlassSurface
         radius={ui.radius.pill}

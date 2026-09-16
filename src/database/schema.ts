@@ -32,7 +32,7 @@ let databaseSuspension: Promise<void> | null = null;
 
 const SQLITE_BUSY_TIMEOUT_MS = 5000;
 const SQLITE_BUSY_RETRY_DELAYS_MS = [75, 200, 500] as const;
-const CURRENT_SCHEMA_VERSION = 3;
+const CURRENT_SCHEMA_VERSION = 4;
 
 const normalizeSearchValue = (value: string | null | undefined): string =>
   (value ?? '').toLowerCase();
@@ -132,6 +132,7 @@ export const initDb = async () => {
     CREATE TABLE IF NOT EXISTS Folders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       portableId TEXT,
+      parentPortableId TEXT,
       name TEXT NOT NULL,
       createdAt TEXT NOT NULL,
       sortOrder INTEGER NOT NULL
@@ -267,11 +268,15 @@ export const initDb = async () => {
   const folderColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(Folders);');
   const hasFolderSortOrder = folderColumns.some((column) => column.name === 'sortOrder');
   const hasFolderPortableId = folderColumns.some((column) => column.name === 'portableId');
+  const hasFolderParentPortableId = folderColumns.some((column) => column.name === 'parentPortableId');
   if (!hasFolderSortOrder) {
     await db.execAsync('ALTER TABLE Folders ADD COLUMN sortOrder INTEGER;');
   }
   if (!hasFolderPortableId) {
     await db.execAsync('ALTER TABLE Folders ADD COLUMN portableId TEXT;');
+  }
+  if (!hasFolderParentPortableId) {
+    await db.execAsync('ALTER TABLE Folders ADD COLUMN parentPortableId TEXT;');
   }
 
   const noteAudioColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(NoteAudios);');
@@ -505,6 +510,7 @@ const listNoteMediaUris = async (db: SQLite.SQLiteDatabase, noteIds: number[]): 
 type FolderRow = {
   id: number;
   portableId: string;
+  parentPortableId: string | null;
   name: string;
   createdAt: string;
   sortOrder: number;
@@ -636,6 +642,7 @@ export const listFolders = async (
     SELECT
       F.id,
       F.portableId,
+      F.parentPortableId,
       F.name,
       F.createdAt,
       F.sortOrder,
@@ -649,6 +656,7 @@ export const listFolders = async (
   return rows.map((row) => ({
     id: row.id,
     portableId: row.portableId,
+    parentPortableId: row.parentPortableId,
     name: row.name,
     createdAt: row.createdAt,
     noteCount: Number(row.noteCount ?? 0),

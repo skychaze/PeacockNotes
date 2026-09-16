@@ -2,7 +2,7 @@ import { NativeModules, Platform } from 'react-native';
 import type { BackupProgressOwner } from './backupProgress';
 
 export const ARCHIVE_FORMAT_VERSION = 1 as const;
-export const ARCHIVE_DATABASE_VERSION = 1 as const;
+export const ARCHIVE_DATABASE_VERSION = 2 as const;
 
 export type ArchiveMediaKind = 'audio' | 'file';
 
@@ -96,19 +96,29 @@ export type ManagedRetentionResult = Readonly<{
 
 export type ArchivedNotePreview = Readonly<{
   portableId: string;
+  folderPortableId: string;
+  // Only present in previews from binaries that predate the folder tree.
+  folderName?: string;
   title: string;
   contentPreview: string;
   updatedAt: string;
-  folderName: string;
-  folderPortableId: string;
   audioCount: number;
   fileCount: number;
+}>;
+
+export type ArchivedFolderPreview = Readonly<{
+  portableId: string;
+  parentPortableId: string | null;
+  name: string;
+  path: readonly string[];
+  sortOrder: number;
 }>;
 
 export type ImportPreview = Readonly<{
   archiveUri: string;
   archiveSha256: string;
   createdAt: string;
+  folders: readonly ArchivedFolderPreview[];
   notes: readonly ArchivedNotePreview[];
 }>;
 

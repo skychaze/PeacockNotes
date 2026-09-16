@@ -1,6 +1,7 @@
 export type Folder = {
   id: number;
   portableId: string;
+  parentPortableId: string | null;
   name: string;
   createdAt: string;
 };
