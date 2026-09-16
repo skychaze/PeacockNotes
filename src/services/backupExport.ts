@@ -265,7 +265,7 @@ class ManagedRetentionHandler implements BackupOperationHandler {
 
   async recoverInterruptedStep() {
     // Archive deletion is idempotent. A fresh complete scan safely identifies
-    // only the expired verified archives that still remain.
+    // only older valid archives that still remain beyond the seven-item cap.
     return { outcome: 'not_committed' } as const;
   }
 }

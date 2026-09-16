@@ -17,15 +17,15 @@ The Android document-provider folder the user has authorized Peacock Notes to re
 _Avoid_: Drive account, cloud database
 
 **Managed retention**:
-The accepted policy that removes expired archives from a connected backup folder while always preserving its newest valid recovery point.
-_Avoid_: Cleanup, count limit
+The accepted policy that keeps the seven newest valid archives in a connected backup folder and removes older valid archives. Damaged or uncertain archives do not count toward the limit.
+_Avoid_: Cleanup, expired archive
 
 **Automatic backup**:
 Explicitly enabled, opportunistic creation of an export archive when changed recoverable content is due. It is not an exact daily schedule or proof of remote cloud synchronization.
 _Avoid_: Scheduled backup, cloud sync
 
 **Due backup**:
-Changed recoverable content whose last verified archive is at least 24 hours old.
+Changed recoverable content whose last verified archive is at least the selected automatic-backup interval old. The default interval is 24 hours.
 _Avoid_: Missed backup, failed backup
 
 **Additive import**:

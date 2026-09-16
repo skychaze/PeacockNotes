@@ -1,6 +1,7 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import Constants from 'expo-constants';
 import { useCallback, useMemo, useState } from 'react';
 import type { GestureResponderEvent } from 'react-native';
 import {
@@ -79,6 +80,7 @@ export const FoldersScreen = () => {
 
   const fabBottom = Math.max(insets.bottom + 12, 22);
   const listBottomPadding = Math.max(insets.bottom + 104, 126);
+  const appVersion = Constants.expoConfig?.version;
 
   const closeSheet = useCallback(() => setActiveSheet('none'), []);
   const isSelecting = selectedFolderIds.size > 0;
@@ -388,7 +390,11 @@ export const FoldersScreen = () => {
         />
       </View>
 
-      <TopBar>
+      <TopBar leading={appVersion ? (
+        <AppText variant="caption" color={colors.textSecondary} style={{ opacity: 0.7 }}>
+          v{appVersion}
+        </AppText>
+      ) : null}>
         {isSelecting ? <>
           <AppText variant="headline">{t('selection.count', { count: selectedFolderIds.size })}</AppText>
           <IconButton icon="close" accessibilityLabel={t('common.cancel')} onPress={() => setSelectedFolderIds(new Set())} />

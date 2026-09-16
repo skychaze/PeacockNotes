@@ -25,6 +25,7 @@ import {
 import { ShareImportScreen } from './src/screens/ShareImportScreen';
 import { StorageUsageScreen } from './src/screens/StorageUsageScreen';
 import { BackupScreen } from './src/screens/BackupScreen';
+import { ImportBackupScreen } from './src/screens/ImportBackupScreen';
 import { LanguageProvider, useLanguage } from './src/i18n/LanguageContext';
 import { recoverInterruptedFullReplacement } from './src/services/archive';
 import { installAutomaticBackupCatchUp } from './src/services/automaticBackup';
@@ -189,6 +190,7 @@ const AppNavigator = () => {
           <Stack.Screen name="Folders" component={FoldersScreen} />
           <Stack.Screen name="StorageUsage" component={StorageUsageScreen} />
           <Stack.Screen name="Backup" component={BackupScreen} />
+          <Stack.Screen name="ImportBackup" component={ImportBackupScreen} />
           <Stack.Screen name="NotesList" component={NotesListScreen} />
           <Stack.Screen name="NoteEditor" component={NoteEditorScreen} />
         </Stack.Navigator>

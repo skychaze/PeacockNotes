@@ -7,17 +7,15 @@ data class RetentionArchiveCandidate(
 )
 
 object ArchiveRetentionPolicy {
-  fun expiredVerifiedArchiveKeys(
+  const val MAX_VALID_ARCHIVES = 7
+
+  fun excessValidArchiveKeys(
     archives: List<RetentionArchiveCandidate>,
-    now: Long,
-    retentionWindowMillis: Long,
   ): Set<String> {
-    require(retentionWindowMillis >= 0) { "retentionWindowMillis must not be negative" }
-    val verified = archives.filter { it.state == "valid" && it.createdAt != null }
-    val newest = verified.maxByOrNull { it.createdAt!! }
-    val cutoff = now - retentionWindowMillis
-    return verified.asSequence()
-      .filter { it !== newest && it.createdAt!! < cutoff }
+    return archives.asSequence()
+      .filter { it.state == "valid" && it.createdAt != null }
+      .sortedWith(compareByDescending<RetentionArchiveCandidate> { it.createdAt }.thenBy { it.key })
+      .drop(MAX_VALID_ARCHIVES)
       .map { it.key }
       .toSet()
   }
