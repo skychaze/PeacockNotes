@@ -1,9 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState, NativeModules, Platform } from 'react-native';
 import {
+  DEFAULT_AUTOMATIC_BACKUP_INTERVAL_HOURS,
   MAX_AUTOMATIC_BACKUP_ATTEMPTS,
+  isAutomaticBackupIntervalHours,
   isAutomaticBackupDue,
   shouldRetryAutomaticBackup,
+  type AutomaticBackupIntervalHours,
 } from '../backup/automaticPolicy';
 import { getContentRevision } from '../database/schema';
 import { runAutomaticExport, type VerifiedBackup } from './backupExport';
@@ -27,11 +30,13 @@ export type AutomaticBackupState = Readonly<{
   attempt: number;
   errorCode: string | null;
   updatedAt: number | null;
+  intervalHours: AutomaticBackupIntervalHours;
 }>;
 
 type AutomaticBackupNativeModule = {
   getState(): Promise<AutomaticBackupState>;
-  setEnabled(enabled: boolean): Promise<AutomaticBackupState>;
+  setEnabled(enabled: boolean, intervalHours: AutomaticBackupIntervalHours): Promise<AutomaticBackupState>;
+  setInterval(intervalHours: AutomaticBackupIntervalHours): Promise<AutomaticBackupState>;
   setStatus(phase: AutomaticBackupPhase, attempt: number, errorCode: string | null): Promise<void>;
   constraintsMet(): Promise<{ connected: boolean; batteryOkay: boolean }>;
 };
@@ -74,8 +79,20 @@ const delay = (milliseconds: number) => new Promise<void>((resolve) => {
   setTimeout(resolve, milliseconds);
 });
 
-export const getAutomaticBackupState = () => requireModule().getState();
-export const setAutomaticBackupEnabled = (enabled: boolean) => requireModule().setEnabled(enabled);
+const normalizeAutomaticBackupState = (state: AutomaticBackupState): AutomaticBackupState => ({
+  ...state,
+  intervalHours: isAutomaticBackupIntervalHours(state.intervalHours)
+    ? state.intervalHours
+    : DEFAULT_AUTOMATIC_BACKUP_INTERVAL_HOURS,
+});
+
+export const getAutomaticBackupState = async () => normalizeAutomaticBackupState(await requireModule().getState());
+export const setAutomaticBackupEnabled = async (
+  enabled: boolean,
+  intervalHours: AutomaticBackupIntervalHours,
+) => normalizeAutomaticBackupState(await requireModule().setEnabled(enabled, intervalHours));
+export const setAutomaticBackupInterval = async (intervalHours: AutomaticBackupIntervalHours) =>
+  normalizeAutomaticBackupState(await requireModule().setInterval(intervalHours));
 
 let activeAttempt: Promise<AutomaticBackupState> | null = null;
 let driveAuthorizationInProgress = false;
@@ -94,7 +111,7 @@ export const setAutomaticBackupAuthorizationInProgress = (inProgress: boolean) =
 
 const runAutomaticBackupAttempt = async (): Promise<AutomaticBackupState> => {
   const native = requireModule();
-  let state = await native.getState();
+  let state = normalizeAutomaticBackupState(await native.getState());
   if (!state.enabled || driveAuthorizationInProgress) return state;
 
   const [revision, verified, currentFolder] = await Promise.all([
@@ -102,7 +119,7 @@ const runAutomaticBackupAttempt = async (): Promise<AutomaticBackupState> => {
     readLastVerified(),
     getBackupFolderState(),
   ]);
-  state = await native.getState();
+  state = normalizeAutomaticBackupState(await native.getState());
   if (!state.enabled || driveAuthorizationInProgress) return state;
 
   const lastVerifiedAt = verified ? Date.parse(verified.createdAt) : null;
@@ -112,34 +129,35 @@ const runAutomaticBackupAttempt = async (): Promise<AutomaticBackupState> => {
     lastVerifiedAt: lastVerifiedAt !== null && Number.isFinite(lastVerifiedAt) ? lastVerifiedAt : null,
     currentFolderUri: currentFolder.status === 'connected' ? currentFolder.uri : null,
     lastVerifiedFolderUri: verified?.folderUri ?? null,
+    intervalHours: state.intervalHours,
     now: Date.now(),
   })) {
     await native.setStatus('not_due', 0, null);
-    return native.getState();
+    return getAutomaticBackupState();
   }
 
   await native.setStatus('due', 0, null);
   const [folder, constraints] = await Promise.all([
     getBackupFolderState(), native.constraintsMet(),
   ]);
-  state = await native.getState();
+  state = normalizeAutomaticBackupState(await native.getState());
   if (!state.enabled || driveAuthorizationInProgress) return state;
   if (folder.status !== 'connected') {
     const phase = folder.status === 'unavailable' ? 'provider' : 'permission';
     await native.setStatus(phase, 0, folder.status);
-    return native.getState();
+    return getAutomaticBackupState();
   }
   if (!constraints.connected) {
     await native.setStatus('connectivity', 0, 'BACKUP_OFFLINE');
-    return native.getState();
+    return getAutomaticBackupState();
   }
   if (!constraints.batteryOkay) {
     await native.setStatus('retrying', 0, 'BATTERY_CONSTRAINT');
-    return native.getState();
+    return getAutomaticBackupState();
   }
 
   for (let attempt = 1; attempt <= MAX_AUTOMATIC_BACKUP_ATTEMPTS; attempt += 1) {
-    state = await native.getState();
+    state = normalizeAutomaticBackupState(await native.getState());
     if (!state.enabled || driveAuthorizationInProgress) return state;
     await native.setStatus('running', attempt, null);
     try {
@@ -151,7 +169,7 @@ const runAutomaticBackupAttempt = async (): Promise<AutomaticBackupState> => {
         if (foreground) await releaseBackupForegroundService(true);
       }
       await native.setStatus('verified', 0, null);
-      return native.getState();
+      return getAutomaticBackupState();
     } catch (error: unknown) {
       const code = errorCode(error);
       if (code === 'BACKUP_OPERATION_BUSY') {
@@ -160,18 +178,18 @@ const runAutomaticBackupAttempt = async (): Promise<AutomaticBackupState> => {
         // failure and do not start a second job; leave a recoverable status
         // for the next lifecycle/WorkManager attempt.
         await native.setStatus('retrying', attempt, code);
-        return native.getState();
+        return getAutomaticBackupState();
       }
       const willRetry = shouldRetryAutomaticBackup(code, attempt);
       if (!willRetry) {
         await native.setStatus(failurePhase(code), attempt, code);
-        return native.getState();
+        return getAutomaticBackupState();
       }
       await native.setStatus('retrying', attempt, code);
       await delay(RETRY_DELAYS_MS[attempt - 1]);
     }
   }
-  return native.getState();
+  return getAutomaticBackupState();
 };
 
 export const attemptAutomaticBackup = (): Promise<AutomaticBackupState> => {

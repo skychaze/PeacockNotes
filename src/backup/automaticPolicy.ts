@@ -1,5 +1,13 @@
-export const AUTOMATIC_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+export const AUTOMATIC_BACKUP_INTERVAL_HOURS = [1, 3, 6, 12, 24] as const;
+export type AutomaticBackupIntervalHours = typeof AUTOMATIC_BACKUP_INTERVAL_HOURS[number];
+export const DEFAULT_AUTOMATIC_BACKUP_INTERVAL_HOURS: AutomaticBackupIntervalHours = 24;
 export const MAX_AUTOMATIC_BACKUP_ATTEMPTS = 3;
+
+export const isAutomaticBackupIntervalHours = (value: unknown): value is AutomaticBackupIntervalHours =>
+  typeof value === 'number' && AUTOMATIC_BACKUP_INTERVAL_HOURS.some((hours) => hours === value);
+
+export const automaticBackupIntervalMs = (hours: AutomaticBackupIntervalHours): number =>
+  hours * 60 * 60 * 1000;
 
 const TRANSIENT_EXPORT_CODES = new Set([
   'ARCHIVE_OPERATION_FAILED',
@@ -21,6 +29,7 @@ export type AutomaticBackupDueInput = Readonly<{
   lastVerifiedAt: number | null;
   currentFolderUri?: string | null;
   lastVerifiedFolderUri?: string | null;
+  intervalHours?: AutomaticBackupIntervalHours;
   now: number;
 }>;
 
@@ -30,6 +39,7 @@ export const isAutomaticBackupDue = ({
   lastVerifiedAt,
   currentFolderUri,
   lastVerifiedFolderUri,
+  intervalHours = DEFAULT_AUTOMATIC_BACKUP_INTERVAL_HOURS,
   now,
 }: AutomaticBackupDueInput): boolean => {
   const recoveryPointMatchesFolder = Boolean(
@@ -39,5 +49,5 @@ export const isAutomaticBackupDue = ({
     ? currentRevision > 0
     : currentRevision !== lastVerifiedRevision;
   if (!contentChanged) return false;
-  return lastVerifiedAt === null || now - lastVerifiedAt >= AUTOMATIC_BACKUP_INTERVAL_MS;
+  return lastVerifiedAt === null || now - lastVerifiedAt >= automaticBackupIntervalMs(intervalHours);
 };

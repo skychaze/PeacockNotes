@@ -280,10 +280,13 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         !deepValidation -> !lightRecoveryPointFound && !cacheMatches
         else -> false
       }
+      var preview = if (cacheMatches) cachedItem?.optJSONObject("preview") else null
       val archive = if (shouldValidate) {
         deepValidated += 1
-        scanArchive(uri, item.name, item.size, item.modifiedTime).also { scanned ->
-          if (scanned.getString("state") == "valid") lightRecoveryPointFound = true
+        val scanned = scanArchive(uri, item.name, item.size, item.modifiedTime)
+        preview = scanned.preview
+        scanned.archive.also { value ->
+          if (value.getString("state") == "valid") lightRecoveryPointFound = true
         }
       } else if (cacheMatches) {
         cacheHits += 1
@@ -297,7 +300,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       // a WritableArray. Serialize the cache entry first; reading `archive`
       // after pushMap would throw "Map already consumed" and turn an otherwise
       // successful Drive listing into a generic scan failure.
-      nextCache[item.id] = cacheEntry(item, archive)
+      nextCache[item.id] = cacheEntry(item, archive, preview)
       archives.pushMap(archive)
     }
     saveScanCache(folderId, nextCache.values.toList())
@@ -341,7 +344,11 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         (if (modified === JSONObject.NULL) Long.MIN_VALUE else item.modifiedTime ?: Long.MIN_VALUE)
   }
 
-  private fun cacheEntry(item: DriveClient.Item, archive: com.facebook.react.bridge.ReadableMap): JSONObject = JSONObject().apply {
+  private fun cacheEntry(
+    item: DriveClient.Item,
+    archive: com.facebook.react.bridge.ReadableMap,
+    preview: JSONObject? = null,
+  ): JSONObject = JSONObject().apply {
     put("id", item.id)
     put("name", item.name)
     if (item.size == null) put("providerSize", JSONObject.NULL) else put("providerSize", item.size)
@@ -352,6 +359,10 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     put("state", archive.getString("state") ?: "uncertain")
     put("verification", archive.getString("verification") ?: "not_verified")
     put("compatibility", archive.getString("compatibility") ?: "unknown")
+    if (preview != null) {
+      put("archiveSha256", preview.optString("archiveSha256"))
+      put("preview", preview)
+    }
   }
 
   private fun cachedArchive(cached: JSONObject, item: DriveClient.Item) = Arguments.createMap().apply {
@@ -390,19 +401,26 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       .edit().putString(SCAN_CACHE_KEY, root.toString()).apply()
   }
 
-  private fun scanArchive(uri: String, name: String, providerSize: Long?, modified: Long?) = Arguments.createMap().apply {
-    putString("uri", uri)
-    putString("name", name)
-    if (providerSize == null) putNull("bytes") else putDouble("bytes", providerSize.toDouble())
-    if (modified == null) putNull("providerModifiedAt") else putDouble("providerModifiedAt", modified.toDouble())
-    try {
-      val request = Arguments.createMap().apply { putString("archiveUri", uri); putString("mode", "verify_only") }
-      val validated = validate(request)
-      putString("state", "valid")
-      putString("verification", "verified")
-      putString("compatibility", "compatible")
-      putString("createdAt", validated.getString("createdAt"))
-      putDouble("bytes", validated.getDouble("archiveBytes"))
+  private data class ScannedArchive(
+    val archive: com.facebook.react.bridge.WritableMap,
+    val preview: JSONObject?,
+  )
+
+  private fun scanArchive(uri: String, name: String, providerSize: Long?, modified: Long?): ScannedArchive {
+    val archive = Arguments.createMap().apply {
+      putString("uri", uri)
+      putString("name", name)
+      if (providerSize == null) putNull("bytes") else putDouble("bytes", providerSize.toDouble())
+      if (modified == null) putNull("providerModifiedAt") else putDouble("providerModifiedAt", modified.toDouble())
+    }
+    return try {
+      val preview = buildPreview(uri)
+      archive.putString("state", "valid")
+      archive.putString("verification", "verified")
+      archive.putString("compatibility", "compatible")
+      archive.putString("createdAt", preview.getString("createdAt"))
+      if (providerSize == null) archive.putNull("bytes") else archive.putDouble("bytes", providerSize.toDouble())
+      ScannedArchive(archive, preview)
     } catch (error: Exception) {
       val code = errorCode(error)
       val state = when (code) {
@@ -410,10 +428,11 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         in UNCERTAIN_CODES -> "uncertain"
         else -> "damaged"
       }
-      putString("state", state)
-      putString("verification", if (state == "damaged") "failed" else "not_verified")
-      putString("compatibility", if (state == "incompatible") "incompatible" else "unknown")
-      putNull("createdAt")
+      archive.putString("state", state)
+      archive.putString("verification", if (state == "damaged") "failed" else "not_verified")
+      archive.putString("compatibility", if (state == "incompatible") "incompatible" else "unknown")
+      archive.putNull("createdAt")
+      ScannedArchive(archive, null)
     }
   }
 
@@ -432,11 +451,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       }
       RetentionArchiveCandidate(uri, archive.getString("state") ?: "uncertain", createdAt)
     }
-    val candidates = ArchiveRetentionPolicy.expiredVerifiedArchiveKeys(
-      retentionArchives,
-      System.currentTimeMillis(),
-      UNDO_WINDOW_MILLIS,
-    )
+    val candidates = ArchiveRetentionPolicy.excessValidArchiveKeys(retentionArchives)
 
     var deleted = 0
     progress.startStep("prune", "prune_archives", itemsTotal = candidates.size)
@@ -633,6 +648,50 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
 
   private fun preview(request: ReadableMap): com.facebook.react.bridge.WritableMap {
     val archiveUri = requiredString(request, "archiveUri")
+    cachedPreview(archiveUri)?.let { cached ->
+      try {
+        return previewMap(cached)
+      } catch (error: Exception) {
+        Log.w("BackupRuntime", "Cached archive preview was invalid; rebuilding it", error)
+      }
+    }
+    val preview = buildPreview(archiveUri)
+    cachePreview(archiveUri, preview)
+    return previewMap(preview)
+  }
+
+  private fun cachedPreview(archiveUri: String): JSONObject? {
+    val archiveId = DriveClient.idFromUri(archiveUri) ?: return null
+    val folderUri = context.getSharedPreferences(FOLDER_PREFERENCES, android.app.Activity.MODE_PRIVATE)
+      .getString(FOLDER_URI, null) ?: return null
+    val folderId = DriveClient.idFromUri(folderUri) ?: return null
+    val cached = loadScanCache(folderId)[archiveId] ?: return null
+    if (cached.optString("uri") != archiveUri || cached.optString("state") != "valid") return null
+    val preview = cached.optJSONObject("preview") ?: return null
+    if (preview.optString("archiveUri") != archiveUri) return null
+    val archiveHash = preview.optString("archiveSha256")
+    if (!Regex("^[a-f0-9]{64}$").matches(archiveHash)) return null
+    if (cached.optString("archiveSha256") != archiveHash) return null
+    if (preview.optString("createdAt").isBlank()) return null
+    if (preview.optJSONArray("folders") == null || preview.optJSONArray("notes") == null) return null
+    return preview
+  }
+
+  private fun cachePreview(archiveUri: String, preview: JSONObject) {
+    val archiveId = DriveClient.idFromUri(archiveUri) ?: return
+    val folderUri = context.getSharedPreferences(FOLDER_PREFERENCES, android.app.Activity.MODE_PRIVATE)
+      .getString(FOLDER_URI, null) ?: return
+    val folderId = DriveClient.idFromUri(folderUri) ?: return
+    val cached = loadScanCache(folderId).toMutableMap()
+    val entry = cached[archiveId] ?: return
+    if (entry.optString("uri") != archiveUri) return
+    entry.put("archiveSha256", preview.optString("archiveSha256"))
+    entry.put("preview", preview)
+    cached[archiveId] = entry
+    saveScanCache(folderId, cached.values.toList())
+  }
+
+  private fun buildPreview(archiveUri: String): JSONObject {
     val work = newWorkDirectory("preview")
     try {
       val validationRequest = Arguments.createMap().apply {
@@ -644,8 +703,8 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       val extracted = work.listFiles()?.singleOrNull { it.isDirectory && it.name.startsWith("validated-") }
         ?: fail("STAGING_UNAVAILABLE", "Validated import staging is missing")
       val db = SQLiteDatabase.openDatabase(File(extracted, DATABASE_PATH).path, null, SQLiteDatabase.OPEN_READONLY)
-      val folders = Arguments.createArray()
-      val notes = Arguments.createArray()
+      val folders = JSONArray()
+      val notes = JSONArray()
       try {
         val parentColumn = if (hasColumn(db, "Folders", "parentPortableId")) "parentPortableId" else "NULL"
         val folderRows = linkedMapOf<String, ArchivedFolderRow>()
@@ -655,25 +714,61 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
           )
         }
         folderRows.values.forEach { folder ->
-          folders.pushMap(Arguments.createMap().apply {
-            putString("portableId", folder.portableId); putString("parentPortableId", folder.parentPortableId)
-            putString("name", folder.name); putInt("sortOrder", folder.sortOrder)
-            putArray("path", Arguments.createArray().apply { folderPath(folder.portableId, folderRows).forEach(::pushString) })
+          folders.put(JSONObject().apply {
+            put("portableId", folder.portableId); put("parentPortableId", folder.parentPortableId ?: JSONObject.NULL)
+            put("name", folder.name); put("sortOrder", folder.sortOrder)
+            put("path", JSONArray(folderPath(folder.portableId, folderRows)))
           })
         }
         db.rawQuery("SELECT n.portableId,n.folderPortableId,n.title,substr(n.content,1,180),n.updatedAt,(SELECT COUNT(*) FROM NoteAudios a WHERE a.notePortableId=n.portableId),(SELECT COUNT(*) FROM NoteFiles x WHERE x.notePortableId=n.portableId) FROM Notes n JOIN Folders f ON f.portableId=n.folderPortableId ORDER BY f.sortOrder,f.portableId,n.sortOrder,n.portableId", null).use { cursor ->
-          while (cursor.moveToNext()) notes.pushMap(Arguments.createMap().apply {
-            putString("portableId", cursor.getString(0)); putString("folderPortableId", cursor.getString(1)); putString("title", cursor.getString(2))
-            putString("contentPreview", cursor.getString(3)?.take(180) ?: ""); putString("updatedAt", cursor.getString(4))
-            putInt("audioCount", cursor.getInt(5)); putInt("fileCount", cursor.getInt(6))
+          while (cursor.moveToNext()) notes.put(JSONObject().apply {
+            put("portableId", cursor.getString(0)); put("folderPortableId", cursor.getString(1)); put("title", cursor.getString(2))
+            put("contentPreview", cursor.getString(3)?.take(180) ?: ""); put("updatedAt", cursor.getString(4))
+            put("audioCount", cursor.getInt(5)); put("fileCount", cursor.getInt(6))
           })
         }
       } finally { db.close() }
-      return Arguments.createMap().apply {
-        putString("archiveUri", archiveUri); putString("archiveSha256", summary.getString("archiveSha256"))
-        putString("createdAt", summary.getString("createdAt")); putArray("folders", folders); putArray("notes", notes)
+      return JSONObject().apply {
+        put("archiveUri", archiveUri); put("archiveSha256", summary.getString("archiveSha256"))
+        put("createdAt", summary.getString("createdAt")); put("folders", folders); put("notes", notes)
       }
     } finally { work.deleteRecursively() }
+  }
+
+  private fun previewMap(preview: JSONObject): com.facebook.react.bridge.WritableMap {
+    val archiveUri = preview.optString("archiveUri")
+    val archiveSha256 = preview.optString("archiveSha256")
+    val createdAt = preview.optString("createdAt")
+    val folderJson = preview.optJSONArray("folders") ?: fail("INVALID_PREVIEW_CACHE", "Cached folders are missing")
+    val noteJson = preview.optJSONArray("notes") ?: fail("INVALID_PREVIEW_CACHE", "Cached notes are missing")
+    if (archiveUri.isBlank() || createdAt.isBlank() || !Regex("^[a-f0-9]{64}$").matches(archiveSha256)) {
+      fail("INVALID_PREVIEW_CACHE", "Cached archive preview is invalid")
+    }
+    val folders = Arguments.createArray()
+    for (index in 0 until folderJson.length()) {
+      val folder = folderJson.optJSONObject(index) ?: fail("INVALID_PREVIEW_CACHE", "Cached folder is invalid")
+      val pathJson = folder.optJSONArray("path") ?: fail("INVALID_PREVIEW_CACHE", "Cached folder path is missing")
+      val path = Arguments.createArray()
+      for (pathIndex in 0 until pathJson.length()) path.pushString(pathJson.getString(pathIndex))
+      folders.pushMap(Arguments.createMap().apply {
+        putString("portableId", folder.getString("portableId"))
+        if (folder.isNull("parentPortableId")) putNull("parentPortableId") else putString("parentPortableId", folder.getString("parentPortableId"))
+        putString("name", folder.getString("name")); putInt("sortOrder", folder.getInt("sortOrder")); putArray("path", path)
+      })
+    }
+    val notes = Arguments.createArray()
+    for (index in 0 until noteJson.length()) {
+      val note = noteJson.optJSONObject(index) ?: fail("INVALID_PREVIEW_CACHE", "Cached note is invalid")
+      notes.pushMap(Arguments.createMap().apply {
+        putString("portableId", note.getString("portableId")); putString("folderPortableId", note.getString("folderPortableId"))
+        putString("title", note.getString("title")); putString("contentPreview", note.getString("contentPreview"))
+        putString("updatedAt", note.getString("updatedAt")); putInt("audioCount", note.getInt("audioCount")); putInt("fileCount", note.getInt("fileCount"))
+      })
+    }
+    return Arguments.createMap().apply {
+      putString("archiveUri", archiveUri); putString("archiveSha256", archiveSha256); putString("createdAt", createdAt)
+      putArray("folders", folders); putArray("notes", notes)
+    }
   }
 
   private fun commitImport(request: ReadableMap): com.facebook.react.bridge.WritableMap {

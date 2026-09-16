@@ -1,7 +1,7 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, AppState, ScrollView, Switch, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppText } from '../components/AppText';
@@ -33,25 +33,15 @@ import { requestBackupNotificationPermissionOnce } from '../services/backupNotif
 import {
   attemptAutomaticBackup,
   getAutomaticBackupState,
+  setAutomaticBackupInterval,
   setAutomaticBackupEnabled,
   setAutomaticBackupAuthorizationInProgress,
   type AutomaticBackupState,
 } from '../services/automaticBackup';
-import {
-  browseArchiveForImport,
-  importAllNotesAdditively,
-  importAllNotesByReplacement,
-  importSelectedNotes,
-  loadFullReplacementUndo,
-  previewNewestArchive,
-  undoFullReplacement,
-} from '../services/backupImport';
+import { loadFullReplacementUndo, undoFullReplacement } from '../services/backupImport';
 import {
   type BackupCollectionArchive,
-  type ImportPreview,
-  type FullReplacementResult,
   type FullReplacementUndo,
-  type ImportResult,
   deleteBackupArchives,
 } from '../services/archive';
 import {
@@ -65,29 +55,10 @@ import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
 import type { RootStackParamList } from '../types/navigation';
 import { formatBackupDate } from '../utils/backupDate';
-import { buildArchiveTree, folderCheckState, resolvePreviewFolders, toggleArchiveNotes, type ArchiveTreeFolder } from '../backup/archiveTree';
-
-import {
-  beginBackupProgress,
-  createBackupProgressOperationId,
-  finishBackupProgress,
-  getBackupProgressSnapshot,
-  subscribeBackupProgress,
-  type BackupProgressSnapshot,
-} from '../services/backupProgress';
+import { getBackupProgressSnapshot, subscribeBackupProgress, type BackupProgressSnapshot } from '../services/backupProgress';
+import { AUTOMATIC_BACKUP_INTERVAL_HOURS, DEFAULT_AUTOMATIC_BACKUP_INTERVAL_HOURS, type AutomaticBackupIntervalHours } from '../backup/automaticPolicy';
 
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'Backup'>;
-
-
-const IMPORT_PREVIEW_ERROR_KEYS: Record<string, string> = {
-  DRIVE_AUTH_REQUIRED: 'backup.import.error.DRIVE_AUTH_REQUIRED',
-  DRIVE_AUTH_FAILED: 'backup.import.error.DRIVE_AUTH_REQUIRED',
-  DRIVE_API_FORBIDDEN: 'backup.import.error.DRIVE_API_FORBIDDEN',
-  DRIVE_RATE_LIMITED: 'backup.import.error.DRIVE_RATE_LIMITED',
-  DRIVE_UNAVAILABLE: 'backup.import.error.DRIVE_UNAVAILABLE',
-  DRIVE_API_FAILED: 'backup.import.error.DRIVE_API_FAILED',
-  INSUFFICIENT_STORAGE: 'backup.import.error.INSUFFICIENT_STORAGE',
-};
 
 export const BackupScreen = () => {
   const navigation = useNavigation<Navigation>();
@@ -100,14 +71,6 @@ export const BackupScreen = () => {
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [verifiedBackup, setVerifiedBackup] = useState<VerifiedBackup | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
-  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
-  const [importMode, setImportMode] = useState<'selective' | 'additive' | 'replacement' | null>(null);
-  const [selectedNoteIds, setSelectedNoteIds] = useState<ReadonlySet<string>>(new Set());
-  const [expandedFolderIds, setExpandedFolderIds] = useState<ReadonlySet<string>>(new Set());
-  const [importState, setImportState] = useState<'idle' | 'previewing' | 'committing'>('idle');
-  const [importResult, setImportResult] = useState<ImportResult | null>(null);
-  const [replacementResult, setReplacementResult] = useState<FullReplacementResult | null>(null);
-  const [importError, setImportError] = useState<string | null>(null);
   const [undo, setUndo] = useState<FullReplacementUndo | null>(null);
   const [undoState, setUndoState] = useState<'idle' | 'loading' | 'committing'>('loading');
   const [undoMessage, setUndoMessage] = useState<'success' | 'failed' | null>(null);
@@ -222,20 +185,16 @@ export const BackupScreen = () => {
         // durable operation reaches a terminal state.
         setVerifiedBackup(lastVerified);
         setExportProgress(null);
-        setImportState((current) => current === 'committing' ? 'idle' : current);
       } else if (active.kind === 'export' || active.kind === 'automatic_backup') {
         setVerifiedBackup(null);
         // Keep the live callback stage when this screen is already observing
         // the operation; synthesize a stage only when attaching after a
         // navigation/process change.
         setExportProgress((current) => current ?? 'publishing');
-        setImportState((current) => current === 'committing' ? 'idle' : current);
-      } else if (active?.kind === 'import') {
+      } else if (active.kind === 'import') {
         setExportProgress(null);
-        setImportState('committing');
       } else {
         setExportProgress(null);
-        setImportState((current) => current === 'committing' ? 'idle' : current);
       }
     } catch (error) {
       console.warn('Failed to restore backup operation status:', error);
@@ -287,11 +246,30 @@ export const BackupScreen = () => {
     automaticChangeInFlightRef.current = true;
     setIsChangingAutomatic(true);
     try {
-      const next = await setAutomaticBackupEnabled(enabled);
+      const next = await setAutomaticBackupEnabled(
+        enabled,
+        automatic?.intervalHours ?? DEFAULT_AUTOMATIC_BACKUP_INTERVAL_HOURS,
+      );
       setAutomatic(next);
       if (enabled) setAutomatic(await attemptAutomaticBackup());
     } catch (error) {
       console.warn('Failed to change Automatic backup:', error);
+      Alert.alert(t('common.error'), t('backup.automatic.changeError'));
+      await loadAutomatic();
+    } finally {
+      setIsChangingAutomatic(false);
+      automaticChangeInFlightRef.current = false;
+    }
+  };
+
+  const changeAutomaticInterval = async (intervalHours: AutomaticBackupIntervalHours) => {
+    if (automaticChangeInFlightRef.current || operationBusy || !automatic || automatic.intervalHours === intervalHours) return;
+    automaticChangeInFlightRef.current = true;
+    setIsChangingAutomatic(true);
+    try {
+      setAutomatic(await setAutomaticBackupInterval(intervalHours));
+    } catch (error) {
+      console.warn('Failed to change Automatic backup interval:', error);
       Alert.alert(t('common.error'), t('backup.automatic.changeError'));
       await loadAutomatic();
     } finally {
@@ -408,186 +386,6 @@ export const BackupScreen = () => {
     }
   };
 
-  const openImportPreview = async (archiveUri?: string) => {
-    setImportState('previewing');
-    setImportError(null);
-    setImportResult(null);
-    setReplacementResult(null);
-    setImportPreview(null);
-    try {
-      const uri = archiveUri ?? await browseArchiveForImport();
-      if (!uri) return;
-      const preview = await runForegroundOperation(async () => {
-        const owner = { operationId: createBackupProgressOperationId(), operationKind: 'preview' };
-        await beginBackupProgress({ ...owner, phase: 'verify', step: 'read_archive' });
-        try {
-          return await previewNewestArchive(uri, owner);
-        } finally {
-          finishBackupProgress(owner);
-        }
-      });
-      setImportPreview(preview);
-      setImportMode(null);
-      setExpandedFolderIds(new Set());
-      setSelectedNoteIds(new Set(preview.notes.map((note) => note.portableId)));
-    } catch (error: unknown) {
-      console.warn('Failed to preview backup archive:', error);
-      const code = typeof error === 'object' && error !== null && 'code' in error
-        ? String(error.code)
-        : '';
-      setImportError(t(IMPORT_PREVIEW_ERROR_KEYS[code] ?? 'backup.import.invalid'));
-    } finally {
-      setImportState('idle');
-    }
-  };
-
-  const toggleSelectedNote = (portableId: string) => {
-    setSelectedNoteIds((current) => {
-      const next = new Set(current);
-      if (next.has(portableId)) next.delete(portableId);
-      else next.add(portableId);
-      return next;
-    });
-  };
-
-  const toggleFolder = (folder: ArchiveTreeFolder) => {
-    setSelectedNoteIds((current) =>
-      toggleArchiveNotes(current, folder.descendantNoteIds, folderCheckState(folder.descendantNoteIds, current) !== 'checked')
-    );
-  };
-
-  const toggleExpandedFolder = (portableId: string) => {
-    setExpandedFolderIds((current) => {
-      const next = new Set(current);
-      if (next.has(portableId)) next.delete(portableId);
-      else next.add(portableId);
-      return next;
-    });
-  };
-
-  const archiveTree = importPreview ? buildArchiveTree(resolvePreviewFolders(importPreview), importPreview.notes) : [];
-
-  const renderArchiveFolder = (folder: ArchiveTreeFolder, depth = 0): ReactNode => {
-    const expanded = expandedFolderIds.has(folder.portableId);
-    const state = folderCheckState(folder.descendantNoteIds, selectedNoteIds);
-    const checkboxIcon = state === 'checked' ? 'checkbox-marked' : state === 'indeterminate' ? 'minus-box' : 'checkbox-blank-outline';
-    const toggleLabel = expanded ? t('backup.import.folderCollapse') : t('backup.import.folderExpand');
-    return (
-      <View key={folder.portableId} style={{ marginLeft: depth * ui.space.md }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', borderTopWidth: 1, borderTopColor: colors.border }}>
-          <PressableScale
-            accessibilityRole="button"
-            accessibilityLabel={`${toggleLabel} ${folder.name}`}
-            onPress={() => toggleExpandedFolder(folder.portableId)}
-            style={{ padding: ui.space.xs }}
-          >
-            <MaterialCommunityIcons name={expanded ? 'chevron-down' : 'chevron-right'} size={22} color={colors.textSecondary} />
-          </PressableScale>
-          <PressableScale
-            accessibilityRole="checkbox"
-            accessibilityState={{ checked: state === 'indeterminate' ? 'mixed' : state === 'checked', disabled: state === 'disabled' }}
-            disabled={state === 'disabled'}
-            onPress={() => toggleFolder(folder)}
-            style={{ padding: ui.space.xs }}
-          >
-            <MaterialCommunityIcons
-              name={checkboxIcon}
-              size={24}
-              color={state === 'checked' || state === 'indeterminate' ? colors.primary : colors.textSecondary}
-            />
-          </PressableScale>
-          <PressableScale
-            accessibilityRole="button"
-            accessibilityLabel={`${toggleLabel} ${folder.name}`}
-            onPress={() => toggleExpandedFolder(folder.portableId)}
-            style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: ui.space.sm, paddingVertical: ui.space.md, paddingRight: ui.space.xs }}
-          >
-            <AppText variant="headline" numberOfLines={1}>{folder.name}</AppText>
-            <AppText variant="caption" color={colors.textSecondary}>{folder.descendantNoteIds.length}</AppText>
-          </PressableScale>
-        </View>
-        {expanded ? (
-          <>
-            {folder.children.map((child) => renderArchiveFolder(child, depth + 1))}
-            {folder.notes.map((note) => {
-              const selected = selectedNoteIds.has(note.portableId);
-              return (
-                <PressableScale
-                  key={note.portableId}
-                  accessibilityRole="checkbox"
-                  accessibilityState={{ checked: selected }}
-                  onPress={() => toggleSelectedNote(note.portableId)}
-                  style={{ marginLeft: ui.space.lg, paddingVertical: ui.space.sm, borderTopWidth: 1, borderTopColor: colors.border, gap: ui.space.xs }}
-                >
-                  <View style={{ flexDirection: 'row', gap: ui.space.sm, alignItems: 'center' }}>
-                    <MaterialCommunityIcons name={selected ? 'checkbox-marked' : 'checkbox-blank-outline'} size={24} color={selected ? colors.primary : colors.textSecondary} />
-                    <View style={{ flex: 1 }}>
-                      <AppText variant="headline">{note.title}</AppText>
-                      <AppText variant="bodySmall" color={colors.textSecondary}>{folder.path.join(' / ')}</AppText>
-                    </View>
-                  </View>
-                  {note.contentPreview ? <AppText variant="bodySmall" color={colors.textSecondary} numberOfLines={2}>{note.contentPreview}</AppText> : null}
-                  <AppText variant="caption" color={colors.textSecondary}>
-                    {t('backup.import.media', { audio: note.audioCount, files: note.fileCount })}
-                  </AppText>
-                </PressableScale>
-              );
-            })}
-          </>
-        ) : null}
-      </View>
-    );
-  };
-
-  const commitImport = async () => {
-    if (!importPreview || !importMode || (importMode === 'selective' && selectedNoteIds.size === 0)) return;
-    setImportState('committing');
-    setImportError(null);
-    try {
-      const result = await runForegroundOperation(() => importMode === 'additive'
-        ? importAllNotesAdditively(importPreview, t('backup.import.recoveredCopySuffix'))
-        : importSelectedNotes(importPreview, [...selectedNoteIds], t('backup.import.recoveredCopySuffix')));
-      setImportResult(result);
-      setImportPreview(null);
-      setImportMode(null);
-      setSelectedNoteIds(new Set());
-    } catch (error) {
-      console.warn('Failed to import selected notes:', error);
-      setImportError(t('backup.import.failed'));
-    } finally {
-      setImportState('idle');
-    }
-  };
-
-  const confirmReplacement = () => {
-    if (!importPreview || importState !== 'idle') return;
-    Alert.alert(t('backup.import.replacementConfirmTitle'), t('backup.import.replacementConfirmBody'), [
-      { text: t('common.cancel'), style: 'cancel' },
-      {
-        text: t('backup.import.replacementConfirm'),
-        style: 'destructive',
-        onPress: async () => {
-          setImportMode('replacement');
-          setImportState('committing');
-          setImportError(null);
-          try {
-            setReplacementResult(await runForegroundOperation(() => importAllNotesByReplacement(importPreview)));
-            setUndoMessage(null);
-            await loadUndo();
-            setImportPreview(null);
-            setImportMode(null);
-            setSelectedNoteIds(new Set());
-          } catch (error) {
-            console.warn('Failed to replace content from backup:', error);
-            setImportError(t('backup.import.replacementFailed'));
-          } finally {
-            setImportState('idle');
-          }
-        },
-      },
-    ]);
-  };
-
   const confirmUndo = () => {
     if (undo?.state !== 'available' || undoState !== 'idle') return;
     Alert.alert(t('backup.undo.confirmTitle'), t('backup.undo.confirmBody'), [
@@ -636,7 +434,7 @@ export const BackupScreen = () => {
   };
 
   const isConnected = folder.status === 'connected';
-  const operationBusy = liveProgress !== null || importState === 'previewing' || operationRunning || activeOperation !== null || exportProgress !== null || importState === 'committing' || undoState === 'committing' || isDeletingArchives;
+  const operationBusy = liveProgress !== null || operationRunning || activeOperation !== null || exportProgress !== null || undoState === 'committing' || isDeletingArchives;
 
   useEffect(() => {
     if (!operationBusy) return;
@@ -686,14 +484,6 @@ export const BackupScreen = () => {
     const unit = Math.min(Math.floor(Math.log(Math.max(bytes, 1)) / Math.log(1024)), units.length - 1);
     return `${new Intl.NumberFormat(language === 'bn' ? 'bn-BD' : 'en-US', { maximumFractionDigits: 1 }).format(bytes / 1024 ** unit)} ${units[unit]}`;
   };
-  const recoveryRestrictionText = (result: ImportResult | FullReplacementResult) =>
-    result.recoveryComplete
-      ? t('backup.import.restriction.complete')
-      : t('backup.import.restriction.incomplete', {
-          audio: result.restrictedAudioCount,
-          files: result.restrictedFileCount,
-        });
-
   const progressTotal = liveProgress?.bytesTotal ?? liveProgress?.itemsTotal ?? null;
   const progressDone = liveProgress?.bytesTotal != null ? liveProgress.bytesDone : liveProgress?.itemsDone ?? 0;
   const progressPercent = progressTotal !== null && progressTotal > 0
@@ -732,16 +522,15 @@ export const BackupScreen = () => {
               <AppText variant="caption" color={colors.textSecondary}>{t('backup.progress.background')}</AppText>
             </Card>
           ) : null}
-          <AppText variant="body" color={colors.textSecondary}>
-            {t('backup.intro')}
-          </AppText>
         </View>
 
         <Card style={{ gap: ui.space.md }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: ui.space.md }}>
             <View style={{ flex: 1, gap: ui.space.xs }}>
               <AppText variant="headline">{t('backup.automatic.title')}</AppText>
-              <AppText variant="bodySmall" color={colors.textSecondary}>{t('backup.automatic.help')}</AppText>
+              <AppText variant="bodySmall" color={colors.textSecondary}>
+                {t('backup.automatic.help', { hours: automatic?.intervalHours ?? DEFAULT_AUTOMATIC_BACKUP_INTERVAL_HOURS })}
+              </AppText>
             </View>
             <Switch
               accessibilityLabel={t('backup.automatic.title')}
@@ -749,6 +538,36 @@ export const BackupScreen = () => {
               value={automatic?.enabled ?? false}
               onValueChange={(enabled) => void changeAutomatic(enabled)}
             />
+          </View>
+          <View style={{ gap: ui.space.xs }}>
+            <AppText variant="caption" color={colors.textSecondary}>{t('backup.automatic.intervalLabel')}</AppText>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: ui.space.sm }}>
+              {AUTOMATIC_BACKUP_INTERVAL_HOURS.map((hours) => {
+                const selected = automatic?.intervalHours === hours;
+                return (
+                  <PressableScale
+                    key={hours}
+                    accessibilityRole="radio"
+                    accessibilityLabel={t('backup.automatic.interval', { hours })}
+                    accessibilityState={{ selected, disabled: automatic === null || isChangingAutomatic || operationBusy }}
+                    disabled={automatic === null || isChangingAutomatic || operationBusy}
+                    onPress={() => void changeAutomaticInterval(hours)}
+                    style={{
+                      borderRadius: ui.radius.pill,
+                      borderWidth: 1,
+                      borderColor: selected ? colors.primary : colors.border,
+                      backgroundColor: selected ? colors.surfaceVariant : 'transparent',
+                      paddingHorizontal: ui.space.md,
+                      paddingVertical: ui.space.sm,
+                    }}
+                  >
+                    <AppText variant="bodySmall" color={selected ? colors.primary : colors.textSecondary}>
+                      {t('backup.automatic.interval', { hours })}
+                    </AppText>
+                  </PressableScale>
+                );
+              })}
+            </View>
           </View>
           <AppText
             variant="body"
@@ -777,7 +596,7 @@ export const BackupScreen = () => {
               {t('backup.export.help')}
             </AppText>
           </View>
-      <PrimaryButton onPress={() => void startExport()} disabled={!isConnected || operationBusy}>
+          <PrimaryButton onPress={() => void startExport()} disabled={!isConnected || operationBusy}>
             {exportProgress ? t(`backup.export.progress.${exportProgress}`) : t('backup.export.action')}
           </PrimaryButton>
           {verifiedBackup ? (
@@ -816,90 +635,9 @@ export const BackupScreen = () => {
         {isConnected ? (
           <Card style={{ gap: ui.space.md }}>
             <AppText variant="headline">{t('backup.import.title')}</AppText>
-            <AppText variant="bodySmall" color={colors.textSecondary}>{t('backup.import.help')}</AppText>
-            <PrimaryButton
-              disabled={!newestValid || importState !== 'idle' || operationBusy}
-              onPress={() => newestValid && void openImportPreview(newestValid.uri)}
-            >
-              {importState === 'previewing' ? t('backup.import.validating') : t('backup.import.newest')}
+            <PrimaryButton disabled={operationBusy} onPress={() => navigation.navigate('ImportBackup')}>
+              {t('backup.import.action')}
             </PrimaryButton>
-            <PressableScale
-              accessibilityRole="button"
-              disabled={importState !== 'idle' || operationBusy}
-              onPress={() => void openImportPreview()}
-              style={{ alignSelf: 'center', padding: ui.space.sm }}
-            >
-              <AppText variant="headline" color={colors.primary}>{t('backup.import.browse')}</AppText>
-            </PressableScale>
-            {importError ? <AppText variant="body" color={colors.error}>{importError}</AppText> : null}
-            {importResult ? (
-              <View style={{ gap: ui.space.xs }}>
-                <AppText variant="body" color={colors.primary}>
-                  {t('backup.import.success', {
-                    imported: importResult.importedCount - importResult.recoveredCount,
-                    recovered: importResult.recoveredCount,
-                    skipped: importResult.skippedCount,
-                  })}
-                </AppText>
-                <AppText variant="body" color={importResult.recoveryComplete ? colors.primary : colors.error}>
-                  {recoveryRestrictionText(importResult)}
-                </AppText>
-              </View>
-            ) : null}
-            {replacementResult ? (
-              <View style={{ gap: ui.space.xs }}>
-                <AppText variant="body" color={colors.primary}>
-                  {t('backup.import.replacementSuccess', { count: replacementResult.restoredNoteCount })}
-                </AppText>
-                <AppText variant="body" color={replacementResult.recoveryComplete ? colors.primary : colors.error}>
-                  {recoveryRestrictionText(replacementResult)}
-                </AppText>
-              </View>
-            ) : null}
-          </Card>
-        ) : null}
-
-        {importPreview ? (
-          <Card style={{ gap: ui.space.md }}>
-            <AppText variant="headline">{t('backup.import.modeTitle')}</AppText>
-            <AppText variant="bodySmall" color={colors.textSecondary}>{t('backup.import.noOverwrite')}</AppText>
-            <PrimaryButton disabled={importState !== 'idle' || operationBusy} onPress={() => setImportMode('additive')}>
-              {t('backup.import.additive')}
-            </PrimaryButton>
-            <AppText variant="bodySmall" color={colors.textSecondary}>{t('backup.import.additiveHelp')}</AppText>
-            <PressableScale
-              accessibilityRole="button"
-              disabled={importState !== 'idle' || operationBusy}
-              onPress={() => setImportMode('selective')}
-              style={{ alignSelf: 'center', padding: ui.space.sm }}
-            >
-              <AppText variant="headline" color={colors.primary}>{t('backup.import.selective')}</AppText>
-            </PressableScale>
-            {importMode === 'selective' ? archiveTree.map((folder) => renderArchiveFolder(folder)) : null}
-            {importMode ? (
-              <PrimaryButton
-                disabled={(importMode === 'selective' && selectedNoteIds.size === 0) || importState !== 'idle' || operationBusy}
-                onPress={() => void commitImport()}
-              >
-                {importState === 'committing'
-                  ? t('backup.import.committing')
-                  : importMode === 'additive'
-                    ? t('backup.import.additiveConfirm', { count: importPreview.notes.length })
-                    : t('backup.import.selected', { count: selectedNoteIds.size })}
-              </PrimaryButton>
-            ) : null}
-            <View style={{ gap: ui.space.sm, borderTopWidth: 2, borderTopColor: colors.error, paddingTop: ui.space.lg, marginTop: ui.space.sm }}>
-              <AppText variant="headline" color={colors.error}>{t('backup.import.replacement')}</AppText>
-              <AppText variant="bodySmall" color={colors.error}>{t('backup.import.replacementHelp')}</AppText>
-              <PrimaryButton disabled={importState !== 'idle' || operationBusy} onPress={confirmReplacement}>
-                {importState === 'committing' && importMode === 'replacement'
-                  ? t('backup.import.replacementCommitting')
-                  : t('backup.import.replacementAction')}
-              </PrimaryButton>
-            </View>
-            <PressableScale onPress={() => { setImportPreview(null); setImportMode(null); }} style={{ alignSelf: 'center', padding: ui.space.sm }}>
-              <AppText variant="headline" color={colors.textSecondary}>{t('common.cancel')}</AppText>
-            </PressableScale>
           </Card>
         ) : null}
 

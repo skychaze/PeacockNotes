@@ -1,5 +1,5 @@
 import {
-  AUTOMATIC_BACKUP_INTERVAL_MS,
+  automaticBackupIntervalMs,
   isAutomaticBackupDue,
   shouldRetryAutomaticBackup,
 } from './automaticPolicy';
@@ -10,31 +10,36 @@ const assert = (condition: boolean, message: string) => {
 
 const now = Date.UTC(2026, 0, 2);
 const folderUri = 'drive://folder-a';
+const intervalHours = 3;
+const intervalMs = automaticBackupIntervalMs(intervalHours);
 
 assert(!isAutomaticBackupDue({
   currentRevision: 2,
   lastVerifiedRevision: 1,
-  lastVerifiedAt: now - AUTOMATIC_BACKUP_INTERVAL_MS + 1,
+  lastVerifiedAt: now - intervalMs + 1,
   currentFolderUri: folderUri,
   lastVerifiedFolderUri: folderUri,
+  intervalHours,
   now,
-}), 'changed content must not be due before 24 hours');
+}), 'changed content must not be due before the selected interval');
 
 assert(isAutomaticBackupDue({
   currentRevision: 2,
   lastVerifiedRevision: 1,
-  lastVerifiedAt: now - AUTOMATIC_BACKUP_INTERVAL_MS,
+  lastVerifiedAt: now - intervalMs,
   currentFolderUri: folderUri,
   lastVerifiedFolderUri: folderUri,
+  intervalHours,
   now,
-}), 'changed content must be due at the exact 24-hour boundary');
+}), 'changed content must be due at the selected interval boundary');
 
 assert(!isAutomaticBackupDue({
   currentRevision: 2,
   lastVerifiedRevision: 2,
-  lastVerifiedAt: now - AUTOMATIC_BACKUP_INTERVAL_MS,
+  lastVerifiedAt: now - intervalMs,
   currentFolderUri: folderUri,
   lastVerifiedFolderUri: folderUri,
+  intervalHours,
   now,
 }), 'unchanged content must not be due');
 
@@ -57,11 +62,21 @@ assert(!isAutomaticBackupDue({
 assert(isAutomaticBackupDue({
   currentRevision: 2,
   lastVerifiedRevision: 2,
-  lastVerifiedAt: now - AUTOMATIC_BACKUP_INTERVAL_MS,
+  lastVerifiedAt: now - intervalMs,
   currentFolderUri: 'drive://folder-b',
   lastVerifiedFolderUri: folderUri,
+  intervalHours,
   now,
 }), 'a different connected folder must require a fresh recovery point');
+
+assert(!isAutomaticBackupDue({
+  currentRevision: 2,
+  lastVerifiedRevision: 1,
+  lastVerifiedAt: now - automaticBackupIntervalMs(24) + 1,
+  currentFolderUri: folderUri,
+  lastVerifiedFolderUri: folderUri,
+  now,
+}), 'missing interval must fall back to 24 hours');
 
 assert(shouldRetryAutomaticBackup('PROVIDER_WRITE_FAILED', 1), 'a transient provider failure should retry');
 assert(shouldRetryAutomaticBackup('PROVIDER_WRITE_FAILED', 2), 'the final bounded retry should be allowed');
