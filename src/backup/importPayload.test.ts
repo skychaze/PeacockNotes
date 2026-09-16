@@ -1,4 +1,5 @@
 import {
+  createArchiveImportPayload,
   createUndoImportPayload,
   importStepName,
   parseImportPayload,
@@ -32,9 +33,16 @@ export function testLegacyUndoPayloadCanStillRecover() {
   assert(payload.mode === 'undo' && payload.snapshotId === 'legacy-snapshot', 'legacy undo payload cannot recover');
 }
 
+export function testRecoveredTitleSuffixSurvivesRetries() {
+  const payload = createArchiveImportPayload('selective', 'file://archive', 'hash', ['note'], ' (রিকভার্ড কপি)');
+  const parsed = parseImportPayload(JSON.stringify(payload));
+  assert(parsed.mode !== 'undo' && parsed.recoveredTitleSuffix === ' (রিকভার্ড কপি)', 'recovered title suffix was not persisted');
+}
+
 export function runImportPayloadTests() {
   testUndoPayloadUsesSnapshotId();
   testLegacyUndoPayloadCanStillRecover();
+  testRecoveredTitleSuffixSurvivesRetries();
 }
 
 void Promise.resolve(runImportPayloadTests()).catch((error: unknown) => {

@@ -11,7 +11,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Font from 'expo-font';
 import { StatusBar } from 'expo-status-bar';
-import { initDb } from './src/database/schema';
+import { initDb, reconcileOrphanedMediaFiles } from './src/database/schema';
 import { QualityProvider } from './src/theme/quality';
 import type { RootStackParamList } from './src/types/navigation';
 import { AppText } from './src/components/AppText';
@@ -55,6 +55,7 @@ const AppNavigator = () => {
         const initializeDatabase = async () => {
           if (Platform.OS === 'android') await recoverInterruptedFullReplacement();
           await initDb();
+          void reconcileOrphanedMediaFiles();
         };
         await Promise.all([loadFonts, initializeDatabase()]);
         setHasSetupError(false);

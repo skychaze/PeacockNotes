@@ -9,7 +9,7 @@ import type {
   NoteDraft,
   NoteListItem,
 } from '../types/models';
-import { deleteMediaFiles } from '../utils/mediaFiles';
+import { deleteMediaFiles, listManagedMediaFiles } from '../utils/mediaFiles';
 
 export type SortField = 'custom' | 'name' | 'createdAt';
 export type SortDirection = 'asc' | 'desc';
@@ -507,6 +507,55 @@ const listNoteMediaUris = async (db: SQLite.SQLiteDatabase, noteIds: number[]): 
     .filter((uri) => Boolean(uri));
 };
 
+const deleteUnreferencedMediaFilesWithDb = async (
+  db: SQLite.SQLiteDatabase,
+  uris: Iterable<string | null | undefined>,
+): Promise<void> => {
+  const candidates = [...new Set([...uris].map((uri) => uri?.trim() ?? '').filter(Boolean))];
+  if (candidates.length === 0) return;
+
+  const batchSize = 400;
+  for (let offset = 0; offset < candidates.length; offset += batchSize) {
+    const batch = candidates.slice(offset, offset + batchSize);
+    const placeholders = batch.map(() => '?').join(', ');
+    let referencedRows: { uri: string }[];
+    try {
+      referencedRows = await db.getAllAsync<{ uri: string }>(
+        `
+        SELECT TRIM(uri) AS uri FROM NoteAudios WHERE TRIM(uri) IN (${placeholders})
+        UNION
+        SELECT TRIM(uri) AS uri FROM NoteFiles WHERE TRIM(uri) IN (${placeholders});
+        `,
+        [...batch, ...batch],
+      );
+    } catch (error) {
+      console.warn('Failed to inspect media references before deletion:', error);
+      return;
+    }
+    const referenced = new Set(referencedRows.map((row) => row.uri.trim()));
+    await deleteMediaFiles(batch.filter((uri) => !referenced.has(uri)));
+  }
+};
+
+export const deleteUnreferencedMediaFiles = async (
+  uris: Iterable<string | null | undefined>,
+): Promise<void> => {
+  try {
+    await deleteUnreferencedMediaFilesWithDb(await getDb(), uris);
+  } catch (error) {
+    console.warn('Failed to clean up unreferenced media:', error);
+  }
+};
+
+export const reconcileOrphanedMediaFiles = async (): Promise<void> => {
+  try {
+    const [db, files] = await Promise.all([getDb(), listManagedMediaFiles()]);
+    await deleteUnreferencedMediaFilesWithDb(db, files);
+  } catch (error) {
+    console.warn('Failed to reconcile orphaned media:', error);
+  }
+};
+
 type FolderRow = {
   id: number;
   portableId: string;
@@ -725,14 +774,32 @@ export const moveFolderPosition = async (
 
 export const deleteFolder = async (folderId: number): Promise<void> => {
   const db = await getDb();
-  const noteRows = await db.getAllAsync<{ id: number }>('SELECT id FROM Notes WHERE folderId = ?;', [folderId]);
-  const noteIds = noteRows.map((row) => row.id);
-  const mediaUris = await listNoteMediaUris(
-    db,
-    noteIds
-  );
+  let mediaUris: string[] = [];
 
   await withWriteTransaction(db, async (txn) => {
+    const folderRows = await txn.getAllAsync<{ id: number }>(
+      `
+      WITH RECURSIVE descendants(id, portableId) AS (
+        SELECT id, portableId FROM Folders WHERE id = ?
+        UNION
+        SELECT child.id, child.portableId
+        FROM Folders child
+        JOIN descendants parent ON child.parentPortableId = parent.portableId
+      )
+      SELECT id FROM descendants;
+      `,
+      [folderId],
+    );
+    const folderIds = folderRows.map((row) => row.id);
+    if (folderIds.length === 0) return;
+    const folderPlaceholders = folderIds.map(() => '?').join(', ');
+    const noteRows = await txn.getAllAsync<{ id: number }>(
+      `SELECT id FROM Notes WHERE folderId IN (${folderPlaceholders});`,
+      folderIds,
+    );
+    const noteIds = noteRows.map((row) => row.id);
+    mediaUris = await listNoteMediaUris(txn, noteIds);
+
     // Explicitly remove descendants before the folder. New databases enforce
     // these cascades with foreign keys, but older installs may have been
     // created before those constraints existed (and can therefore contain
@@ -748,12 +815,14 @@ export const deleteFolder = async (folderId: number): Promise<void> => {
       changed += (await txn.runAsync(`DELETE FROM RecoveryProvenance WHERE noteId IN (${placeholders});`, parameters)).changes;
       changed += (await txn.runAsync(`DELETE FROM Notes WHERE id IN (${placeholders});`, parameters)).changes;
     }
-    const result = await txn.runAsync('DELETE FROM Folders WHERE id = ?;', [folderId]);
-    changed += result.changes;
+    changed += (await txn.runAsync(
+      `DELETE FROM Folders WHERE id IN (${folderPlaceholders});`,
+      folderIds,
+    )).changes;
     if (changed > 0) await advanceContentRevision(txn);
   });
 
-  await deleteMediaFiles(mediaUris);
+  await deleteUnreferencedMediaFilesWithDb(db, mediaUris);
 };
 
 export const listNotesByFolder = async (
@@ -955,29 +1024,69 @@ const saveNoteFiles = async (
   return changed;
 };
 
-export const appendFilesToNote = async (
+export type NoteMediaAppendDraft = Readonly<{
+  audios: readonly NoteAudioDraft[];
+  files: readonly NoteFileDraft[];
+}>;
+
+const normalizeAudioAppendDrafts = (audios: readonly NoteAudioDraft[]) => audios
+  .map((audio) => ({
+    uri: audio.uri.trim(),
+    displayName: audio.displayName.trim(),
+    groupId: audio.groupId?.trim() || createAudioGroupId(),
+    segmentIndex: Number(audio.segmentIndex ?? 1),
+  }))
+  .filter((audio) => Boolean(audio.uri));
+
+const normalizeFileAppendDrafts = (files: readonly NoteFileDraft[]) => files
+  .map((file) => ({
+    uri: file.uri.trim(),
+    displayName: file.displayName.trim(),
+    mimeType: file.mimeType.trim() || 'application/octet-stream',
+  }))
+  .filter((file) => Boolean(file.uri));
+
+export const appendMediaToNote = async (
   noteId: number,
-  files: NoteFileDraft[]
+  drafts: NoteMediaAppendDraft,
 ): Promise<void> => {
   const db = await getDb();
-  const normalizedFiles = files
-    .map((file) => ({
-      uri: file.uri.trim(),
-      displayName: file.displayName.trim(),
-      mimeType: file.mimeType.trim() || 'application/octet-stream',
-    }))
-    .filter((file) => Boolean(file.uri));
-
-  if (normalizedFiles.length === 0) {
-    return;
-  }
+  const normalizedAudios = normalizeAudioAppendDrafts(drafts.audios);
+  const normalizedFiles = normalizeFileAppendDrafts(drafts.files);
+  if (normalizedAudios.length === 0 && normalizedFiles.length === 0) return;
 
   await withWriteTransaction(db, async (txn) => {
-    const orderRow = await txn.getFirstAsync<{ maxOrder: number | null }>(
-      'SELECT MAX(orderIndex) as maxOrder FROM NoteFiles WHERE noteId = ?;',
-      [noteId]
+    const note = await txn.getFirstAsync<{ id: number }>('SELECT id FROM Notes WHERE id = ?;', [noteId]);
+    if (!note) throw new Error('Note not found');
+
+    const audioOrderRow = await txn.getFirstAsync<{ maxOrder: number | null }>(
+      'SELECT MAX(orderIndex) as maxOrder FROM NoteAudios WHERE noteId = ?;',
+      [noteId],
     );
-    const baseOrder = Number(orderRow?.maxOrder ?? 0);
+    const fileOrderRow = await txn.getFirstAsync<{ maxOrder: number | null }>(
+      'SELECT MAX(orderIndex) as maxOrder FROM NoteFiles WHERE noteId = ?;',
+      [noteId],
+    );
+    const audioBaseOrder = Number(audioOrderRow?.maxOrder ?? 0);
+    const fileBaseOrder = Number(fileOrderRow?.maxOrder ?? 0);
+
+    for (const [index, audio] of normalizedAudios.entries()) {
+      await txn.runAsync(
+        `
+        INSERT INTO NoteAudios (portableId, noteId, uri, displayName, groupId, segmentIndex, orderIndex, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+        `,
+        [
+          await createPortableId(txn), noteId,
+          audio.uri,
+          audio.displayName || `Audio ${audioBaseOrder + index + 1}`,
+          audio.groupId,
+          audio.segmentIndex > 0 ? audio.segmentIndex : 1,
+          audioBaseOrder + index + 1,
+          nowIso(),
+        ],
+      );
+    }
 
     for (const [index, file] of normalizedFiles.entries()) {
       await txn.runAsync(
@@ -988,11 +1097,11 @@ export const appendFilesToNote = async (
         [
           await createPortableId(txn), noteId,
           file.uri,
-          file.displayName || `File ${baseOrder + index + 1}`,
+          file.displayName || `File ${fileBaseOrder + index + 1}`,
           file.mimeType,
-          baseOrder + index + 1,
+          fileBaseOrder + index + 1,
           nowIso(),
-        ]
+        ],
       );
     }
 
@@ -1000,6 +1109,11 @@ export const appendFilesToNote = async (
     await advanceContentRevision(txn);
   });
 };
+
+export const appendFilesToNote = async (
+  noteId: number,
+  files: NoteFileDraft[],
+): Promise<void> => appendMediaToNote(noteId, { audios: [], files });
 
 const saveNoteAudios = async (
   db: SQLite.SQLiteDatabase,
@@ -1165,15 +1279,17 @@ export const moveNotePosition = async (
 
 export const updateNote = async (
   noteId: number,
-  draft: NoteDraft
-): Promise<void> => {
+  draft: NoteDraft,
+  options: Readonly<{ expectedUpdatedAt?: string }> = {},
+): Promise<string> => {
   const db = await getDb();
   const title = draft.title.trim();
   if (!title) {
     throw new Error('Note title is required');
   }
 
-  const previousUris = await listNoteMediaUris(db, [noteId]);
+  let previousUris: string[] = [];
+  let persistedUpdatedAt = '';
 
   await withWriteTransaction(db, async (txn) => {
     const current = await txn.getFirstAsync<{
@@ -1181,11 +1297,16 @@ export const updateNote = async (
       searchTitle: string | null;
       content: string | null;
       searchContent: string | null;
+      updatedAt: string;
     }>(
-      'SELECT title, searchTitle, content, searchContent FROM Notes WHERE id = ? LIMIT 1;',
+      'SELECT title, searchTitle, content, searchContent, updatedAt FROM Notes WHERE id = ? LIMIT 1;',
       [noteId]
     );
-    if (!current) return;
+    if (!current) throw new Error('NOTE_NOT_FOUND');
+    if (options.expectedUpdatedAt && current.updatedAt !== options.expectedUpdatedAt) {
+      throw new Error('NOTE_MODIFIED_EXTERNALLY');
+    }
+    previousUris = await listNoteMediaUris(txn, [noteId]);
 
     const audiosChanged = await saveNoteAudios(txn, noteId, draft.audios);
     const filesChanged = await saveNoteFiles(txn, noteId, draft.files);
@@ -1195,15 +1316,18 @@ export const updateNote = async (
       current.searchContent !== normalizeSearchValue(draft.content);
 
     if (noteChanged || audiosChanged || filesChanged) {
+      persistedUpdatedAt = nowIso();
       await txn.runAsync(
         `
         UPDATE Notes
         SET title = ?, searchTitle = ?, content = ?, searchContent = ?, audioUri = NULL, updatedAt = ?
         WHERE id = ?;
         `,
-        [title, normalizeSearchValue(title), draft.content, normalizeSearchValue(draft.content), nowIso(), noteId]
+        [title, normalizeSearchValue(title), draft.content, normalizeSearchValue(draft.content), persistedUpdatedAt, noteId]
       );
       await advanceContentRevision(txn);
+    } else {
+      persistedUpdatedAt = current.updatedAt;
     }
   });
 
@@ -1211,66 +1335,25 @@ export const updateNote = async (
     ...draft.audios.map((audio) => audio.uri.trim()),
     ...draft.files.map((file) => file.uri.trim()),
   ]);
-  await deleteMediaFiles(previousUris.filter((uri) => !keptUris.has(uri)));
+  await deleteUnreferencedMediaFilesWithDb(db, previousUris.filter((uri) => !keptUris.has(uri)));
+  return persistedUpdatedAt;
 };
 
 export const deleteNote = async (noteId: number): Promise<void> => {
   const db = await getDb();
-  const mediaUris = await listNoteMediaUris(db, [noteId]);
+  let mediaUris: string[] = [];
   await withWriteTransaction(db, async (txn) => {
+    mediaUris = await listNoteMediaUris(txn, [noteId]);
     const result = await txn.runAsync('DELETE FROM Notes WHERE id = ?;', [noteId]);
     if (result.changes > 0) await advanceContentRevision(txn);
   });
-  await deleteMediaFiles(mediaUris);
+  await deleteUnreferencedMediaFilesWithDb(db, mediaUris);
 };
 
 export const appendAudiosToNote = async (
   noteId: number,
-  audios: NoteAudioDraft[]
-): Promise<void> => {
-  const db = await getDb();
-  const normalizedAudios = audios
-    .map((audio) => ({
-      uri: audio.uri.trim(),
-      displayName: audio.displayName.trim(),
-      groupId: audio.groupId?.trim() || createAudioGroupId(),
-      segmentIndex: Number(audio.segmentIndex ?? 1),
-    }))
-    .filter((audio) => Boolean(audio.uri));
-
-  if (normalizedAudios.length === 0) {
-    return;
-  }
-
-  await withWriteTransaction(db, async (txn) => {
-    const orderRow = await txn.getFirstAsync<{ maxOrder: number | null }>(
-      'SELECT MAX(orderIndex) as maxOrder FROM NoteAudios WHERE noteId = ?;',
-      [noteId]
-    );
-    const baseOrder = Number(orderRow?.maxOrder ?? 0);
-
-    for (const [index, audio] of normalizedAudios.entries()) {
-      await txn.runAsync(
-        `
-        INSERT INTO NoteAudios (portableId, noteId, uri, displayName, groupId, segmentIndex, orderIndex, createdAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-        `,
-        [
-          await createPortableId(txn), noteId,
-          audio.uri,
-          audio.displayName || `Audio ${baseOrder + index + 1}`,
-          audio.groupId,
-          audio.segmentIndex > 0 ? audio.segmentIndex : 1,
-          baseOrder + index + 1,
-          nowIso(),
-        ]
-      );
-    }
-
-    await txn.runAsync('UPDATE Notes SET updatedAt = ? WHERE id = ?;', [nowIso(), noteId]);
-    await advanceContentRevision(txn);
-  });
-};
+  audios: NoteAudioDraft[],
+): Promise<void> => appendMediaToNote(noteId, { audios, files: [] });
 
 export const getStorageSnapshot = async (): Promise<StorageSnapshot> => {
   const db = await getDb();
@@ -1279,7 +1362,10 @@ export const getStorageSnapshot = async (): Promise<StorageSnapshot> => {
     `
     SELECT
       COUNT(*) AS noteCount,
-      SUM(LENGTH(COALESCE(title, '')) + LENGTH(COALESCE(content, ''))) AS notesTextBytes
+      SUM(
+        LENGTH(CAST(COALESCE(title, '') AS BLOB)) +
+        LENGTH(CAST(COALESCE(content, '') AS BLOB))
+      ) AS notesTextBytes
     FROM Notes;
     `
   );

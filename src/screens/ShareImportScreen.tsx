@@ -2,13 +2,13 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RouteProp } from '@react-navigation/native';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, FlatList, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated from 'react-native-reanimated';
 import { useShareIntentContext, type ShareIntentFile } from 'expo-share-intent';
 import * as FileSystem from 'expo-file-system/legacy';
-import { appendAudiosToNote, appendFilesToNote, listFolders, listNotesByFolder } from '../database/schema';
+import { appendMediaToNote, deleteUnreferencedMediaFiles, listFolders, listNotesByFolder } from '../database/schema';
 import { AppText } from '../components/AppText';
 import { Card } from '../components/Card';
 import { EmptyState } from '../components/EmptyState';
@@ -27,7 +27,6 @@ import {
   isProbablyAudioSource,
 } from '../utils/audioFormat';
 import { getFileExtension, getFileIcon, isProbablyFileSource } from '../utils/fileFormat';
-import { deleteMediaFiles } from '../utils/mediaFiles';
 
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'ShareImport'>;
 type Route = RouteProp<RootStackParamList, 'ShareImport'>;
@@ -68,6 +67,8 @@ export const ShareImportScreen = () => {
   const [hasAutoRedirected, setHasAutoRedirected] = useState(false);
   const [pendingSharedFiles, setPendingSharedFiles] = useState<PendingFile[]>([]);
   const [fileSizes, setFileSizes] = useState<Record<string, number>>({});
+  const consumedRouteFilesRef = useRef(false);
+  const importInFlightRef = useRef(false);
 
   const allRouteFiles = useMemo(() => route.params?.sharedFiles ?? [], [route.params?.sharedFiles]);
 
@@ -96,7 +97,7 @@ export const ShareImportScreen = () => {
       return;
     }
 
-    if (routeSharedFiles.length > 0) {
+    if (!consumedRouteFilesRef.current && routeSharedFiles.length > 0) {
       setPendingSharedFiles(routeSharedFiles);
     }
   }, [routeSharedFiles, sharedIntentFiles]);
@@ -242,7 +243,7 @@ export const ShareImportScreen = () => {
       }
       return drafts;
     } catch (error) {
-      await deleteMediaFiles(drafts.map((draft) => draft.uri));
+      await deleteUnreferencedMediaFiles(drafts.map((draft) => draft.uri));
       throw error;
     }
   };
@@ -269,41 +270,39 @@ export const ShareImportScreen = () => {
       }
       return drafts;
     } catch (error) {
-      await deleteMediaFiles(drafts.map((draft) => draft.uri));
+      await deleteUnreferencedMediaFiles(drafts.map((draft) => draft.uri));
       throw error;
     }
   };
 
   const onAppendToNote = async (note: NoteListItem) => {
-    if (isImporting) {
+    if (isImporting || importInFlightRef.current) {
       return;
     }
 
     const copiedUris: string[] = [];
-    const committedUris = new Set<string>();
-
+    let committed = false;
     try {
+      importInFlightRef.current = true;
       setIsImporting(true);
 
       const audioFiles = pendingSharedFiles.filter(isAudio);
       const fileItems = pendingSharedFiles.filter(isFile);
 
-      if (audioFiles.length > 0) {
-        const audioDrafts = await buildAudioDrafts(audioFiles);
-        copiedUris.push(...audioDrafts.map((draft) => draft.uri));
-        await appendAudiosToNote(note.id, audioDrafts);
-        audioDrafts.forEach((draft) => committedUris.add(draft.uri));
-      }
-
-      if (fileItems.length > 0) {
-        const fileDrafts = await buildFileDrafts(fileItems);
-        copiedUris.push(...fileDrafts.map((draft) => draft.uri));
-        await appendFilesToNote(note.id, fileDrafts);
-        fileDrafts.forEach((draft) => committedUris.add(draft.uri));
-      }
-
-      resetShareIntent();
+      const audioDrafts = audioFiles.length > 0 ? await buildAudioDrafts(audioFiles) : [];
+      copiedUris.push(...audioDrafts.map((draft) => draft.uri));
+      const fileDrafts = fileItems.length > 0 ? await buildFileDrafts(fileItems) : [];
+      copiedUris.push(...fileDrafts.map((draft) => draft.uri));
+      await appendMediaToNote(note.id, { audios: audioDrafts, files: fileDrafts });
+      committed = true;
+      consumedRouteFilesRef.current = true;
       setPendingSharedFiles([]);
+
+      try {
+        resetShareIntent();
+      } catch (error) {
+        console.warn('Share intent cleanup failed after import:', error);
+      }
       Alert.alert(
         t('shareImport.importedTitle'),
         t('shareImport.importedBody', { count: pendingSharedFiles.length, title: note.title })
@@ -313,11 +312,17 @@ export const ShareImportScreen = () => {
         folderName: folders.find((folder) => folder.id === note.folderId)?.name ?? t('header.notes'),
       });
     } catch (error) {
-      await deleteMediaFiles(copiedUris.filter((uri) => !committedUris.has(uri)));
+      if (!committed) {
+        await deleteUnreferencedMediaFiles(copiedUris);
+      } else {
+        console.warn('Share import committed but navigation failed:', error);
+        return;
+      }
       console.warn('Failed to append shared files:', error);
       const detailed = error instanceof Error ? error.message : String(error);
       Alert.alert(t('common.error'), `${t('shareImport.appendError')}\n${detailed}`);
     } finally {
+      importInFlightRef.current = false;
       setIsImporting(false);
     }
   };

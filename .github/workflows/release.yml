@@ -12,22 +12,42 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      NODE_ENV: production
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
 
       - name: Verify patch notes exist
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
           VERSION="${TAG_NAME#[vV]}"
-          NOTES_FILE=$(find releases -mindepth 2 -maxdepth 2 -path "releases/v${VERSION}-*/patch-notes.md" -print -quit)
-          if [ -n "$NOTES_FILE" ]; then
-            echo "Found patch notes at $NOTES_FILE"
+          CONFIG_VERSION=$(node -p "require('./app.json').expo.version")
+          CONFIG_CODE=$(node -p "require('./app.json').expo.android.versionCode")
+          if [ "$VERSION" != "$CONFIG_VERSION" ]; then
+            echo "::error::Tag $TAG_NAME does not match app.json version $CONFIG_VERSION"
+            exit 1
+          fi
+          mapfile -t NOTES_FILES < <(find releases -mindepth 2 -maxdepth 2 -path "releases/v${CONFIG_VERSION}-${CONFIG_CODE}/patch-notes.md" -print)
+          if [ "${#NOTES_FILES[@]}" -eq 1 ]; then
+            NOTES_FILE="${NOTES_FILES[0]}"
+            grep -Fqx -- "- Version: ${CONFIG_VERSION}" "$NOTES_FILE"
+            grep -Fqx -- "- Version code: ${CONFIG_CODE}" "$NOTES_FILE"
+            echo "Found matching patch notes at $NOTES_FILE"
+          elif [ "${#NOTES_FILES[@]}" -gt 1 ]; then
+            echo "::error::Multiple patch-note files found for version ${CONFIG_VERSION} code ${CONFIG_CODE}" >&2
+            exit 1
           elif gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TAG_NAME already exists; re-running without patch notes" >&2
           else
-            echo "::error::Missing patch notes for $TAG_NAME. Add releases/v${VERSION}-<versionCode>/patch-notes.md, commit it, move the tag with 'git tag -f $TAG_NAME', and push it again."
+            echo "::error::Missing patch notes for $TAG_NAME. Add releases/v${CONFIG_VERSION}-${CONFIG_CODE}/patch-notes.md, commit it, move the tag with 'git tag -f $TAG_NAME', and push it again."
             exit 1
           fi
 
@@ -36,14 +56,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-
       - uses: gradle/actions/setup-gradle@v4
 
       - run: npm ci
+
+      - name: Run recovery checks
+        run: npm run verify:recovery
 
       - name: Configure release signing
         env:
@@ -52,6 +70,13 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
         run: |
+          set -euo pipefail
+          for value in ANDROID_KEYSTORE ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD ANDROID_STORE_PASSWORD; do
+            if [ -z "${!value}" ]; then
+              echo "::error::Missing required release signing secret: $value"
+              exit 1
+            fi
+          done
           echo "$ANDROID_KEYSTORE" | base64 --decode > android/app/peacocknotes-release-key.jks
           {
             echo 'storeFile=peacocknotes-release-key.jks'
@@ -69,25 +94,39 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
-          APK_PATH=$(find android/app/build/outputs/apk/release -name 'peacocknotes-*.apk' -print -quit)
-          if [ -z "$APK_PATH" ]; then
-            echo "No versioned APK produced; release output:" >&2
+          set -euo pipefail
+          CONFIG_VERSION=$(node -p "require('./app.json').expo.version")
+          CONFIG_CODE=$(node -p "require('./app.json').expo.android.versionCode")
+          APK_PATH="android/app/build/outputs/apk/release/peacocknotes-v${CONFIG_VERSION}-${CONFIG_CODE}.apk"
+          if [ ! -f "$APK_PATH" ]; then
+            echo "Expected versioned APK was not produced: $APK_PATH" >&2
             ls -la android/app/build/outputs/apk/release >&2
             exit 1
           fi
-          VERSION="${TAG_NAME#[vV]}"
-          NOTES_FILE=$(find releases -mindepth 2 -maxdepth 2 -path "releases/v${VERSION}-*/patch-notes.md" -print -quit)
-          if [ -n "$NOTES_FILE" ]; then
+          ANDROID_SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          if [ -z "$ANDROID_SDK_DIR" ] || [ ! -d "$ANDROID_SDK_DIR/build-tools" ]; then
+            echo "::error::Android SDK build-tools directory is unavailable"
+            exit 1
+          fi
+          AAPT2=$(find "$ANDROID_SDK_DIR/build-tools" -type f -name aapt2 -perm -111 | sort -V | tail -n 1)
+          if [ -z "$AAPT2" ]; then
+            echo "::error::aapt2 was not found"
+            exit 1
+          fi
+          BADGING=$("$AAPT2" dump badging "$APK_PATH")
+          grep -Fq "package: name='com.roy.peacocknotes' versionCode='${CONFIG_CODE}' versionName='${CONFIG_VERSION}'" <<<"$BADGING"
+          NOTES_FILE="releases/v${CONFIG_VERSION}-${CONFIG_CODE}/patch-notes.md"
+          if [ -f "$NOTES_FILE" ]; then
             NOTES_ARGS=(--notes-file "$NOTES_FILE")
           else
-            echo "No patch notes found at releases/v${VERSION}-*/patch-notes.md; falling back to generated notes" >&2
+            echo "No patch notes found at $NOTES_FILE; falling back to generated notes" >&2
             NOTES_ARGS=(--generate-notes)
           fi
           if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" "$APK_PATH#Peacock Notes APK" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
-            if [ -n "$NOTES_FILE" ]; then
+            if [ -f "$NOTES_FILE" ]; then
               gh release edit "$TAG_NAME" \
                 --repo "$GITHUB_REPOSITORY" \
                 --notes-file "$NOTES_FILE"

@@ -325,7 +325,7 @@ export const NotesListScreen = () => {
         />
       </View>
 
-      <TopBar onBack={() => navigation.goBack()}>
+      <TopBar onBack={() => isSelecting ? setSelectedNoteIds(new Set()) : navigation.goBack()}>
         {isSelecting ? <>
           <AppText variant="headline">{t('selection.count', { count: selectedNoteIds.size })}</AppText>
           <IconButton icon="close" accessibilityLabel={t('common.cancel')} onPress={() => setSelectedNoteIds(new Set())} />

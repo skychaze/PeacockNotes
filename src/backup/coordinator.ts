@@ -170,7 +170,7 @@ export class BackupOperationCoordinator {
         errorMessage: result.message,
       });
       if (attempt >= this.maxAttempts) {
-        return this.finish(operation, 'failed', 'retry_limit', result.message);
+        return this.finish(operation, 'failed', result.code, result.message);
       }
     }
     return operation;

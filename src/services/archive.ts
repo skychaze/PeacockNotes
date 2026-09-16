@@ -129,6 +129,7 @@ export type CommitSelectiveImportRequest = Readonly<{
   mediaDirectoryUri: string;
   operationKey: string;
   selectedNoteIds: readonly string[];
+  recoveredTitleSuffix?: string;
   operationId?: string;
   operationKind?: string;
 }>;

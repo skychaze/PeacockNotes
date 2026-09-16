@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NativeModules, Platform } from 'react-native';
 import { backupOperationStore } from './backupOperations';
 
@@ -47,7 +48,11 @@ export const getBackupFolderState = () => requireAndroidModule().getFolderState(
 
 export const chooseBackupFolder = () => requireAndroidModule().chooseFolder();
 
-export const disconnectBackupFolder = () => requireAndroidModule().disconnect();
+export const disconnectBackupFolder = async () => {
+  const state = await requireAndroidModule().disconnect();
+  await AsyncStorage.removeItem('backup.lastVerified');
+  return state;
+};
 
 export const publishBackupArchive = (request: PublishBackupRequest) =>
   requireAndroidModule().publishArchive(request);

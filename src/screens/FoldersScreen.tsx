@@ -135,11 +135,15 @@ export const FoldersScreen = () => {
 
   useFocusEffect(useCallback(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (selectedFolderIds.size > 0) {
+        setSelectedFolderIds(new Set());
+        return true;
+      }
       BackHandler.exitApp();
       return true;
     });
     return () => subscription.remove();
-  }, []));
+  }, [selectedFolderIds.size]));
 
   const onCreateFolder = async () => {
     const name = newFolderName.trim();

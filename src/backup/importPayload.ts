@@ -6,6 +6,7 @@ export type ArchiveImportPayload = Readonly<{
   archiveUri: string;
   archiveSha256: string;
   selectedNoteIds: readonly string[];
+  recoveredTitleSuffix?: string;
 }>;
 
 export type UndoImportPayload = Readonly<{
@@ -56,6 +57,9 @@ export const parseImportPayload = (value: string): ImportPayload => {
     archiveUri: parsed.archiveUri,
     archiveSha256: parsed.archiveSha256,
     selectedNoteIds: parsed.selectedNoteIds,
+    recoveredTitleSuffix: 'recoveredTitleSuffix' in parsed && typeof parsed.recoveredTitleSuffix === 'string'
+      ? parsed.recoveredTitleSuffix
+      : undefined,
   };
 };
 
@@ -64,12 +68,14 @@ export const createArchiveImportPayload = (
   archiveUri: string,
   archiveSha256: string,
   selectedNoteIds: readonly string[],
+  recoveredTitleSuffix?: string,
 ): ArchiveImportPayload => ({
   version: 1,
   mode,
   archiveUri,
   archiveSha256,
   selectedNoteIds: [...new Set(selectedNoteIds)].sort(),
+  ...(recoveredTitleSuffix ? { recoveredTitleSuffix } : {}),
 });
 
 export const createUndoImportPayload = (snapshotId: string): UndoImportPayload => ({

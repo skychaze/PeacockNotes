@@ -3,7 +3,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useCallback, useMemo, useState } from 'react';
-import { Alert, View } from 'react-native';
+import { Alert, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AnimatedRing } from '../components/AnimatedRing';
 import { AppText } from '../components/AppText';
@@ -188,7 +188,6 @@ const buildStorageViewModel = async (snapshot: StorageSnapshot): Promise<Storage
 };
 
 const ROWS = [
-  { key: 'notes', labelKey: 'storage.notesText', icon: 'text-box-outline', valueKey: 'notesBytes' },
   { key: 'audio', labelKey: 'storage.audioFiles', icon: 'music-note', valueKey: 'audioBytes' },
   { key: 'files', labelKey: 'storage.imageFiles', icon: 'file-image-outline', valueKey: 'fileBytes' },
   { key: 'db', labelKey: 'storage.database', icon: 'database-outline', valueKey: 'databaseBytes' },
@@ -248,7 +247,9 @@ export const StorageUsageScreen = () => {
 
   return (
     <ScreenContainer>
-      <View
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom + ui.space.xxl, ui.space.xxxl) }}
         style={{
           flex: 1,
           paddingHorizontal: ui.space.lg,
@@ -278,7 +279,7 @@ export const StorageUsageScreen = () => {
             {t('storage.totalLabel')}
           </AppText>
           <AppText variant="bodySmall" color={colors.textSecondary}>
-            {t('storage.noteCount', { count: storage.noteCount })}
+            {t('storage.noteCount', { count: storage.noteCount })} · {t('storage.notesText')} {formatBytes(storage.notesBytes)}
           </AppText>
         </View>
 
@@ -330,7 +331,7 @@ export const StorageUsageScreen = () => {
             );
           })}
         </View>
-      </View>
+      </ScrollView>
 
       <TopBar onBack={() => navigation.goBack()}>
         <LanguageToggleButton />

@@ -20,6 +20,7 @@ import {
 } from './archive';
 import {
   acquireBackupForegroundServiceLease,
+  getBackupFolderState,
   publishBackupArchive,
   releaseBackupForegroundService,
   type PublishedBackup,
@@ -37,6 +38,7 @@ export type ExportProgress =
 export type VerifiedBackup = Readonly<{
   name: string;
   uri: string;
+  folderUri?: string;
   createdAt: string;
   bytes: number;
   contentRevision: number;
@@ -130,6 +132,8 @@ const executeExport = async (
       ...progress,
     });
     onProgress('publishing');
+    const folder = await getBackupFolderState();
+    if (folder.status !== 'connected' || !folder.uri) throw new Error('FOLDER_NOT_CONNECTED');
     const published: PublishedBackup = await publishBackupArchive({
       stagedUri: archiveUri,
       displayName: name,
@@ -142,6 +146,7 @@ const executeExport = async (
     const verified = {
       name: published.name,
       uri: published.uri,
+      folderUri: folder.uri,
       createdAt,
       bytes: staged.archiveBytes,
       contentRevision: capture.revision,
@@ -205,9 +210,11 @@ class ExportOperationHandler implements BackupOperationHandler {
         operationId: operation.id,
         operationKind: operation.kind,
       });
+      const folder = await getBackupFolderState().catch(() => null);
       const verified = {
         name: candidate.name,
         uri: candidate.uri,
+        folderUri: folder?.uri ?? undefined,
         createdAt: summary.createdAt || operation.createdAt,
         bytes: summary.archiveBytes,
         contentRevision: summary.contentRevision,

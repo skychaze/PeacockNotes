@@ -711,7 +711,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
 
         if (!mediaRoot.exists() && !mediaRoot.mkdirs()) fail("STAGING_UNAVAILABLE", "Cannot create media directory")
         ensureSpace(mediaRoot, summary.getDouble("expandedBytes").toLong())
-        val restrictions = inspectCurrentMedia(live, mediaRoot)
+        val restrictions = MediaRestrictions(emptySet(), emptySet())
 
         val mediaUris = mutableMapOf<String, String>()
         listOf("NoteAudios", "NoteFiles").forEach { table ->
@@ -740,7 +740,6 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         var imported = 0; var recovered = 0; var skipped = 0; var repaired = 0
         live.beginTransaction()
         try {
-          applyMediaRestrictions(live, restrictions)
           selected.sorted().forEach { noteId ->
             val note = source.rawQuery("SELECT n.portableId,n.folderPortableId,n.title,n.content,n.createdAt,n.updatedAt,n.sortOrder FROM Notes n WHERE n.portableId=?", arrayOf(noteId)).use { cursor ->
               if (!cursor.moveToFirst()) fail("INVALID_SELECTION", "Selected note is missing")
@@ -775,7 +774,8 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
               mediaMatches(source, live, noteId, existing[0]!!.toLong())
             if (unchanged) { skipped++; return@forEach }
             val targetPortableId = if (existing == null) noteId else UUID.randomUUID().toString()
-            val targetTitle = if (existing == null) note[2]!! else "${note[2]} (Recovered copy)"
+            val recoveredTitleSuffix = request.getString("recoveredTitleSuffix") ?: " (Recovered copy)"
+            val targetTitle = if (existing == null) note[2]!! else "${note[2]}$recoveredTitleSuffix"
             val statement = live.compileStatement("INSERT INTO Notes(portableId,folderId,title,searchTitle,content,searchContent,audioUri,createdAt,updatedAt,sortOrder) VALUES(?,?,?,?,?,?,NULL,?,?,?)")
             statement.bindString(1, targetPortableId); statement.bindLong(2, folderId); statement.bindString(3, targetTitle)
             statement.bindString(4, targetTitle.lowercase(Locale.ROOT))
@@ -784,7 +784,12 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
             } else {
               statement.bindString(5, note[3]!!); statement.bindString(6, note[3]!!.lowercase(Locale.ROOT))
             }
-            statement.bindString(7, note[4]!!); statement.bindString(8, note[5]!!); statement.bindLong(9, note[6]!!.toLong())
+            statement.bindString(7, note[4]!!); statement.bindString(8, note[5]!!)
+            val nextSortOrder = live.rawQuery(
+              "SELECT COALESCE(MAX(sortOrder),0)+1 FROM Notes WHERE folderId=?",
+              arrayOf(folderId.toString()),
+            ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else 1L }
+            statement.bindLong(9, nextSortOrder)
             val liveNoteId = statement.executeInsert()
             copyImportedMedia(source, live, "NoteAudios", noteId, liveNoteId, mediaUris, existing != null)
             copyImportedMedia(source, live, "NoteFiles", noteId, liveNoteId, mediaUris, existing != null)
@@ -809,6 +814,9 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
 
   private fun commitReplacement(request: ReadableMap): com.facebook.react.bridge.WritableMap {
     recoverReplacementIfNeeded()
+    val preferences = context.getSharedPreferences(REPLACEMENT_PREFERENCES, android.app.Activity.MODE_PRIVATE)
+    val supersededSnapshot = replacementSnapshotPath(preferences.getString(REPLACEMENT_UNDO, null))
+    cleanupOrphanedReplacementSnapshots(setOfNotNull(supersededSnapshot))
     val archiveUri = requiredString(request, "archiveUri")
     val expectedHash = requiredString(request, "archiveSha256")
     val databaseFile = fileFromUri(requiredString(request, "databaseUri"))
@@ -827,6 +835,8 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     val durableRoot = File(context.filesDir, "backup-replacement")
     val staged = File(durableRoot, "staged-$generationId")
     val snapshot = File(durableRoot, "snapshot-$generationId")
+    var journalPersisted = false
+    var snapshotOwnedByUndo = false
     try {
       if (!staged.mkdirs() || !snapshot.mkdirs()) fail("STAGING_UNAVAILABLE", "Cannot create replacement staging")
       val validationRequest = Arguments.createMap().apply {
@@ -874,8 +884,10 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       val journal = JSONObject()
         .put("database", databaseFile.path).put("mediaRoot", mediaRoot.path)
         .put("snapshot", snapshot.path).put("staged", staged.path)
-      context.getSharedPreferences(REPLACEMENT_PREFERENCES, android.app.Activity.MODE_PRIVATE)
-        .edit().putString(REPLACEMENT_JOURNAL, journal.toString()).commit()
+      if (!preferences.edit().putString(REPLACEMENT_JOURNAL, journal.toString()).commit()) {
+        fail("JOURNAL_PERSIST_FAILED", "Replacement was not started because its recovery journal could not be saved")
+      }
+      journalPersisted = true
       try {
         replaceFile(stagedDatabase, databaseFile)
         replaceDirectory(stagedAudio, File(mediaRoot, "audio"))
@@ -883,6 +895,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         verifyLiveGeneration(databaseFile, File(mediaRoot, "audio"), File(mediaRoot, "files"), operationKey)
       } catch (error: Exception) {
         rollbackReplacement(journal)
+        if (preferences.edit().remove(REPLACEMENT_JOURNAL).commit()) journalPersisted = false
         throw ArchiveException("REPLACEMENT_ROLLED_BACK", "Full replacement failed and the prior content was restored", error)
       }
       val completedAt = System.currentTimeMillis()
@@ -891,11 +904,14 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         .put("database", databaseFile.path).put("mediaRoot", mediaRoot.path)
         .put("completedAt", completedAt).put("expiresAt", completedAt + UNDO_WINDOW_MILLIS)
         .put("fingerprint", snapshotFingerprint(snapshot))
-      val preferences = context.getSharedPreferences(REPLACEMENT_PREFERENCES, android.app.Activity.MODE_PRIVATE)
       if (!preferences.edit().remove(REPLACEMENT_JOURNAL).putString(REPLACEMENT_UNDO, undo.toString()).commit()) {
         rollbackReplacement(journal)
+        if (preferences.edit().remove(REPLACEMENT_JOURNAL).commit()) journalPersisted = false
         fail("UNDO_METADATA_FAILED", "Replacement was rolled back because its undo point could not be saved")
       }
+      journalPersisted = false
+      snapshotOwnedByUndo = true
+      supersededSnapshot?.let(::deleteOwnedReplacementDirectory)
       val count = SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READONLY).useDatabase {
         scalarCount(it, "SELECT COUNT(*) FROM Notes").toInt()
       }
@@ -903,6 +919,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     } finally {
       work.deleteRecursively()
       staged.deleteRecursively()
+      if (!journalPersisted && !snapshotOwnedByUndo) deleteOwnedReplacementDirectory(snapshot.path)
     }
   }
 
@@ -981,12 +998,14 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     val snapshotId = undo.optString("snapshotId")
     val expiresAt = undo.optLong("expiresAt", -1)
     if (snapshotId.isBlank() || expiresAt < 0) return undoStatus("damaged", snapshotId, expiresAt)
+    val snapshotPath = undo.optString("snapshot")
+    if (!isOwnedReplacementDirectory(snapshotPath)) return undoStatus("damaged", snapshotId, expiresAt)
     if (System.currentTimeMillis() >= expiresAt) {
-      File(undo.optString("snapshot")).deleteRecursively()
+      deleteOwnedReplacementDirectory(snapshotPath)
       preferences.edit().remove(REPLACEMENT_UNDO).commit()
       return undoStatus("expired", snapshotId, expiresAt)
     }
-    val snapshot = File(undo.optString("snapshot"))
+    val snapshot = File(snapshotPath)
     if (!snapshot.isDirectory) return undoStatus("unavailable", snapshotId, expiresAt)
     val valid = runCatching {
       verifySnapshot(snapshot)
@@ -1148,16 +1167,28 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
 
   private fun recoverReplacementIfNeeded(): Boolean {
     val preferences = context.getSharedPreferences(REPLACEMENT_PREFERENCES, android.app.Activity.MODE_PRIVATE)
-    val raw = preferences.getString(REPLACEMENT_JOURNAL, null) ?: return false
-    val journal = JSONObject(raw)
+    val raw = preferences.getString(REPLACEMENT_JOURNAL, null)
+    if (raw == null) {
+      cleanupOrphanedReplacementSnapshots(setOfNotNull(replacementSnapshotPath(preferences.getString(REPLACEMENT_UNDO, null))))
+      return false
+    }
+    val journal = runCatching { JSONObject(raw) }.getOrElse {
+      throw ArchiveException("RECOVERY_JOURNAL_DAMAGED", "The replacement recovery journal is corrupted", it)
+    }
     rollbackReplacement(journal)
-    preferences.edit().remove(REPLACEMENT_JOURNAL).commit()
+    if (!preferences.edit().remove(REPLACEMENT_JOURNAL).commit()) {
+      fail("RECOVERY_JOURNAL_PERSIST_FAILED", "The replacement recovery journal could not be cleared")
+    }
+    deleteOwnedReplacementDirectory(journal.optString("snapshot"))
+    deleteOwnedReplacementDirectory(journal.optString("staged"))
+    cleanupOrphanedReplacementSnapshots(setOfNotNull(replacementSnapshotPath(preferences.getString(REPLACEMENT_UNDO, null))))
     return true
   }
 
   private fun rollbackReplacement(journal: JSONObject) {
     val database = File(journal.getString("database")); val mediaRoot = File(journal.getString("mediaRoot"))
     val snapshot = File(journal.getString("snapshot"))
+    verifySnapshot(snapshot)
     replaceFile(File(snapshot, "peacocknotes.db"), database, copy = true)
     replaceDirectory(File(snapshot, "audio"), File(mediaRoot, "audio"), copy = true)
     replaceDirectory(File(snapshot, "files"), File(mediaRoot, "files"), copy = true)
@@ -1165,6 +1196,29 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     try {
       if (db.rawQuery("PRAGMA integrity_check", null).use { it.moveToFirst() && it.getString(0) == "ok" }.not()) fail("ROLLBACK_FAILED", "Safety snapshot database is invalid")
     } finally { db.close() }
+  }
+
+  private fun replacementSnapshotPath(raw: String?): String? = raw?.let {
+    runCatching { JSONObject(it).optString("snapshot").takeIf(String::isNotBlank) }.getOrNull()
+  }
+
+  private fun isOwnedReplacementDirectory(path: String): Boolean = runCatching {
+    val root = File(context.filesDir, "backup-replacement").canonicalFile
+    val candidate = File(path).canonicalFile
+    candidate.parentFile == root && (candidate.name.startsWith("snapshot-") || candidate.name.startsWith("staged-"))
+  }.getOrDefault(false)
+
+  private fun deleteOwnedReplacementDirectory(path: String) {
+    if (isOwnedReplacementDirectory(path)) File(path).deleteRecursively()
+  }
+
+  private fun cleanupOrphanedReplacementSnapshots(protectedPaths: Set<String>) {
+    val root = File(context.filesDir, "backup-replacement")
+    val protected = protectedPaths.mapNotNull { runCatching { File(it).canonicalPath }.getOrNull() }.toSet()
+    root.listFiles()
+      ?.filter { it.isDirectory && (it.name.startsWith("snapshot-") || it.name.startsWith("staged-")) }
+      ?.filter { runCatching { it.canonicalPath !in protected }.getOrDefault(false) }
+      ?.forEach { it.deleteRecursively() }
   }
 
   private data class MediaRestrictions(val audioIds: Set<Long>, val fileIds: Set<Long>)
@@ -1332,7 +1386,10 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     val statement = live.compileStatement("INSERT INTO Folders(portableId,parentPortableId,name,createdAt,sortOrder) VALUES(?,?,?,?,?)")
     statement.bindString(1, folder.portableId)
     if (folder.parentPortableId == null) statement.bindNull(2) else statement.bindString(2, folder.parentPortableId)
-    statement.bindString(3, folder.name); statement.bindString(4, folder.createdAt); statement.bindLong(5, folder.sortOrder.toLong())
+    val nextSortOrder = live.rawQuery("SELECT COALESCE(MAX(sortOrder),0)+1 FROM Folders", null).use { cursor ->
+      if (cursor.moveToFirst()) cursor.getLong(0) else 1L
+    }
+    statement.bindString(3, folder.name); statement.bindString(4, folder.createdAt); statement.bindLong(5, nextSortOrder)
     return statement.executeInsert()
   }
 

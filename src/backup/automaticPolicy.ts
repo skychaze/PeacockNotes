@@ -19,6 +19,8 @@ export type AutomaticBackupDueInput = Readonly<{
   currentRevision: number;
   lastVerifiedRevision: number | null;
   lastVerifiedAt: number | null;
+  currentFolderUri?: string | null;
+  lastVerifiedFolderUri?: string | null;
   now: number;
 }>;
 
@@ -26,9 +28,14 @@ export const isAutomaticBackupDue = ({
   currentRevision,
   lastVerifiedRevision,
   lastVerifiedAt,
+  currentFolderUri,
+  lastVerifiedFolderUri,
   now,
 }: AutomaticBackupDueInput): boolean => {
-  const contentChanged = lastVerifiedRevision === null
+  const recoveryPointMatchesFolder = Boolean(
+    currentFolderUri && lastVerifiedFolderUri && currentFolderUri === lastVerifiedFolderUri,
+  );
+  const contentChanged = !recoveryPointMatchesFolder || lastVerifiedRevision === null
     ? currentRevision > 0
     : currentRevision !== lastVerifiedRevision;
   if (!contentChanged) return false;

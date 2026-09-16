@@ -10,6 +10,32 @@ const getManagedRoots = () => {
   return MANAGED_DIRECTORIES.map((directory) => `${documentDirectory}${directory}/`);
 };
 
+const listManagedFilesInDirectory = async (directoryUri: string): Promise<string[]> => {
+  let entries: string[];
+  try {
+    entries = await FileSystem.readDirectoryAsync(directoryUri);
+  } catch {
+    return [];
+  }
+
+  const files: string[] = [];
+  for (const entry of entries) {
+    const uri = `${directoryUri}${entry}`;
+    try {
+      const info = await FileSystem.getInfoAsync(uri);
+      if (!info.exists) continue;
+      if (info.isDirectory) {
+        files.push(...await listManagedFilesInDirectory(`${uri}/`));
+      } else {
+        files.push(uri);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return files;
+};
+
 const isManagedMediaUri = (uri: string) => {
   return getManagedRoots().some((root) => uri.startsWith(root));
 };
@@ -69,4 +95,12 @@ export const deleteMediaFiles = async (uris: Iterable<string | null | undefined>
     return;
   }
   await enqueueDeletion(normalizedUris);
+};
+
+export const listManagedMediaFiles = async (): Promise<string[]> => {
+  const files: string[] = [];
+  for (const root of getManagedRoots()) {
+    files.push(...await listManagedFilesInDirectory(root));
+  }
+  return files;
 };

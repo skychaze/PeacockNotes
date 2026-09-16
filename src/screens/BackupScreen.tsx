@@ -545,8 +545,8 @@ export const BackupScreen = () => {
     setImportError(null);
     try {
       const result = await runForegroundOperation(() => importMode === 'additive'
-        ? importAllNotesAdditively(importPreview)
-        : importSelectedNotes(importPreview, [...selectedNoteIds]));
+        ? importAllNotesAdditively(importPreview, t('backup.import.recoveredCopySuffix'))
+        : importSelectedNotes(importPreview, [...selectedNoteIds], t('backup.import.recoveredCopySuffix')));
       setImportResult(result);
       setImportPreview(null);
       setImportMode(null);

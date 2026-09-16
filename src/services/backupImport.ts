@@ -97,6 +97,7 @@ class ImportOperationHandler implements BackupOperationHandler {
           archiveUri: payload.archiveUri,
           archiveSha256: payload.archiveSha256,
           selectedNoteIds: payload.selectedNoteIds,
+          recoveredTitleSuffix: payload.recoveredTitleSuffix,
           databaseUri,
           mediaDirectoryUri,
           operationKey: idempotencyKey,
@@ -157,7 +158,7 @@ export const resumePendingImportOperation = async () => {
 
 export const browseArchiveForImport = async (): Promise<string | null> => {
   const result = await DocumentPicker.getDocumentAsync({
-    type: 'application/octet-stream',
+    type: '*/*',
     copyToCacheDirectory: false,
   });
   if (result.canceled) return null;
@@ -221,14 +222,18 @@ const requireNonDestructiveResult = (result: ImportResult | FullReplacementResul
   return result;
 };
 
-export const importSelectedNotes = async (preview: ImportPreview, selectedNoteIds: readonly string[]): Promise<ImportResult> =>
+export const importSelectedNotes = async (
+  preview: ImportPreview,
+  selectedNoteIds: readonly string[],
+  recoveredTitleSuffix?: string,
+): Promise<ImportResult> =>
   requireNonDestructiveResult(await importNotes(createArchiveImportPayload(
-    'selective', preview.archiveUri, preview.archiveSha256, selectedNoteIds,
+    'selective', preview.archiveUri, preview.archiveSha256, selectedNoteIds, recoveredTitleSuffix,
   )));
 
-export const importAllNotesAdditively = async (preview: ImportPreview): Promise<ImportResult> =>
+export const importAllNotesAdditively = async (preview: ImportPreview, recoveredTitleSuffix?: string): Promise<ImportResult> =>
   requireNonDestructiveResult(await importNotes(createArchiveImportPayload(
-    'additive', preview.archiveUri, preview.archiveSha256, preview.notes.map((note) => note.portableId),
+    'additive', preview.archiveUri, preview.archiveSha256, preview.notes.map((note) => note.portableId), recoveredTitleSuffix,
   )));
 
 export const importAllNotesByReplacement = async (preview: ImportPreview): Promise<FullReplacementResult> => {

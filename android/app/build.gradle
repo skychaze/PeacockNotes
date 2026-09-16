@@ -100,8 +100,8 @@ android {
         applicationId 'com.roy.peacocknotes'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 13
-        versionName "1.1.3"
+        versionCode 14
+        versionName "1.1.4"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
@@ -126,9 +126,7 @@ android {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig keystorePropertiesFile.exists() ? signingConfigs.release : signingConfigs.debug
+            signingConfig signingConfigs.release
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()
             minifyEnabled enableMinifyInReleaseBuilds
@@ -145,6 +143,22 @@ android {
     }
     androidResources {
         ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:!CVS:!thumbs.db:!picasa.ini:!*~'
+    }
+}
+
+gradle.taskGraph.whenReady { graph ->
+    def releaseRequested = graph.allTasks.any { task ->
+        task.path.endsWith(':assembleRelease') || task.path.endsWith(':bundleRelease')
+    }
+    if (releaseRequested) {
+        def requiredProperties = ['storeFile', 'storePassword', 'keyAlias', 'keyPassword']
+        if (!keystorePropertiesFile.exists() || requiredProperties.any { property -> !keystoreProperties.getProperty(property)?.trim() }) {
+            throw new GradleException('Release signing requires android/keystore.properties with storeFile, storePassword, keyAlias, and keyPassword.')
+        }
+        def releaseKeystore = file(keystoreProperties.getProperty('storeFile'))
+        if (!releaseKeystore.isFile()) {
+            throw new GradleException("Release keystore does not exist: ${releaseKeystore}")
+        }
     }
 }
 

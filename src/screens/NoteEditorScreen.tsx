@@ -34,7 +34,7 @@ import { PressableScale } from '../components/PressableScale';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { ScreenContainer } from '../components/ScreenContainer';
 import { TOP_BAR_HEIGHT, TopBar } from '../components/TopBar';
-import { createNote, getNoteById, updateNote } from '../database/schema';
+import { createNote, deleteUnreferencedMediaFiles, getNoteById, updateNote } from '../database/schema';
 import { useLanguage } from '../i18n/LanguageContext';
 import { ui } from '../theme/ui';
 import { useAppColors } from '../theme/useAppColors';
@@ -47,7 +47,6 @@ import {
   isShareFriendlyAudioExtension,
 } from '../utils/audioFormat';
 import { getFileExtension, getFileMimeType, isImageFile } from '../utils/fileFormat';
-import { deleteMediaFiles } from '../utils/mediaFiles';
 import { shouldAutoSaveBeforeHome } from '../utils/editorExit';
 
 type Route = RouteProp<RootStackParamList, 'NoteEditor'>;
@@ -120,6 +119,7 @@ export const NoteEditorScreen = () => {
   const [appendTargetGroupId, setAppendTargetGroupId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(Boolean(route.params.noteId));
+  const [loadError, setLoadError] = useState(false);
   const [contentInputHeight, setContentInputHeight] = useState(230);
   const [activeSheet, setActiveSheet] = useState<EditorSheet>('none');
   const [actionsGroupId, setActionsGroupId] = useState<string | null>(null);
@@ -135,7 +135,9 @@ export const NoteEditorScreen = () => {
   const initialDraftRef = useRef<NoteDraft>({ title: '', content: '', audios: [], files: [] });
   const skipUnsavedWarningRef = useRef(false);
   const isAutoSavingRef = useRef(false);
+  const persistenceInFlightRef = useRef(false);
   const persistedNoteIdRef = useRef<number | undefined>(route.params.noteId);
+  const initialUpdatedAtRef = useRef<string | undefined>(undefined);
 
   const { folderId, noteId } = route.params;
   const createDefaultAudioName = (order: number) => t('editor.audioDefaultName', { index: order });
@@ -143,12 +145,14 @@ export const NoteEditorScreen = () => {
   const closeSheet = () => setActiveSheet('none');
 
   useEffect(() => {
+    let cancelled = false;
     const loadNote = async () => {
       if (!noteId) {
         return;
       }
       try {
         const note = await getNoteById(noteId);
+        if (cancelled) return;
         if (!note) {
           Alert.alert(t('editor.notFoundTitle'), t('editor.notFoundBody'));
           navigation.goBack();
@@ -175,6 +179,7 @@ export const NoteEditorScreen = () => {
         setContent(note.content);
         setAudios(loadedAudios);
         setFiles(loadedFiles);
+        initialUpdatedAtRef.current = note.updatedAt;
         initialDraftRef.current = {
           title: note.title,
           content: note.content,
@@ -183,16 +188,24 @@ export const NoteEditorScreen = () => {
         };
       } catch (error) {
         console.warn('Failed to load note:', error);
-        Alert.alert(t('common.error'), t('editor.loadError'));
+        if (!cancelled) {
+          setLoadError(true);
+          Alert.alert(t('common.error'), t('editor.loadError'));
+        }
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setIsLoading(false);
       }
     };
 
     void loadNote();
+    return () => { cancelled = true; };
   }, [navigation, noteId]);
 
   useEffect(() => {
+    setLoadError(false);
+    setIsLoading(Boolean(noteId));
+    persistedNoteIdRef.current = noteId;
+    initialUpdatedAtRef.current = undefined;
     if (!noteId) {
       initialDraftRef.current = { title: '', content: '', audios: [], files: [] };
     }
@@ -309,7 +322,11 @@ export const NoteEditorScreen = () => {
     try {
       setIsSaving(true);
       if (persistedNoteIdRef.current) {
-        await updateNote(persistedNoteIdRef.current, draft);
+        initialUpdatedAtRef.current = await updateNote(
+          persistedNoteIdRef.current,
+          draft,
+          { expectedUpdatedAt: initialUpdatedAtRef.current },
+        );
       } else {
         persistedNoteIdRef.current = await createNote(folderId, draft);
       }
@@ -330,15 +347,23 @@ export const NoteEditorScreen = () => {
     }
   };
 
-  const saveNote = async () => {
-    const audiosForSave = await flushActiveRecordingForSave();
-    if (!audiosForSave) {
-      return;
+  const withPersistenceLock = async (work: () => Promise<boolean>): Promise<boolean> => {
+    if (persistenceInFlightRef.current) return false;
+    persistenceInFlightRef.current = true;
+    try {
+      return await work();
+    } finally {
+      persistenceInFlightRef.current = false;
     }
+  };
+
+  const saveNote = async () => withPersistenceLock(async () => {
+    const audiosForSave = await flushActiveRecordingForSave();
+    if (!audiosForSave) return false;
 
     if (!title.trim()) {
       Alert.alert(t('editor.missingTitleTitle'), t('editor.missingTitleBody'));
-      return;
+      return false;
     }
 
     const draft: NoteDraft = {
@@ -348,14 +373,12 @@ export const NoteEditorScreen = () => {
       files,
     };
 
-    await persistDraft(draft, t('editor.saveError'));
-  };
+    return persistDraft(draft, t('editor.saveError'));
+  });
 
-  const autoSaveBeforeExit = async () => {
+  const autoSaveBeforeExit = async () => withPersistenceLock(async () => {
     const audiosForSave = await flushActiveRecordingForSave();
-    if (!audiosForSave) {
-      return false;
-    }
+    if (!audiosForSave) return false;
 
     const trimmedTitle = title.trim();
     const trimmedContent = content.trim();
@@ -373,7 +396,7 @@ export const NoteEditorScreen = () => {
     };
 
     return persistDraft(draft, t('editor.autoSaveError'));
-  };
+  });
 
   const goHome = async () => {
     if (isAutoSavingRef.current) return;
@@ -382,7 +405,7 @@ export const NoteEditorScreen = () => {
       const didSave = !shouldAutoSaveBeforeHome(hasUnsavedChanges, recording !== null) || await autoSaveBeforeExit();
       if (!didSave) return;
       skipUnsavedWarningRef.current = true;
-      navigation.navigate('Folders');
+      navigation.reset({ index: 0, routes: [{ name: 'Folders' }] });
     } finally {
       isAutoSavingRef.current = false;
     }
@@ -399,7 +422,12 @@ export const NoteEditorScreen = () => {
         return;
       }
 
-      if (!hasUnsavedChanges) return;
+      if (persistenceInFlightRef.current) {
+        event.preventDefault();
+        return;
+      }
+
+      if (!hasUnsavedChanges && !recordingRef.current) return;
 
       event.preventDefault();
 
@@ -412,6 +440,20 @@ export const NoteEditorScreen = () => {
         }
         isAutoSavingRef.current = false;
       })();
+    });
+
+    return unsubscribe;
+  }, [autoSaveBeforeExit, hasUnsavedChanges, navigation]);
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('blur', () => {
+      if (skipUnsavedWarningRef.current || isAutoSavingRef.current || persistenceInFlightRef.current) return;
+      if (!hasUnsavedChanges && !recordingRef.current) return;
+
+      isAutoSavingRef.current = true;
+      void autoSaveBeforeExit().finally(() => {
+        isAutoSavingRef.current = false;
+      });
     });
 
     return unsubscribe;
@@ -470,7 +512,7 @@ export const NoteEditorScreen = () => {
   const removeFile = (file: NoteFileDraft) => {
     const wasPersisted = initialDraftRef.current.files.some((item) => item.uri === file?.uri);
     if (file && !wasPersisted) {
-      void deleteMediaFiles([file.uri]);
+      void deleteUnreferencedMediaFiles([file.uri]);
     }
     setFiles((prev) => prev.filter((item) => item !== file));
   };
@@ -771,7 +813,7 @@ export const NoteEditorScreen = () => {
       .filter((audio) => audio.groupId === groupId && !persistedUris.has(audio.uri))
       .map((audio) => audio.uri);
     if (sessionUris.length > 0) {
-      void deleteMediaFiles(sessionUris);
+      void deleteUnreferencedMediaFiles(sessionUris);
     }
 
     setAudios((prev) => prev.filter((audio) => audio.groupId !== groupId));
@@ -999,6 +1041,19 @@ export const NoteEditorScreen = () => {
           <AppText variant="body" color={colors.textSecondary}>
             {t('common.loading')}
           </AppText>
+        </View>
+      </ScreenContainer>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <ScreenContainer>
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: ui.space.lg, gap: ui.space.lg }}>
+          <AppText variant="headline" color={colors.error} style={{ textAlign: 'center' }}>
+            {t('editor.loadError')}
+          </AppText>
+          <PrimaryButton onPress={() => navigation.goBack()}>{t('common.back')}</PrimaryButton>
         </View>
       </ScreenContainer>
     );

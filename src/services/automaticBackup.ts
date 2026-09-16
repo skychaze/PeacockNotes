@@ -97,7 +97,11 @@ const runAutomaticBackupAttempt = async (): Promise<AutomaticBackupState> => {
   let state = await native.getState();
   if (!state.enabled || driveAuthorizationInProgress) return state;
 
-  const [revision, verified] = await Promise.all([getContentRevision(), readLastVerified()]);
+  const [revision, verified, currentFolder] = await Promise.all([
+    getContentRevision(),
+    readLastVerified(),
+    getBackupFolderState(),
+  ]);
   state = await native.getState();
   if (!state.enabled || driveAuthorizationInProgress) return state;
 
@@ -106,6 +110,8 @@ const runAutomaticBackupAttempt = async (): Promise<AutomaticBackupState> => {
     currentRevision: revision,
     lastVerifiedRevision: verified?.contentRevision ?? null,
     lastVerifiedAt: lastVerifiedAt !== null && Number.isFinite(lastVerifiedAt) ? lastVerifiedAt : null,
+    currentFolderUri: currentFolder.status === 'connected' ? currentFolder.uri : null,
+    lastVerifiedFolderUri: verified?.folderUri ?? null,
     now: Date.now(),
   })) {
     await native.setStatus('not_due', 0, null);

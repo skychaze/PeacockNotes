@@ -1,10 +1,10 @@
 # OTA updates research for Peacock Notes
 
-Research date: 2026-09-14
+Research date: 2026-09-16
 
 ## Verdict
 
-Peacock Notes can use EAS Update for JavaScript, TypeScript, styling, and Metro-bundled assets after one new Android and iOS binary adds `expo-updates` and its native configuration. It is a checked-in native Expo SDK 54 project, so it needs the bare-project integration, not a config-only change. The current `expo-updates` configuration is disabled in Android and iOS, and `expo-updates` is absent from `package.json`. Existing APK/AAB installs, including version 1.1.1 (Android versionCode 11), cannot receive an OTA update. Install a newly built, signed binary first.
+Peacock Notes can use EAS Update for JavaScript, TypeScript, styling, and Metro-bundled assets. The Android project already includes `expo-updates` and has it enabled for the production channel. The generated iOS project on this checkout still has stale bundle, app-group, and update metadata and needs a native cleanup before an iOS release. The iOS folder is ignored and must be regenerated from `app.json` in the iOS build job. Existing Android binaries built before `expo-updates` was enabled cannot receive an OTA update. Install a newly built, signed binary before targeting those installs.
 
 EAS Update can be used without EAS Build. The current local Gradle and GitHub Actions APK release path can remain in place, including sideloaded APK distribution. iOS is supported by Expo, but this research has not validated this app's iOS build. EAS Build automates channel and runtime bookkeeping, but it is not a requirement. [Expo: standalone EAS Update](https://docs.expo.dev/eas-update/standalone-service/)
 
@@ -28,7 +28,7 @@ It cannot add or change native code in an installed binary. That includes Androi
 
 These classifications apply Expo's [native runtime boundary](https://docs.expo.dev/eas-update/runtime-versions/) to the files in this repository. OTA delivers application code and assets; it does not synchronize users' notes or backups.
 
-Use `runtimeVersion: { "policy": "appVersion" }`. Peacock Notes regenerates parts of `android/` during prebuild and writes build output under the same directory. Testing found that a fingerprint computed before and after a release build did not remain stable, which could prevent an update from matching its binary. The app-version policy gives every binary for version 1.1.2 the runtime `1.1.2`. Every native code or native dependency change must therefore bump `expo.version` and `expo.android.versionCode` before building. JavaScript-only OTA releases keep the same app version. [Expo: runtime versions](https://docs.expo.dev/eas-update/runtime-versions/) [Expo SDK 54 updates reference](https://docs.expo.dev/versions/v54.0.0/sdk/updates/)
+Keep the literal `runtimeVersion` equal to `expo.version` for this checked-in project. Peacock Notes regenerates parts of `android/` during prebuild and writes build output under the same directory, so a native fingerprint is not a stable runtime identifier here. Every native code or native dependency change must bump `expo.version`, `expo.android.versionCode`, and `runtimeVersion` before building. JavaScript-only OTA releases keep the same runtime. [Expo: runtime versions](https://docs.expo.dev/eas-update/runtime-versions/) [Expo SDK 54 updates reference](https://docs.expo.dev/versions/v54.0.0/sdk/updates/)
 
 Keep two channels embedded into the binaries:
 
@@ -43,11 +43,10 @@ For local builds, channels are native configuration, not just `eas.json`. Put th
 
 Do these in a dedicated binary-release change. Do not run a clean `expo prebuild`, since this project owns native files and custom package registration.
 
-1. Install the SDK-matched package with `npx expo install expo-updates`, then run `npx pod-install` for iOS. Expo's bare-project guide also requires native Android and iOS configuration. [Expo: install updates in an existing React Native project](https://docs.expo.dev/bare/installing-updates/)
-2. Run `eas update:configure`, then inspect every native diff. It adds `runtimeVersion` and `updates.url` to app config and configures the update URL and runtime in the native projects. Preserve the custom Android packages and all existing native configuration. [Expo: configuration details](https://docs.expo.dev/eas-update/getting-started/)
-3. Enable updates in Android's manifest and iOS `Supporting/Expo.plist`, set the update URL to this project's existing EAS project ID, and make sure `Expo.plist` is included by the Xcode project. The present `EXUpdatesEnabled=false` settings must become enabled in the release binary. [Expo: bare configuration](https://docs.expo.dev/bare/installing-updates/)
-4. Configure the `preview` or `production` channel in the corresponding native files. Build, sign, and distribute a new APK for preview and a new AAB for Play. The app signing identity and Android application ID stay unchanged so the binary updates the installed app.
-5. Test the new binary before publishing. Build metadata, channel, and runtime must match the intended update. On a release build, force-close and reopen twice to download and then apply a published update. [Expo: test an update](https://docs.expo.dev/eas-update/getting-started/)
+1. Keep the checked-in `expo-updates` package and native Android configuration in sync with `app.json`. For iOS, align `Expo.plist`, bundle identifiers, app groups, and version metadata before distributing a binary. [Expo: install updates in an existing React Native project](https://docs.expo.dev/bare/installing-updates/)
+2. Inspect every native diff after prebuild. Preserve the custom Android packages and all existing native configuration. [Expo: configuration details](https://docs.expo.dev/eas-update/getting-started/)
+3. Configure the `preview` or `production` channel in the corresponding native files. Build, sign, and distribute a new APK for preview and a new AAB for Play. The app signing identity and Android application ID stay unchanged so the binary updates the installed app.
+4. Test the new binary before publishing. Build metadata, channel, and runtime must match the intended update. On a release build, force-close and reopen twice to download and then apply a published update. [Expo: test an update](https://docs.expo.dev/eas-update/getting-started/)
 
 After the binary exists, publish a JS-only release with `eas update --channel preview --message "..."`, validate it, then publish the same tested revision to `production`. EAS Update uploads the exported bundle and assets to its update service. [Expo: publish an update](https://docs.expo.dev/eas-update/getting-started/)
 
@@ -55,7 +54,7 @@ After the binary exists, publish a JS-only release with `eas update --channel pr
 
 The default behavior checks for updates on launch, downloads in the background, and applies the download on a later app restart. Its default launch wait is zero, so an offline launch starts the cached or embedded bundle without waiting for the network. Keep that default for a notes app. Do not call `Updates.reloadAsync()` while the editor is open, a recording is active, or backup/import work is running. [Expo SDK 54 updates usage](https://docs.expo.dev/versions/v54.0.0/sdk/updates/)
 
-Treat SQLite and AsyncStorage changes as OTA compatibility work, even though the database itself is not part of the bundle. `src/database/schema.ts` currently has `CURRENT_SCHEMA_VERSION = 3`, and native archive/import code also accesses the same database. A downloaded update may run before or after an older cached bundle. Therefore:
+Treat SQLite and AsyncStorage changes as OTA compatibility work, even though the database itself is not part of the bundle. `src/database/schema.ts` currently has `CURRENT_SCHEMA_VERSION = 4`, and native archive/import code also accesses the same database. A downloaded update may run before or after an older cached bundle. Therefore:
 
 - Make schema migrations backward-compatible with supported bundles and native code, and idempotent.
 - Keep old JS and Kotlin native archive queries working until every supported binary has been replaced.
@@ -73,4 +72,4 @@ Expo's rollback and error recovery are not a database rollback system. An early 
 4. Exercise editor save, recording, share import, manual backup, automatic backup, and both headless backup task paths. These run from `index.ts` and must work from the downloaded release bundle.
 5. Only then publish the same commit to `production`. If it fails after persistent data changes, fix forward unless rollback has been tested as safe.
 
-The first enabled release is a binary rollout, not an OTA rollout. Subsequent JavaScript and asset fixes can use EAS Update. Native changes always start the cycle again with a new signed binary.
+Android JavaScript and asset fixes can use EAS Update when the installed binary has the matching runtime. Native changes always start the cycle again with a new signed binary.
