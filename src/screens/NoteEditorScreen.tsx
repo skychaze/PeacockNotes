@@ -145,6 +145,7 @@ export const NoteEditorScreen = () => {
   const [renameValue, setRenameValue] = useState('');
   const [detailsTargetGroupId, setDetailsTargetGroupId] = useState<string | null>(null);
   const [isReadingContent, setIsReadingContent] = useState(false);
+  const [attachmentSuggestionsDismissed, setAttachmentSuggestionsDismissed] = useState(false);
 
   const recordingRef = useRef<Audio.Recording | null>(null);
   const isFinalizingRecordingRef = useRef(false);
@@ -341,6 +342,12 @@ export const NoteEditorScreen = () => {
     () => (attachmentKeyword === undefined ? [] : filterAttachmentTags(attachmentTags, attachmentKeyword)),
     [attachmentKeyword, attachmentTags],
   );
+  const attachmentSuggestionsVisible =
+    attachmentKeyword !== undefined && !isReadingContent && !recording && !attachmentSuggestionsDismissed;
+
+  useEffect(() => {
+    setAttachmentSuggestionsDismissed(false);
+  }, [attachmentKeyword]);
 
   const hasUnsavedChanges = useMemo(() => {
     const initial = initialDraftRef.current;
@@ -1193,6 +1200,7 @@ export const NoteEditorScreen = () => {
                 multiline
                 scrollEnabled={false}
                 textAlignVertical="top"
+                onFocus={() => setAttachmentSuggestionsDismissed(false)}
                 onContentSizeChange={(event) => onContentSizeChange(event.nativeEvent.contentSize.height + 24)}
                 style={{
                   minHeight: 230,
@@ -1273,81 +1281,6 @@ export const NoteEditorScreen = () => {
             onTogglePause={() => void toggleRecordingPause()}
             onStop={stopRecordingHandler}
           />
-        ) : attachmentKeyword !== undefined && !isReadingContent ? (
-          <View style={[barShadow, { flex: 1 }]}>
-            <GlassSurface
-              radius={ui.radius.xl}
-              contentStyle={{
-                paddingHorizontal: ui.space.md,
-                paddingVertical: ui.space.md,
-                gap: ui.space.sm,
-              }}
-            >
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: ui.space.sm }}>
-                <MaterialCommunityIcons name="at" size={18} color={colors.textSecondary} />
-                <AppText variant="caption" color={colors.textSecondary} style={{ flex: 1 }}>
-                  {t(
-                    suggestedAttachments.length > 0
-                      ? 'editor.attachmentSuggestions'
-                      : 'editor.attachmentSuggestionsEmpty'
-                  )}
-                </AppText>
-              </View>
-              {suggestedAttachments.length > 0 ? (
-                <ScrollView
-                  style={{ maxHeight: 176 }}
-                  keyboardShouldPersistTaps="handled"
-                  showsVerticalScrollIndicator={false}
-                >
-                  <View style={{ gap: ui.space.sm }}>
-                    {suggestedAttachments.map((tag) => (
-                      <PressableScale
-                        key={tag.tagId}
-                        onPress={() => triggers.attachment.onSelect({ id: tag.tagId, name: tag.displayName })}
-                        accessibilityRole="button"
-                        accessibilityLabel={tag.displayName}
-                        style={{
-                          flexDirection: 'row',
-                          alignItems: 'center',
-                          gap: ui.space.md,
-                          backgroundColor: colors.surfaceVariant,
-                          borderRadius: ui.radius.md,
-                          paddingHorizontal: ui.space.md,
-                          paddingVertical: ui.space.sm,
-                        }}
-                      >
-                        <MaterialCommunityIcons
-                          name={
-                            tag.kind === 'audio'
-                              ? 'waveform'
-                              : (getFileIcon(tag.file.mimeType) as keyof typeof MaterialCommunityIcons.glyphMap)
-                          }
-                          size={20}
-                          color={colors.primary}
-                        />
-                        <View style={{ flex: 1 }}>
-                          <AppText variant="headline" numberOfLines={1}>
-                            {tag.displayName}
-                          </AppText>
-                          <AppText variant="caption" color={colors.textSecondary}>
-                            {tag.kind === 'audio'
-                              ? tag.segmentCount > 1
-                                ? t('editor.audioSegments', { count: tag.segmentCount })
-                                : t('editor.attachmentKindAudio')
-                              : isImageMimeType(tag.file.mimeType)
-                                ? t('editor.attachmentKindImage')
-                                : isPdfMimeType(tag.file.mimeType)
-                                  ? t('editor.attachmentKindPdf')
-                                  : t('editor.attachmentKindFile')}
-                          </AppText>
-                        </View>
-                      </PressableScale>
-                    ))}
-                  </View>
-                </ScrollView>
-              ) : null}
-            </GlassSurface>
-          </View>
         ) : (
           <>
             <View style={barShadow}>
@@ -1420,6 +1353,78 @@ export const NoteEditorScreen = () => {
           </>
         )}
       </View>
+
+      <BottomSheet
+        visible={attachmentSuggestionsVisible}
+        onClose={() => setAttachmentSuggestionsDismissed(true)}
+        title={t('editor.attachmentSuggestions')}
+      >
+        {suggestedAttachments.length > 0 ? (
+          <ScrollView
+            style={{ maxHeight: 320 }}
+            contentContainerStyle={{ paddingHorizontal: ui.space.lg, paddingBottom: ui.space.sm }}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={{ gap: ui.space.sm }}>
+              {suggestedAttachments.map((tag) => (
+                <PressableScale
+                  key={tag.tagId}
+                  onPress={() => {
+                    setAttachmentSuggestionsDismissed(true);
+                    triggers.attachment.onSelect({ id: tag.tagId, name: tag.displayName });
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={tag.displayName}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: ui.space.md,
+                    backgroundColor: colors.surfaceVariant,
+                    borderRadius: ui.radius.md,
+                    paddingHorizontal: ui.space.md,
+                    paddingVertical: ui.space.sm,
+                  }}
+                >
+                  <MaterialCommunityIcons
+                    name={
+                      tag.kind === 'audio'
+                        ? 'waveform'
+                        : (getFileIcon(tag.file.mimeType) as keyof typeof MaterialCommunityIcons.glyphMap)
+                    }
+                    size={20}
+                    color={colors.primary}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <AppText variant="headline" numberOfLines={1}>
+                      {tag.displayName}
+                    </AppText>
+                    <AppText variant="caption" color={colors.textSecondary}>
+                      {tag.kind === 'audio'
+                        ? tag.segmentCount > 1
+                          ? t('editor.audioSegments', { count: tag.segmentCount })
+                          : t('editor.attachmentKindAudio')
+                        : isImageMimeType(tag.file.mimeType)
+                          ? t('editor.attachmentKindImage')
+                          : isPdfMimeType(tag.file.mimeType)
+                            ? t('editor.attachmentKindPdf')
+                            : t('editor.attachmentKindFile')}
+                    </AppText>
+                  </View>
+                </PressableScale>
+              ))}
+            </View>
+          </ScrollView>
+        ) : (
+          <AppText
+            variant="body"
+            color={colors.textSecondary}
+            style={{ paddingHorizontal: ui.space.lg }}
+          >
+            {t('editor.attachmentSuggestionsEmpty')}
+          </AppText>
+        )}
+      </BottomSheet>
 
       {activeSheet === 'overflow' ? (
         <ActionSheet visible onClose={closeSheet} rows={overflowRows} />
