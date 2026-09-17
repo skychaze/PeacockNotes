@@ -9,6 +9,7 @@ import type {
   NoteDraft,
   NoteListItem,
 } from '../types/models';
+import { attachmentTextForSharing } from '../utils/attachmentReferences';
 import { deleteMediaFiles, listManagedMediaFiles } from '../utils/mediaFiles';
 
 export type SortField = 'custom' | 'name' | 'createdAt';
@@ -32,10 +33,14 @@ let databaseSuspension: Promise<void> | null = null;
 
 const SQLITE_BUSY_TIMEOUT_MS = 5000;
 const SQLITE_BUSY_RETRY_DELAYS_MS = [75, 200, 500] as const;
-const CURRENT_SCHEMA_VERSION = 4;
+const CURRENT_SCHEMA_VERSION = 5;
 
 const normalizeSearchValue = (value: string | null | undefined): string =>
   (value ?? '').toLowerCase();
+
+/** Attachment reference tokens carry identities; only their visible names belong in search. */
+const normalizeSearchContent = (content: string | null | undefined): string =>
+  normalizeSearchValue(attachmentTextForSharing(content ?? ''));
 
 const isSqliteBusyError = (error: unknown): boolean => {
   const message = error instanceof Error ? error.message : String(error);
@@ -442,14 +447,14 @@ export const initDb = async () => {
   }>('SELECT id, title, content, searchTitle, searchContent FROM Notes;');
   const staleSearchRows = notesNeedingSearchIndex.filter((note) =>
     note.searchTitle !== normalizeSearchValue(note.title) ||
-    note.searchContent !== normalizeSearchValue(note.content)
+    note.searchContent !== normalizeSearchContent(note.content)
   );
   if (staleSearchRows.length > 0) {
     await withWriteTransaction(db, async (txn) => {
       for (const note of staleSearchRows) {
         await txn.runAsync(
           'UPDATE Notes SET searchTitle = ?, searchContent = ? WHERE id = ?;',
-          [normalizeSearchValue(note.title), normalizeSearchValue(note.content), note.id]
+          [normalizeSearchValue(note.title), normalizeSearchContent(note.content), note.id]
         );
       }
     });
@@ -627,12 +632,21 @@ const mapNote = (row: NoteRow): Note => ({
   updatedAt: row.updatedAt,
 });
 
+/**
+ * List previews are truncated in SQL before reference tokens can be stripped,
+ * so the query reads extra characters and the visible text is cut here.
+ */
+const NOTE_PREVIEW_SOURCE_LIMIT = 480;
+const NOTE_PREVIEW_CHAR_LIMIT = 240;
+
 const mapNoteListItem = (row: NoteListRow): NoteListItem => ({
   id: row.id,
   portableId: row.portableId,
   folderId: row.folderId,
   title: row.title,
-  contentPreview: row.contentPreview?.trim() ?? '',
+  contentPreview: attachmentTextForSharing(row.contentPreview ?? '')
+    .trim()
+    .slice(0, NOTE_PREVIEW_CHAR_LIMIT),
   audioCount: Number(row.audioCount ?? 0),
   fileCount: Number(row.fileCount ?? 0),
   createdAt: row.createdAt,
@@ -848,7 +862,7 @@ export const listNotesByFolder = async (
       N.portableId,
       N.folderId,
       N.title,
-      SUBSTR(TRIM(COALESCE(N.content, '')), 1, 240) AS contentPreview,
+      SUBSTR(TRIM(COALESCE(N.content, '')), 1, ${NOTE_PREVIEW_SOURCE_LIMIT}) AS contentPreview,
       (SELECT COUNT(*) FROM NoteAudios A WHERE A.noteId = N.id) AS audioCount,
       (SELECT COUNT(*) FROM NoteFiles F WHERE F.noteId = N.id) AS fileCount,
       N.createdAt,
@@ -980,7 +994,7 @@ const saveNoteFiles = async (
         VALUES (?, ?, ?, ?, ?, ?, ?);
         `,
         [
-          await createPortableId(db),
+          file.portableId ?? await createPortableId(db),
           noteId,
           file.uri,
           file.displayName,
@@ -1159,7 +1173,7 @@ const saveNoteAudios = async (
         VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         `,
         [
-          await createPortableId(db),
+          audio.portableId ?? await createPortableId(db),
           noteId,
           audio.uri,
           audio.displayName,
@@ -1233,7 +1247,7 @@ export const createNote = async (
         title,
         normalizeSearchValue(title),
         draft.content,
-        normalizeSearchValue(draft.content),
+        normalizeSearchContent(draft.content),
         null,
         timestamp,
         timestamp,
@@ -1290,6 +1304,7 @@ export const updateNote = async (
 
   let previousUris: string[] = [];
   let persistedUpdatedAt = '';
+  const searchContent = normalizeSearchContent(draft.content);
 
   await withWriteTransaction(db, async (txn) => {
     const current = await txn.getFirstAsync<{
@@ -1313,7 +1328,7 @@ export const updateNote = async (
     const noteChanged = current.title !== title ||
       current.searchTitle !== normalizeSearchValue(title) ||
       (current.content ?? '') !== draft.content ||
-      current.searchContent !== normalizeSearchValue(draft.content);
+      current.searchContent !== searchContent;
 
     if (noteChanged || audiosChanged || filesChanged) {
       persistedUpdatedAt = nowIso();
@@ -1323,7 +1338,7 @@ export const updateNote = async (
         SET title = ?, searchTitle = ?, content = ?, searchContent = ?, audioUri = NULL, updatedAt = ?
         WHERE id = ?;
         `,
-        [title, normalizeSearchValue(title), draft.content, normalizeSearchValue(draft.content), persistedUpdatedAt, noteId]
+        [title, normalizeSearchValue(title), draft.content, searchContent, persistedUpdatedAt, noteId]
       );
       await advanceContentRevision(txn);
     } else {
