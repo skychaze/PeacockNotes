@@ -13,13 +13,33 @@ export type AttachmentTextPart = {
   reference?: AttachmentReference;
 };
 
+/** UUIDv4, the only portable identity shape a reference token stores. */
+const PORTABLE_ID_SOURCE = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+const NAME_SOURCE = '[^\\]\\n]*';
+const KIND_SOURCE = 'audio|file';
+
 /**
- * Matches one stored reference token; the single outer group lets the mentions
- * editor split on it. Kept stateless: the shared pattern carries no `g` flag,
- * so a global copy is built where repeated scanning is needed.
+ * Matches one stored reference token. The single outer group lets the mentions
+ * editor split on it, so the kind stays non-capturing here; the parser below
+ * captures the same pieces for its own reads. Kept stateless: the shared
+ * pattern carries no `g` flag, so a global copy is built wherever repeated
+ * scanning is needed.
  */
-export const attachmentTokenPattern =
-  /(@\[[^\]\n]*\]\((?:audio|file):[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\))/i;
+export const attachmentTokenPattern = new RegExp(
+  `(@\\[${NAME_SOURCE}\\]\\((?:${KIND_SOURCE}):${PORTABLE_ID_SOURCE}\\))`,
+  'i',
+);
+
+/** Groups: 1 = name, 2 = kind, 3 = identity. */
+const attachmentTokenExpression = new RegExp(
+  `^@\\[(${NAME_SOURCE})\\]\\((${KIND_SOURCE}):(${PORTABLE_ID_SOURCE})\\)$`,
+  'i',
+);
+/** Groups: 1 = kind, 2 = identity. */
+const attachmentTagIdExpression = new RegExp(`^(${KIND_SOURCE}):(${PORTABLE_ID_SOURCE})$`, 'i');
+
+const toAttachmentKind = (value: string): AttachmentKind =>
+  value.toLowerCase() === 'audio' ? 'audio' : 'file';
 
 const safeDecode = (value: string): string => {
   try {
@@ -37,19 +57,16 @@ export const attachmentTagId = (reference: Pick<AttachmentReference, 'kind' | 'i
   `${reference.kind}:${reference.id}`;
 
 export const parseAttachmentTagId = (tagId: string): Pick<AttachmentReference, 'kind' | 'id'> | null => {
-  const match = /^(audio|file):([0-9a-f-]+)$/i.exec(tagId);
+  const match = attachmentTagIdExpression.exec(tagId);
   if (!match) return null;
-  return {
-    kind: match[1].toLowerCase() === 'audio' ? 'audio' : 'file',
-    id: match[2].toLowerCase(),
-  };
+  return { kind: toAttachmentKind(match[1]), id: match[2].toLowerCase() };
 };
 
 export const parseAttachmentToken = (token: string): AttachmentReference | null => {
-  const match = /^@\[([^\]\n]*)\]\((audio|file):([0-9a-f-]+)\)$/i.exec(token);
+  const match = attachmentTokenExpression.exec(token);
   if (!match) return null;
   return {
-    kind: match[2].toLowerCase() === 'audio' ? 'audio' : 'file',
+    kind: toAttachmentKind(match[2]),
     id: match[3].toLowerCase(),
     name: safeDecode(match[1]),
   };
@@ -75,27 +92,27 @@ export const attachmentTextForSharing = (value: string): string =>
   parseAttachmentText(value).map((part) => part.text).join('');
 
 /**
- * Rewrite the stored name of every token the callback resolves, keeping the
- * attachment identity untouched. Tokens the callback declines stay as they are.
+ * Rewrite every token the callback resolves, keeping the identity untouched.
+ * Tokens the callback declines stay byte-for-byte as they were.
  */
-export const renameAttachmentReferences = (
+export const rewriteAttachmentReferences = (
   content: string,
-  renamed: (reference: AttachmentReference) => string | undefined,
+  rewrite: (reference: AttachmentReference) => string | undefined,
 ): string =>
   content.replace(
     new RegExp(attachmentTokenPattern.source, 'gi'),
     (token) => {
       const reference = parseAttachmentToken(token);
       if (!reference) return token;
-      const name = renamed(reference);
-      return name == null ? token : encodeAttachmentReference({ ...reference, name });
+      const replacement = rewrite(reference);
+      return replacement == null ? token : replacement;
     },
   );
 
 export type AudioGroupAttachment = {
   groupId: string;
   displayName: string;
-  segments: readonly { portableId?: string; displayName: string }[];
+  segments: readonly { portableId?: string }[];
 };
 
 export type AttachmentCatalog = {

@@ -438,29 +438,52 @@ export const initDb = async () => {
     await db.execAsync('ALTER TABLE Notes ADD COLUMN searchContent TEXT;');
   }
 
-  const notesNeedingSearchIndex = await db.getAllAsync<{
-    id: number;
-    title: string;
-    content: string | null;
-    searchTitle: string | null;
-    searchContent: string | null;
-  }>('SELECT id, title, content, searchTitle, searchContent FROM Notes;');
-  const staleSearchRows = notesNeedingSearchIndex.filter((note) =>
+  await rebuildStaleSearchRows(db);
+
+  await db.execAsync(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION};`);
+};
+
+type SearchIndexRow = {
+  id: number;
+  title: string;
+  content: string | null;
+  searchTitle: string | null;
+  searchContent: string | null;
+};
+
+/** Rewrite the search index of notes whose stored value no longer matches their visible text. */
+const rebuildStaleSearchRows = async (db: SQLite.SQLiteDatabase): Promise<number> => {
+  const notes = await db.getAllAsync<SearchIndexRow>(
+    'SELECT id, title, content, searchTitle, searchContent FROM Notes;'
+  );
+  const stale = notes.filter((note) =>
     note.searchTitle !== normalizeSearchValue(note.title) ||
     note.searchContent !== normalizeSearchContent(note.content)
   );
-  if (staleSearchRows.length > 0) {
-    await withWriteTransaction(db, async (txn) => {
-      for (const note of staleSearchRows) {
-        await txn.runAsync(
-          'UPDATE Notes SET searchTitle = ?, searchContent = ? WHERE id = ?;',
-          [normalizeSearchValue(note.title), normalizeSearchContent(note.content), note.id]
-        );
-      }
-    });
-  }
+  if (stale.length === 0) return 0;
 
-  await db.execAsync(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION};`);
+  await withWriteTransaction(db, async (txn) => {
+    for (const note of stale) {
+      await txn.runAsync(
+        'UPDATE Notes SET searchTitle = ?, searchContent = ? WHERE id = ?;',
+        [normalizeSearchValue(note.title), normalizeSearchContent(note.content), note.id]
+      );
+    }
+  });
+  return stale.length;
+};
+
+/**
+ * The native archive importer writes raw note text into searchContent, so a
+ * restored note would otherwise be searchable by its reference tokens.
+ */
+export const refreshSearchIndex = async (): Promise<number> => {
+  try {
+    return await rebuildStaleSearchRows(await getDb());
+  } catch (error) {
+    console.warn('Failed to refresh the search index:', error);
+    return 0;
+  }
 };
 
 const nowIso = () => new Date().toISOString();

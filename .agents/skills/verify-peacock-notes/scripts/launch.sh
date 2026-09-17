@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Install (if needed) and cold-launch Peacock Notes on the emulator.
-# Usage: SERIAL=emulator-5554 ./scripts/launch.sh [path-to.apk]
+# Usage: SERIAL=emulator-5554 ./scripts/launch.sh [path-to-apk]
 # Default APK: highest versionCode under releases/v*/peacocknotes-*.apk,
-# fallback android/.../app-release.apk. A newer build already on the emulator
-# is kept: Metro serves the JS under test regardless of the installed APK.
+# fallback android/.../app-release.apk. Release APKs bundle their JS, so a
+# newer build already installed is kept rather than downgraded; build and
+# install a fresh APK to test JS changes (see the verify skill).
 set -euo pipefail
 
 SERIAL="${SERIAL:-emulator-5554}"

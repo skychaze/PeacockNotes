@@ -58,9 +58,10 @@ import {
   listAttachmentTags,
   parseAttachmentTagId,
   parseAttachmentToken,
-  renameAttachmentReferences,
+  resolveAttachment,
+  rewriteAttachmentReferences,
 } from '../utils/attachmentReferences';
-import { getFileExtension, getFileIcon, getFileMimeType, isImageFile, isPdfMimeType } from '../utils/fileFormat';
+import { getFileExtension, getFileIcon, getFileMimeType, isImageFile, isImageMimeType, isPdfMimeType } from '../utils/fileFormat';
 import { createDraftPortableId } from '../utils/portableId';
 import { shouldAutoSaveBeforeHome } from '../utils/editorExit';
 
@@ -574,6 +575,12 @@ export const NoteEditorScreen = () => {
       void deleteUnreferencedMediaFiles([file.uri]);
     }
     setFiles((prev) => prev.filter((item) => item !== file));
+    if (file?.portableId) {
+      const removedFileId = file.portableId;
+      const removedName = file.displayName;
+      setContent((prev) => rewriteAttachmentReferences(prev, (reference) =>
+        reference.kind === 'file' && reference.id === removedFileId ? removedName : undefined));
+    }
   };
 
   const shareSpecificFile = useCallback(async (file: NoteFileDraft) => {
@@ -878,7 +885,14 @@ export const NoteEditorScreen = () => {
     }
 
     setAudios((prev) => prev.filter((audio) => audio.groupId !== groupId));
-
+    const removedGroupName =
+      audioGroups.find((group) => group.groupId === groupId)?.displayName ?? '';
+    setContent((prev) => rewriteAttachmentReferences(prev, (reference) => {
+      const resolved = resolveAttachment(reference, attachmentCatalog);
+      return resolved?.kind === 'audio' && resolved.groupId === groupId
+        ? removedGroupName || reference.name
+        : undefined;
+    }));
   };
 
   const startRenameAudioGroup = (groupId: string) => {
@@ -904,21 +918,23 @@ export const NoteEditorScreen = () => {
     }
 
     if (renameTargetGroupId) {
-      const groupPortableIds = new Set(
-        audios
-          .filter((audio) => audio.groupId === renameTargetGroupId && audio.portableId)
-          .map((audio) => audio.portableId as string)
-      );
       setAudios((prev) => prev.map((audio) => audio.groupId === renameTargetGroupId ? { ...audio, displayName: trimmed } : audio));
-      setContent((prev) => renameAttachmentReferences(prev, (reference) =>
-        reference.kind === 'audio' && groupPortableIds.has(reference.id) ? trimmed : undefined));
+      setContent((prev) => rewriteAttachmentReferences(prev, (reference) => {
+        const resolved = resolveAttachment(reference, attachmentCatalog);
+        return resolved?.kind === 'audio' && resolved.groupId === renameTargetGroupId
+          ? encodeAttachmentReference({ kind: 'audio', id: resolved.id, name: trimmed })
+          : undefined;
+      }));
     } else {
       const renamedFile = files.find((file) => file.uri === renameTargetFileUri);
       setFiles((prev) => prev.map((file) => file.uri === renameTargetFileUri ? { ...file, displayName: trimmed } : file));
-      if (renamedFile?.portableId) {
-        const renamedFileId = renamedFile.portableId;
-        setContent((prev) => renameAttachmentReferences(prev, (reference) =>
-          reference.kind === 'file' && reference.id === renamedFileId ? trimmed : undefined));
+      if (renamedFile) {
+        setContent((prev) => rewriteAttachmentReferences(prev, (reference) => {
+          const resolved = resolveAttachment(reference, attachmentCatalog);
+          return resolved?.kind === 'file' && resolved.file.uri === renamedFile.uri
+            ? encodeAttachmentReference({ kind: 'file', id: resolved.id, name: trimmed })
+            : undefined;
+        }));
       }
     }
     setRenameTargetGroupId(null);
@@ -1318,7 +1334,7 @@ export const NoteEditorScreen = () => {
                               ? tag.segmentCount > 1
                                 ? t('editor.audioSegments', { count: tag.segmentCount })
                                 : t('editor.attachmentKindAudio')
-                              : tag.file.mimeType.startsWith('image/')
+                              : isImageMimeType(tag.file.mimeType)
                                 ? t('editor.attachmentKindImage')
                                 : isPdfMimeType(tag.file.mimeType)
                                   ? t('editor.attachmentKindPdf')

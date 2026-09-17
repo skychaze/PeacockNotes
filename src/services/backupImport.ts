@@ -14,7 +14,7 @@ import {
   type ImportPayload,
 } from '../backup/importPayload';
 import { isWithinFullReplacementUndoWindow } from '../backup/undoPolicy';
-import { getDb, initDb, withDatabaseSuspended } from '../database/schema';
+import { getDb, initDb, refreshSearchIndex, withDatabaseSuspended } from '../database/schema';
 import {
   backupOperationCoordinator as coordinator,
   backupOperationStore as store,
@@ -206,12 +206,16 @@ const importNotes = async (
     Object.assign(error, { code: operation.errorCode ?? 'IMPORT_FAILED' });
     throw error;
   }
-  if (importHandler.result) return importHandler.result;
-  const recoveredResult = payload.mode === 'undo'
+  const result = importHandler.result ?? (payload.mode === 'undo'
     ? await hasFullReplacementUndoReceipt(payload.snapshotId).then((committed) =>
       committed ? { alreadyUndone: true } satisfies FullReplacementUndoResult : null)
-    : await getArchiveImportReceiptResult(await liveDatabaseUri(), importOperationKey(operation, payload));
-  if (recoveredResult) return recoveredResult;
+    : await getArchiveImportReceiptResult(await liveDatabaseUri(), importOperationKey(operation, payload)));
+  if (result) {
+    // The native importer copies note text verbatim into searchContent, so the
+    // index is rebuilt here to keep attachment reference tokens out of search.
+    await refreshSearchIndex();
+    return result;
+  }
   const error = new Error('IMPORT_RESULT_UNAVAILABLE');
   Object.assign(error, { code: 'IMPORT_RESULT_UNAVAILABLE' });
   throw error;
