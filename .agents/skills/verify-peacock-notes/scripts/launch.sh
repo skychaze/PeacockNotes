@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Install (if needed) and cold-launch Peacock Notes on the emulator.
 # Usage: SERIAL=emulator-5554 ./scripts/launch.sh [path-to.apk]
-# Default APK: newest releases/v*/peacocknotes-*.apk, fallback android/.../app-release.apk
+# Default APK: highest versionCode under releases/v*/peacocknotes-*.apk,
+# fallback android/.../app-release.apk. A newer build already on the emulator
+# is kept: Metro serves the JS under test regardless of the installed APK.
 set -euo pipefail
 
 SERIAL="${SERIAL:-emulator-5554}"
@@ -9,7 +11,8 @@ PKG="com.roy.peacocknotes"
 APK="${1:-}"
 
 if [ -z "$APK" ]; then
-  APK="$(ls -t releases/v*/peacocknotes-*.apk 2>/dev/null | head -n 1 || true)"
+  # Checkout mtimes are identical, so rank by the trailing versionCode.
+  APK="$(ls releases/v*/peacocknotes-*.apk 2>/dev/null | sort -t- -k3 -V | tail -n 1 || true)"
   if [ -z "$APK" ]; then
     APK="android/app/build/outputs/apk/release/app-release.apk"
   fi
@@ -27,6 +30,8 @@ if grep -q "^Success" /tmp/verify-launch-install.log; then
   echo "LAUNCH: installed $APK"
 elif grep -q "INSTALL_FAILED_UPDATE_INCOMPATIBLE" /tmp/verify-launch-install.log; then
   echo "LAUNCH WARN: emulator has $PKG with a different signing key; keeping installed build (no data wipe). doctor.sh reports its version."
+elif grep -q "INSTALL_FAILED_VERSION_DOWNGRADE" /tmp/verify-launch-install.log; then
+  echo "LAUNCH WARN: emulator has a newer $PKG build; keeping installed build (no data wipe). doctor.sh reports its version."
 else
   echo "LAUNCH FAIL: install failed, see /tmp/verify-launch-install.log"
   cat /tmp/verify-launch-install.log

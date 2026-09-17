@@ -18,22 +18,28 @@ Prerequisites: Android SDK with `adb` on PATH, emulator `emulator-5554`
 booted (`adb devices` shows it). Never drive the physical vivo device; it is
 the user's phone. All helper invocations run from the repo root.
 
-The emulator build is an Expo **dev build**: it shows a white screen until
-Metro serves the JS bundle, and it always serves port 8081 (one Metro per
-machine, no parallel verification runs). Start Metro first, then the app:
+The APK under test is a **release build**: `getUseDeveloperSupport()` is
+`BuildConfig.DEBUG`, so JS is bundled at build time and Metro is never
+consulted. An already-installed APK keeps serving its old JS no matter what
+you edit, so a JS change is only testable after a fresh build and install:
 
 ```bash
-.agents/skills/verify-peacock-notes/scripts/metro.sh start
+cd android && ./gradlew assembleRelease archiveReleaseArtifacts && cd ..
 SERIAL=emulator-5554 .agents/skills/verify-peacock-notes/scripts/launch.sh
 ```
 
-`launch.sh` installs the newest `releases/v*/peacocknotes-*.apk` (or takes an
-APK path). If the emulator copy has a different signing key it prints
-`LAUNCH WARN` and keeps the installed build without wiping data; `doctor.sh`
-then reports which version is actually installed. The app is ready when the
-Folders screen renders: after a cold start the first bundle build takes
-40-60s, so `wait text "Folders"` after switching to English (below) before
-touching anything.
+`archiveReleaseArtifacts` drops the APK in `releases/v<version>-<code>/`
+(gitignored) where `launch.sh` picks it by highest version code. Release
+signing needs the gitignored `android/keystore.properties`,
+`android/app/peacocknotes-release-key.jks`, and `android/local.properties`;
+copy them from the main checkout when a worktree lacks them. A first build
+takes about six minutes. `launch.sh` refuses to downgrade an installed build
+and warns instead; `doctor.sh` reports what is installed.
+
+A debug build (`npm run android`) does use Metro on :8081: start it with
+`scripts/metro.sh start` and relaunch the app (`agent-device open <pkg>
+--relaunch`) after JS edits. The emulator's current install is a release
+build, so prefer the build-and-install path above.
 
 Single driver only: if `agent-device open` fails with `DEVICE_IN_USE`, stop
 and report. Do not close another session's lock; a stale lock (no session
@@ -92,7 +98,9 @@ before `fill`/`click` and keep the `~sN` pin it returns. App specifics:
   show `{count} notes`; tapping one opens its notes list.
 - Notes list has a `Search notes` field and a `+` FAB that opens the editor.
 - Editor fields are `Note title` and `Write your note here...`; saving needs a
-  non-empty title (`Missing name` alert otherwise).
+  non-empty title (`Missing name` alert otherwise). Inline attachment tags
+  (`@Audio 1`, `@viewer-test.png`) appear after picking a suggestion; the
+  top-bar `Read note` / `Back to editing` toggle makes them tappable.
 - The feature map in `features/` lists every route with exact strings and
   proof states. Scratch data must use names starting with `VERIFY-` so
   cleanup can find it, and cleanup deletes it (delete folder removes its
