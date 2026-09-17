@@ -9,10 +9,11 @@
   rename, details, `Add` segment, share, delete.
 - Files: `Add File` (images/PDF via document picker), open, share, remove.
 - Overflow menu: `Copy Text`, `Share Text` (also copies to clipboard).
-- Inline attachment tags: typing `@` replaces the bottom toolbar with
+- Inline attachment tags: typing `@` opens a keyboard-aware bottom sheet with
   `Choose an attachment to tag` and one row per attachment (`No attachments
-  in this note yet` when empty); typing filters by name. Picking a row
-  inserts a tag (`@<name>`) into the text. `Read note` renders the body with
+  in this note yet` when empty); the bottom toolbar stays in place. Typing
+  filters by name. Picking a row inserts a tag (`@<name>`) into the text.
+  `Read note` renders the body with
   tags as tappable inline chips (`Back to editing` returns): an audio tag
   plays/stops its group, an image tag opens the full-screen viewer, other
   files use the platform viewer. Renaming an attachment updates its tag
