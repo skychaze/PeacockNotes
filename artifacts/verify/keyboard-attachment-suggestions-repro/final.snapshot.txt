@@ -1,0 +1,22 @@
+Page: com.roy.peacocknotes
+App: com.roy.peacocknotes
+Snapshot: 18 visible nodes (27 total)
+Collapsed 9 Android helper nodes from the agent-facing text snapshot; use --raw or --json for the full hierarchy.
+@e1 [scroll-area] [scrollable]
+@e2 [scroll-area] "Audio Attachments, File Attachments (Images/PDF), Sharing text also copies it to clipboard so you can paste into WhatsApp quickly., 󰇙, IMG_20260913_132642.jpg" [scrollable]
+@e3 [text-field] "Demo 1" [editable]
+@e4 [text-field] "@" [focused] [editable]
+@e7 [group] "IMG_20260913_132642.jpg"
+@e9 [button] "󰇙"
+@e12 [button] "Back"
+@e13 [text] "󰁍"
+@e14 [button] "Folders"
+@e15 [text] "󰚡"
+@e16 [button] "বাংলা"
+@e17 [text] "󰗊"
+@e19 [button] "Read note"
+@e20 [text] "󱓷"
+@e21 [button] "Save"
+@e22 [text] "󰠘"
+@e23 [scroll-area] "󰺰, IMG_20260913_132642.jpg, Image" [scrollable]
+@e24 [button] "IMG_20260913_132642.jpg"

@@ -1,0 +1,26 @@
+Snapshot: 24 visible nodes (30 total)
+Collapsed 6 Android helper nodes from the agent-facing text snapshot; use --raw or --json for the full hierarchy.
+@e1 [scroll-area] [scrollable]
+@e2 [scroll-area] "Audio Attachments, File Attachments (Images/PDF), Sharing text also copies it to clipboard so you can paste into WhatsApp quickly., 󰇙, IMG_20260913_132642.jpg" [scrollable]
+@e3 [text-field] "Demo 1" [editable]
+@e4 [text-field] "Write your note here..." [editable]
+@e7 [group] "IMG_20260913_132642.jpg"
+@e9 [button] "󰇙"
+@e12 [button] "Back"
+@e13 [text] "󰁍"
+@e14 [button] "Folders"
+@e15 [text] "󰚡"
+@e16 [button] "বাংলা"
+@e17 [text] "󰗊"
+@e19 [button] "Read note"
+@e20 [text] "󱓷"
+@e21 [button] "Save"
+@e22 [text] "󰠘"
+@e23 [button] "Import Audio"
+@e24 [text] "󰐕"
+@e25 [button] "Start Recording"
+@e26 [text] "󰍬"
+@e27 [button] "Add File"
+@e28 [text] "󰏢"
+@e29 [button] "Quick Menu"
+@e30 [text] "󰇘"
