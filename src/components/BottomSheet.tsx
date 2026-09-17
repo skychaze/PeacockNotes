@@ -22,6 +22,7 @@ import { GlassSurface } from './GlassSurface';
 import { useAppColors } from '../theme/useAppColors';
 import { useQuality } from '../theme/quality';
 import { ui } from '../theme/ui';
+import { getKeyboardOffset } from '../utils/keyboardLayout';
 
 type BottomSheetProps = PropsWithChildren<{
   visible: boolean;
@@ -46,7 +47,7 @@ export const BottomSheet = ({ visible, onClose, title, children }: BottomSheetPr
       {
         translateY:
           (1 - progress.value) * travel -
-          Math.max(0, keyboard.height.value - insets.bottom),
+          getKeyboardOffset(keyboard.height.value, insets.bottom),
       },
     ],
   }));

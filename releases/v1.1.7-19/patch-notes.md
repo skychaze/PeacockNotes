@@ -24,7 +24,9 @@ Version 1.1.7 adds inline attachment mentions to notes.
 
 ## OTA compatibility
 
-- No OTA update is being published for 1.1.7. Install this binary to move to runtime 1.1.7.
+- OTA update published for runtime 1.1.7: show the target version and Home download progress.
+- OTA update published for runtime 1.1.7: keep attachment suggestions and bottom controls above the keyboard.
+- OTA update published for runtime 1.1.7: show the available update version in green on Home.
 
 ## Validation
 
