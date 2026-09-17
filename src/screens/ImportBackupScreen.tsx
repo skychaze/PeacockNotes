@@ -18,6 +18,7 @@ import type { BackupCollectionArchive, FullReplacementResult, ImportPreview, Imp
 import { getActiveBackupOperation } from '../services/backupBackground';
 import { getBackupDiscoverySnapshot, initializeBackupDiscovery, refreshBackupDiscovery, subscribeBackupDiscovery } from '../services/backupDiscovery';
 import { releaseBackupForegroundService, startBackupForegroundService } from '../services/backupFolder';
+import { attachmentTextForSharing } from '../utils/attachmentReferences';
 import {
   browseArchiveForImport,
   importAllNotesAdditively,
@@ -213,7 +214,7 @@ export const ImportBackupScreen = () => {
                       <AppText variant="bodySmall" color={colors.textSecondary}>{folder.path.join(' / ')}</AppText>
                     </View>
                   </View>
-                  {note.contentPreview ? <AppText variant="bodySmall" color={colors.textSecondary} numberOfLines={2}>{note.contentPreview}</AppText> : null}
+                  {note.contentPreview ? <AppText variant="bodySmall" color={colors.textSecondary} numberOfLines={2}>{attachmentTextForSharing(note.contentPreview)}</AppText> : null}
                   <AppText variant="caption" color={colors.textSecondary}>{t('backup.import.media', { audio: note.audioCount, files: note.fileCount })}</AppText>
                 </PressableScale>
               );

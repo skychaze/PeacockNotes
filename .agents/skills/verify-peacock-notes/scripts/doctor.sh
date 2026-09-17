@@ -27,9 +27,8 @@ if [ "$installed" != "$expected" ]; then
   echo "DOCTOR WARN: installed version ($installed) differs from app.json ($expected); reinstall via scripts/launch.sh"
 fi
 if curl -sf http://localhost:8081/status 2>/dev/null | grep -q "packager-status:running"; then
-  echo "metro=up (:8081 serving)"
+  echo "metro=up (:8081 serving; only a debug build reads it)"
 else
-  echo "DOCTOR FAIL: Metro not serving on :8081 (run ./scripts/metro.sh start)"
-  exit 1
+  echo "metro=down (fine for release APKs; start it only for a debug build)"
 fi
 echo "DOCTOR OK"

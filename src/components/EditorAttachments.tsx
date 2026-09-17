@@ -25,6 +25,7 @@ export type AudioGroup = {
 
 export type AudioAttachmentHandle = {
   stopPlayback: () => Promise<void>;
+  toggleGroupPlayback: (groupId: string) => Promise<void>;
 };
 
 type EditorAttachmentsProps = {
@@ -398,7 +399,19 @@ export const EditorAttachments = forwardRef<AudioAttachmentHandle, EditorAttachm
     }
   }, [isPlaying, playSegmentQueue, playingGroupId, stopCurrentPlayback, t]);
 
-  useImperativeHandle(ref, () => ({ stopPlayback: stopCurrentPlayback }), [stopCurrentPlayback]);
+  const toggleGroupPlayback = useCallback(async (groupId: string) => {
+    const group = audioGroups.find((item) => item.groupId === groupId);
+    if (!group || group.segments.length === 0) {
+      return;
+    }
+    await togglePlayback(groupId, group.segments);
+  }, [audioGroups, togglePlayback]);
+
+  useImperativeHandle(
+    ref,
+    () => ({ stopPlayback: stopCurrentPlayback, toggleGroupPlayback }),
+    [stopCurrentPlayback, toggleGroupPlayback],
+  );
 
   useEffect(() => {
     if (playingGroupId && !audioGroups.some((group) => group.groupId === playingGroupId)) {
