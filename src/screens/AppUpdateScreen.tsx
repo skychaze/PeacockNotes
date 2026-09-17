@@ -52,7 +52,10 @@ const describeUpdate = (update: AppUpdateSnapshot, t: Translate): UpdatePresenta
     case 'downloading':
       return {
         icon: 'download-circle-outline',
-        status: t('update.downloading', { percent: Math.round(update.progress * 100) }),
+        status: t('update.downloading', {
+          version: update.release?.versionName ?? '',
+          percent: Math.round(update.progress * 100),
+        }),
         action: null,
         busy: true,
       };

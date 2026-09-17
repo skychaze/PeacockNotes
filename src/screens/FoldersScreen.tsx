@@ -19,6 +19,7 @@ import Animated, { FadeIn } from 'react-native-reanimated';
 import { ActionSheet } from '../components/ActionSheet';
 import type { ActionSheetRow } from '../components/ActionSheet';
 import { AppText, getFontFamily } from '../components/AppText';
+import { AppUpdateIndicator } from '../components/AppUpdateIndicator';
 import { BottomSheet } from '../components/BottomSheet';
 import { Chip } from '../components/Chip';
 import { EmptyState } from '../components/EmptyState';
@@ -86,9 +87,12 @@ export const FoldersScreen = () => {
   const listBottomPadding = Math.max(insets.bottom + 104, 126);
   const appVersion = Constants.expoConfig?.version;
   const hasUpdate = hasAppUpdate(appUpdate);
+  const availableVersion = hasUpdate ? appUpdate.release?.versionName : null;
+  const showUpdateIndicator = appUpdate.phase === 'downloading' || appUpdate.phase === 'ready';
 
   const closeSheet = useCallback(() => setActiveSheet('none'), []);
   const isSelecting = selectedFolderIds.size > 0;
+  const openAppUpdate = () => navigation.navigate('AppUpdate');
 
   const menuRows: ActionSheetRow[] = useMemo(
     () => [
@@ -405,16 +409,37 @@ export const FoldersScreen = () => {
       </View>
 
       <TopBar leading={appVersion ? (
-        <View style={{ gap: ui.space.xs }}>
-          <AppText variant="caption" color={colors.textSecondary} style={{ opacity: 0.7 }}>
-            v{appVersion}
-          </AppText>
-          {hasUpdate ? (
-            <Animated.View entering={motionEnabled ? FadeIn.duration(160) : undefined}>
-              <AppText variant="caption" color={colors.primary}>
-                {t('update.availableShort')}
-              </AppText>
-            </Animated.View>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: ui.space.sm }}>
+          <View style={{ gap: ui.space.xs }}>
+            <AppText variant="caption" color={colors.textSecondary} style={{ opacity: 0.7 }}>
+              v{appVersion}
+            </AppText>
+            {availableVersion ? (
+              <Animated.View entering={motionEnabled ? FadeIn.duration(160) : undefined}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: ui.space.xs }}>
+                  <View
+                    accessible={false}
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: ui.radius.pill,
+                      backgroundColor: colors.primary,
+                    }}
+                  />
+                  <AppText variant="caption" color={colors.primary}>
+                    v{availableVersion}
+                  </AppText>
+                </View>
+              </Animated.View>
+            ) : null}
+          </View>
+          {showUpdateIndicator ? (
+            <AppUpdateIndicator
+              phase={appUpdate.phase}
+              progress={appUpdate.progress}
+              versionName={appUpdate.release?.versionName ?? null}
+              onPress={openAppUpdate}
+            />
           ) : null}
         </View>
       ) : null}>
