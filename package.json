@@ -8,7 +8,7 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
-    "test": "tsx src/backup/archiveTree.test.ts && tsx src/backup/automaticPolicy.test.ts && tsx src/backup/coordinator.test.ts && tsx src/backup/discoveryCache.test.ts && tsx src/backup/importAttempt.test.ts && tsx src/backup/importPayload.test.ts && tsx src/backup/notificationPermission.test.ts && tsx src/update/release.test.ts && tsx src/utils/editorExit.test.ts && tsx src/utils/attachmentReferences.test.ts",
+    "test": "tsx src/backup/archiveTree.test.ts && tsx src/backup/automaticPolicy.test.ts && tsx src/backup/coordinator.test.ts && tsx src/backup/discoveryCache.test.ts && tsx src/backup/importAttempt.test.ts && tsx src/backup/importPayload.test.ts && tsx src/backup/notificationPermission.test.ts && tsx src/update/release.test.ts && tsx src/utils/editorExit.test.ts && tsx src/utils/attachmentReferences.test.ts && tsx src/utils/keyboardLayout.test.ts",
     "test:android": "cd android && ./gradlew :app:testDebugUnitTest",
     "verify:recovery": "npm run typecheck && npm test && npm run test:android && cd android && ./gradlew :app:compileDebugKotlin"
   },

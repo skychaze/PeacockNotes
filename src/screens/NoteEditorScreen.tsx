@@ -37,6 +37,7 @@ import { PressableScale } from '../components/PressableScale';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { ScreenContainer } from '../components/ScreenContainer';
 import { TOP_BAR_HEIGHT, TopBar } from '../components/TopBar';
+import { useKeyboardAwareBottom } from '../components/useKeyboardAwareBottom';
 import { createNote, deleteUnreferencedMediaFiles, getNoteById, updateNote } from '../database/schema';
 import { useLanguage } from '../i18n/LanguageContext';
 import { ui } from '../theme/ui';
@@ -124,6 +125,7 @@ export const NoteEditorScreen = () => {
   const insets = useSafeAreaInsets();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const { t, language } = useLanguage();
+  const keyboardAwareBottomStyle = useKeyboardAwareBottom(Math.max(insets.bottom, 10), insets.bottom);
 
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
@@ -1263,15 +1265,17 @@ export const NoteEditorScreen = () => {
       </TopBar>
 
       <View
-        style={{
-          position: 'absolute',
-          left: ui.space.lg,
-          right: ui.space.lg,
-          bottom: Math.max(insets.bottom, 10),
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-        }}
+        style={[
+          {
+            position: 'absolute',
+            left: ui.space.lg,
+            right: ui.space.lg,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          },
+          keyboardAwareBottomStyle,
+        ]}
       >
         {recording ? (
           <EditorRecordingBar

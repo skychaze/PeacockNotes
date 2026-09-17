@@ -7,7 +7,9 @@ import Animated, {
   withSpring,
 } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PressableScale } from './PressableScale';
+import { useKeyboardAwareBottom } from './useKeyboardAwareBottom';
 import { useAppColors } from '../theme/useAppColors';
 import { useQuality } from '../theme/quality';
 import { ui } from '../theme/ui';
@@ -21,6 +23,8 @@ type FABProps = {
 export const FAB = ({ onPress, icon, bottom }: FABProps) => {
   const { colors } = useAppColors();
   const { motionEnabled } = useQuality();
+  const insets = useSafeAreaInsets();
+  const keyboardAwareBottomStyle = useKeyboardAwareBottom(bottom, insets.bottom);
   const scale = useSharedValue(motionEnabled ? 0.7 : 1);
 
   useEffect(() => {
@@ -48,6 +52,7 @@ export const FAB = ({ onPress, icon, bottom }: FABProps) => {
           elevation: 6,
         },
         animatedStyle,
+        keyboardAwareBottomStyle,
       ]}
     >
       <PressableScale
