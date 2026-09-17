@@ -20,6 +20,8 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import type { ViewStyle } from 'react-native';
+import { useMentions } from 'react-native-controlled-mentions';
+import type { TriggersConfig } from 'react-native-controlled-mentions';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ActionSheet } from '../components/ActionSheet';
 import type { ActionSheetRow } from '../components/ActionSheet';
@@ -30,6 +32,7 @@ import { EditorRecordingBar } from '../components/EditorRecordingBar';
 import { GlassSurface } from '../components/GlassSurface';
 import { IconButton } from '../components/IconButton';
 import { LanguageToggleButton } from '../components/LanguageToggleButton';
+import { NoteContentView } from '../components/NoteContentView';
 import { PressableScale } from '../components/PressableScale';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { ScreenContainer } from '../components/ScreenContainer';
@@ -46,7 +49,19 @@ import {
   getPreferredShareExtension,
   isShareFriendlyAudioExtension,
 } from '../utils/audioFormat';
-import { getFileExtension, getFileMimeType, isImageFile } from '../utils/fileFormat';
+import {
+  attachmentTagId,
+  attachmentTextForSharing,
+  attachmentTokenPattern,
+  encodeAttachmentReference,
+  filterAttachmentTags,
+  listAttachmentTags,
+  parseAttachmentTagId,
+  parseAttachmentToken,
+  renameAttachmentReferences,
+} from '../utils/attachmentReferences';
+import { getFileExtension, getFileIcon, getFileMimeType, isImageFile, isPdfMimeType } from '../utils/fileFormat';
+import { createDraftPortableId } from '../utils/portableId';
 import { shouldAutoSaveBeforeHome } from '../utils/editorExit';
 
 type Route = RouteProp<RootStackParamList, 'NoteEditor'>;
@@ -128,6 +143,7 @@ export const NoteEditorScreen = () => {
   const [renameTargetFileUri, setRenameTargetFileUri] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [detailsTargetGroupId, setDetailsTargetGroupId] = useState<string | null>(null);
+  const [isReadingContent, setIsReadingContent] = useState(false);
 
   const recordingRef = useRef<Audio.Recording | null>(null);
   const isFinalizingRecordingRef = useRef(false);
@@ -284,6 +300,47 @@ export const NoteEditorScreen = () => {
     }));
   }, [audios]);
 
+  const attachmentCatalog = useMemo(() => ({ audioGroups, files }), [audioGroups, files]);
+  const attachmentTags = useMemo(() => listAttachmentTags(attachmentCatalog), [attachmentCatalog]);
+
+  const attachmentMentions = useMemo<TriggersConfig<'attachment'>>(() => ({
+    attachment: {
+      trigger: '@',
+      pattern: attachmentTokenPattern,
+      allowedSpacesCount: 2,
+      isInsertSpaceAfterMention: true,
+      textStyle: () => ({
+        color: colors.primary,
+        fontFamily: getFontFamily(language, '600'),
+        fontWeight: language === 'bn' ? undefined : '600',
+      }),
+      getPlainString: (data) => `@${data.name}`,
+      getTriggerData: (token) => {
+        const reference = parseAttachmentToken(token);
+        return reference
+          ? { original: token, trigger: '@', name: reference.name, id: attachmentTagId(reference) }
+          : { original: token, trigger: '@', name: token, id: token };
+      },
+      getTriggerValue: (suggestion) => {
+        const identity = parseAttachmentTagId(suggestion.id);
+        return identity
+          ? encodeAttachmentReference({ ...identity, name: suggestion.name })
+          : `@${suggestion.name}`;
+      },
+    },
+  }), [colors.primary, language]);
+
+  const { textInputProps, triggers } = useMentions({
+    value: content,
+    onChange: setContent,
+    triggersConfig: attachmentMentions,
+  });
+  const attachmentKeyword = triggers.attachment.keyword;
+  const suggestedAttachments = useMemo(
+    () => (attachmentKeyword === undefined ? [] : filterAttachmentTags(attachmentTags, attachmentKeyword)),
+    [attachmentKeyword, attachmentTags],
+  );
+
   const hasUnsavedChanges = useMemo(() => {
     const initial = initialDraftRef.current;
     if (title !== initial.title || content !== initial.content) {
@@ -381,7 +438,7 @@ export const NoteEditorScreen = () => {
     if (!audiosForSave) return false;
 
     const trimmedTitle = title.trim();
-    const trimmedContent = content.trim();
+    const trimmedContent = attachmentTextForSharing(content).trim();
 
     if (!trimmedTitle && !trimmedContent && audiosForSave.length === 0 && files.length === 0) {
       return true;
@@ -470,6 +527,7 @@ export const NoteEditorScreen = () => {
       return [
         ...prev,
         {
+          portableId: createDraftPortableId(),
           uri,
           displayName: preferredName?.trim() || createDefaultAudioName(order),
           groupId,
@@ -498,6 +556,7 @@ export const NoteEditorScreen = () => {
       setFiles((prev) => [
         ...prev,
         {
+          portableId: createDraftPortableId(),
           uri: targetPath,
           displayName: asset.name?.trim() || `File ${prev.length + 1}`,
           mimeType,
@@ -754,6 +813,7 @@ export const NoteEditorScreen = () => {
         const nextAudios: NoteAudioDraft[] = [
           ...audios,
           {
+            portableId: createDraftPortableId(),
             uri: targetPath,
             displayName,
             groupId: activeAppendGroupId,
@@ -768,6 +828,7 @@ export const NoteEditorScreen = () => {
       const nextAudios: NoteAudioDraft[] = [
         ...audios,
         {
+          portableId: createDraftPortableId(),
           uri: targetPath,
           displayName: createDefaultAudioName(uniqueGroupCount + 1),
           groupId: createAudioGroupId(),
@@ -843,9 +904,22 @@ export const NoteEditorScreen = () => {
     }
 
     if (renameTargetGroupId) {
+      const groupPortableIds = new Set(
+        audios
+          .filter((audio) => audio.groupId === renameTargetGroupId && audio.portableId)
+          .map((audio) => audio.portableId as string)
+      );
       setAudios((prev) => prev.map((audio) => audio.groupId === renameTargetGroupId ? { ...audio, displayName: trimmed } : audio));
+      setContent((prev) => renameAttachmentReferences(prev, (reference) =>
+        reference.kind === 'audio' && groupPortableIds.has(reference.id) ? trimmed : undefined));
     } else {
+      const renamedFile = files.find((file) => file.uri === renameTargetFileUri);
       setFiles((prev) => prev.map((file) => file.uri === renameTargetFileUri ? { ...file, displayName: trimmed } : file));
+      if (renamedFile?.portableId) {
+        const renamedFileId = renamedFile.portableId;
+        setContent((prev) => renameAttachmentReferences(prev, (reference) =>
+          reference.kind === 'file' && reference.id === renamedFileId ? trimmed : undefined));
+      }
     }
     setRenameTargetGroupId(null);
     setRenameTargetFileUri(null);
@@ -855,7 +929,7 @@ export const NoteEditorScreen = () => {
 
   const copyTextContent = async () => {
     try {
-      await Clipboard.setStringAsync(content);
+      await Clipboard.setStringAsync(attachmentTextForSharing(content));
       Alert.alert(t('editor.copySuccessTitle'), t('editor.copySuccessBody'));
     } catch (error) {
       console.warn('Failed to copy text:', error);
@@ -865,7 +939,7 @@ export const NoteEditorScreen = () => {
 
   const shareText = async () => {
     try {
-      const textForSharing = content.trim() || title.trim();
+      const textForSharing = attachmentTextForSharing(content).trim() || title.trim();
       if (!textForSharing) {
         Alert.alert(t('editor.noTextTitle'), t('editor.noTextBody'));
         return;
@@ -1087,25 +1161,34 @@ export const NoteEditorScreen = () => {
                 paddingVertical: ui.space.sm,
               }}
             />
-            <TextInput
-              value={content}
-              onChangeText={setContent}
-              placeholder={t('editor.contentPlaceholder')}
-              placeholderTextColor={colors.textSecondary}
-              multiline
-              scrollEnabled={false}
-              textAlignVertical="top"
-              onContentSizeChange={(event) => onContentSizeChange(event.nativeEvent.contentSize.height + 24)}
-              style={{
-                minHeight: 230,
-                height: contentInputHeight,
-                color: colors.text,
-                fontFamily: getFontFamily(language, '400'),
-                fontSize: ui.type.headline.size,
-                lineHeight: 26,
-                paddingTop: ui.space.sm,
-              }}
-            />
+            {isReadingContent ? (
+              <NoteContentView
+                content={content}
+                audioGroups={audioGroups}
+                files={files}
+                onPressAudio={(groupId) => void editorAttachmentsRef.current?.toggleGroupPlayback(groupId)}
+                onPressFile={(file) => void openFile(file)}
+              />
+            ) : (
+              <TextInput
+                {...textInputProps}
+                placeholder={t('editor.contentPlaceholder')}
+                placeholderTextColor={colors.textSecondary}
+                multiline
+                scrollEnabled={false}
+                textAlignVertical="top"
+                onContentSizeChange={(event) => onContentSizeChange(event.nativeEvent.contentSize.height + 24)}
+                style={{
+                  minHeight: 230,
+                  height: contentInputHeight,
+                  color: colors.text,
+                  fontFamily: getFontFamily(language, '400'),
+                  fontSize: ui.type.headline.size,
+                  lineHeight: 26,
+                  paddingTop: ui.space.sm,
+                }}
+              />
+            )}
           </>
         }
         footer={
@@ -1143,6 +1226,11 @@ export const NoteEditorScreen = () => {
       >
         <LanguageToggleButton />
         <IconButton
+          icon={isReadingContent ? 'pencil-outline' : 'book-open-variant'}
+          accessibilityLabel={t(isReadingContent ? 'editor.editMode' : 'editor.readMode')}
+          onPress={() => setIsReadingContent((prev) => !prev)}
+        />
+        <IconButton
           icon="content-save-outline"
           disabled={saveDisabled}
           accessibilityLabel={t('editor.save')}
@@ -1169,6 +1257,81 @@ export const NoteEditorScreen = () => {
             onTogglePause={() => void toggleRecordingPause()}
             onStop={stopRecordingHandler}
           />
+        ) : attachmentKeyword !== undefined && !isReadingContent ? (
+          <View style={[barShadow, { flex: 1 }]}>
+            <GlassSurface
+              radius={ui.radius.xl}
+              contentStyle={{
+                paddingHorizontal: ui.space.md,
+                paddingVertical: ui.space.md,
+                gap: ui.space.sm,
+              }}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: ui.space.sm }}>
+                <MaterialCommunityIcons name="at" size={18} color={colors.textSecondary} />
+                <AppText variant="caption" color={colors.textSecondary} style={{ flex: 1 }}>
+                  {t(
+                    suggestedAttachments.length > 0
+                      ? 'editor.attachmentSuggestions'
+                      : 'editor.attachmentSuggestionsEmpty'
+                  )}
+                </AppText>
+              </View>
+              {suggestedAttachments.length > 0 ? (
+                <ScrollView
+                  style={{ maxHeight: 176 }}
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator={false}
+                >
+                  <View style={{ gap: ui.space.sm }}>
+                    {suggestedAttachments.map((tag) => (
+                      <PressableScale
+                        key={tag.tagId}
+                        onPress={() => triggers.attachment.onSelect({ id: tag.tagId, name: tag.displayName })}
+                        accessibilityRole="button"
+                        accessibilityLabel={tag.displayName}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: ui.space.md,
+                          backgroundColor: colors.surfaceVariant,
+                          borderRadius: ui.radius.md,
+                          paddingHorizontal: ui.space.md,
+                          paddingVertical: ui.space.sm,
+                        }}
+                      >
+                        <MaterialCommunityIcons
+                          name={
+                            tag.kind === 'audio'
+                              ? 'waveform'
+                              : (getFileIcon(tag.file.mimeType) as keyof typeof MaterialCommunityIcons.glyphMap)
+                          }
+                          size={20}
+                          color={colors.primary}
+                        />
+                        <View style={{ flex: 1 }}>
+                          <AppText variant="headline" numberOfLines={1}>
+                            {tag.displayName}
+                          </AppText>
+                          <AppText variant="caption" color={colors.textSecondary}>
+                            {tag.kind === 'audio'
+                              ? tag.segmentCount > 1
+                                ? t('editor.audioSegments', { count: tag.segmentCount })
+                                : t('editor.attachmentKindAudio')
+                              : tag.file.mimeType.startsWith('image/')
+                                ? t('editor.attachmentKindImage')
+                                : isPdfMimeType(tag.file.mimeType)
+                                  ? t('editor.attachmentKindPdf')
+                                  : t('editor.attachmentKindFile')}
+                          </AppText>
+                        </View>
+                      </PressableScale>
+                    ))}
+                  </View>
+                </ScrollView>
+              ) : null}
+            </GlassSurface>
+          </View>
         ) : (
           <>
             <View style={barShadow}>
