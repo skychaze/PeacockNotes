@@ -29,6 +29,7 @@ class MainApplication : Application(), ReactApplication {
               add(ArchivePackage())
               add(AutomaticBackupPackage())
               add(AppUpdaterPackage())
+              add(AttachmentSharePackage())
             }
 
           override fun getJSMainModuleName(): String = ".expo/.virtual-metro-entry"
