@@ -37,6 +37,10 @@ type EditorAttachmentsProps = {
   onOpenGroupActions: (groupId: string) => void;
   onOpenFile: (file: NoteFileDraft) => void;
   onOpenFileActions: (file: NoteFileDraft) => void;
+  selectionActive: boolean;
+  selectedAttachmentKeys: ReadonlySet<string>;
+  onToggleAudioSelection: (groupId: string) => void;
+  onToggleFileSelection: (file: NoteFileDraft) => void;
   header: ReactElement;
   footer: ReactElement;
   contentContainerStyle: StyleProp<ViewStyle>;
@@ -61,6 +65,9 @@ type AudioGroupRowProps = {
   index: number;
   onTogglePlayback: (groupId: string, segments: NoteAudioDraft[]) => void | Promise<void>;
   onOpenActions: (groupId: string) => void;
+  selectionActive: boolean;
+  selected: boolean;
+  onToggleSelection: (groupId: string) => void;
 };
 
 type FileRowProps = {
@@ -68,6 +75,9 @@ type FileRowProps = {
   index: number;
   onOpen: (file: NoteFileDraft) => void;
   onOpenActions: (file: NoteFileDraft) => void;
+  selectionActive: boolean;
+  selected: boolean;
+  onToggleSelection: (file: NoteFileDraft) => void;
 };
 
 type AudioRow = {
@@ -96,6 +106,9 @@ const formatDuration = (seconds: number) => {
 };
 
 const formatDurationMillis = (millis: number) => formatDuration(Math.floor(Math.max(0, millis) / 1000));
+
+export const audioSelectionKey = (groupId: string) => `audio:${groupId}`;
+export const fileSelectionKey = (file: NoteFileDraft) => `file:${file.portableId ?? file.uri}`;
 
 const useRecordingSeconds = (recordingActive: boolean, recordingPaused: boolean) => {
   const [seconds, setSeconds] = useState(0);
@@ -134,11 +147,15 @@ const AudioGroupRow = ({
   index,
   onTogglePlayback,
   onOpenActions,
+  selectionActive,
+  selected,
+  onToggleSelection,
 }: AudioGroupRowProps) => {
   const { colors } = useAppColors();
   const { t } = useLanguage();
   const entrance = useEntrance();
   const isAppendRecording = recordingActive && recordingGroupId === group.groupId;
+  const didLongPressRef = useRef(false);
 
   return (
     <Animated.View
@@ -152,9 +169,26 @@ const AudioGroupRow = ({
     >
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: ui.space.md }}>
         <PressableScale
-          onPress={() => onTogglePlayback(group.groupId, group.segments)}
+          onPress={() => {
+            if (didLongPressRef.current) {
+              didLongPressRef.current = false;
+              return;
+            }
+            if (selectionActive) {
+              onToggleSelection(group.groupId);
+              return;
+            }
+            void onTogglePlayback(group.groupId, group.segments);
+          }}
+          onLongPress={() => {
+            didLongPressRef.current = true;
+            onToggleSelection(group.groupId);
+          }}
           accessibilityRole="button"
-          accessibilityLabel={isCurrent ? t('editor.audioStop') : t('editor.audioPlay')}
+          accessibilityLabel={selectionActive
+            ? t('editor.selectAttachments')
+            : isCurrent ? t('editor.audioStop') : t('editor.audioPlay')}
+          accessibilityState={{ selected }}
           style={{
             width: 40,
             height: 40,
@@ -165,13 +199,32 @@ const AudioGroupRow = ({
           }}
         >
           <MaterialCommunityIcons
-            name={isCurrent ? 'stop' : 'play'}
+            name={selectionActive ? (selected ? 'checkbox-marked' : 'checkbox-blank-outline') : isCurrent ? 'stop' : 'play'}
             size={22}
             color={colors.onPrimary}
           />
         </PressableScale>
 
-        <View style={{ flex: 1 }}>
+        <PressableScale
+          onPress={() => {
+            if (didLongPressRef.current) {
+              didLongPressRef.current = false;
+              return;
+            }
+            if (selectionActive) {
+              onToggleSelection(group.groupId);
+            }
+          }}
+          onLongPress={() => {
+            didLongPressRef.current = true;
+            onToggleSelection(group.groupId);
+          }}
+          accessibilityRole="button"
+          accessibilityLabel={group.displayName}
+          accessibilityHint={t('editor.selectAttachmentsHint')}
+          accessibilityState={{ selected }}
+          style={{ flex: 1 }}
+        >
           <AppText variant="headline" numberOfLines={1}>
             {group.displayName}
           </AppText>
@@ -183,15 +236,17 @@ const AudioGroupRow = ({
                 })
               : t('editor.audioSegments', { count: group.segments.length })}
           </AppText>
-        </View>
+        </PressableScale>
 
         {isCurrent ? <AnimatedBars playing color={colors.primary} /> : null}
 
-        <IconButton
-          icon="dots-vertical"
-          onPress={() => onOpenActions(group.groupId)}
-          accessibilityLabel={t('editor.audioDetails')}
-        />
+        {!selectionActive ? (
+          <IconButton
+            icon="dots-vertical"
+            onPress={() => onOpenActions(group.groupId)}
+            accessibilityLabel={t('editor.audioDetails')}
+          />
+        ) : null}
       </View>
 
       {isCurrent ? (
@@ -231,11 +286,21 @@ const AudioGroupRow = ({
 
 const MemoAudioGroupRow = memo(AudioGroupRow);
 
-const FileRow = ({ file, index, onOpen, onOpenActions }: FileRowProps) => {
+const FileRow = ({
+  file,
+  index,
+  onOpen,
+  onOpenActions,
+  selectionActive,
+  selected,
+  onToggleSelection,
+}: FileRowProps) => {
   const { colors } = useAppColors();
+  const { t } = useLanguage();
   const entrance = useEntrance();
   const iconName = getFileIcon(file.mimeType) as keyof typeof MaterialCommunityIcons.glyphMap;
   const isImage = isImageFile(file.mimeType, file.displayName, file.uri);
+  const didLongPressRef = useRef(false);
 
   return (
     <Animated.View
@@ -250,7 +315,25 @@ const FileRow = ({ file, index, onOpen, onOpenActions }: FileRowProps) => {
       }}
     >
       <PressableScale
-        onPress={() => onOpen(file)}
+        onPress={() => {
+          if (didLongPressRef.current) {
+            didLongPressRef.current = false;
+            return;
+          }
+          if (selectionActive) {
+            onToggleSelection(file);
+            return;
+          }
+          onOpen(file);
+        }}
+        onLongPress={() => {
+          didLongPressRef.current = true;
+          onToggleSelection(file);
+        }}
+        accessibilityRole="button"
+        accessibilityLabel={file.displayName}
+        accessibilityHint={t('editor.selectAttachmentsHint')}
+        accessibilityState={{ selected }}
         style={{
           flex: 1,
           flexDirection: 'row',
@@ -272,7 +355,17 @@ const FileRow = ({ file, index, onOpen, onOpenActions }: FileRowProps) => {
           {file.displayName}
         </AppText>
       </PressableScale>
-      <IconButton icon="dots-vertical" size={20} onPress={() => onOpenActions(file)} />
+      {selectionActive ? (
+        <IconButton
+          icon={selected ? 'checkbox-marked' : 'checkbox-blank-outline'}
+          size={24}
+          onPress={() => onToggleSelection(file)}
+          accessibilityLabel={t('editor.selectAttachments')}
+          accessibilityState={{ selected }}
+        />
+      ) : (
+        <IconButton icon="dots-vertical" size={20} onPress={() => onOpenActions(file)} />
+      )}
     </Animated.View>
   );
 };
@@ -288,11 +381,16 @@ export const EditorAttachments = forwardRef<AudioAttachmentHandle, EditorAttachm
   onOpenGroupActions,
   onOpenFile,
   onOpenFileActions,
+  selectionActive,
+  selectedAttachmentKeys,
+  onToggleAudioSelection,
+  onToggleFileSelection,
   header,
   footer,
   contentContainerStyle,
 }, ref) {
   const { t } = useLanguage();
+  const { colors } = useAppColors();
   const [isPlaying, setIsPlaying] = useState(false);
   const [playingGroupId, setPlayingGroupId] = useState<string | null>(null);
   const [playbackPositionMillis, setPlaybackPositionMillis] = useState(0);
@@ -431,18 +529,21 @@ export const EditorAttachments = forwardRef<AudioAttachmentHandle, EditorAttachm
   }, [stopCurrentPlayback]);
 
   const sections = useMemo<AttachmentSection[]>(
-    () => [
-      {
-        key: 'audio',
-        title: t('editor.audioSection'),
-        data: audioGroups.map<AudioRow>((group) => ({ kind: 'audio', group })),
-      },
-      {
-        key: 'files',
-        title: t('editor.fileSection'),
-        data: files.map<FileRow>((file) => ({ kind: 'file', file })),
-      },
-    ],
+    () => {
+      const availableSections: AttachmentSection[] = [
+        {
+          key: 'audio',
+          title: t('editor.audioSection'),
+          data: audioGroups.map<AudioRow>((group) => ({ kind: 'audio', group })),
+        },
+        {
+          key: 'files',
+          title: t('editor.fileSection'),
+          data: files.map<FileRow>((file) => ({ kind: 'file', file })),
+        },
+      ];
+      return availableSections.filter((section) => section.data.length > 0);
+    },
     [audioGroups, files, t]
   );
 
@@ -467,6 +568,9 @@ export const EditorAttachments = forwardRef<AudioAttachmentHandle, EditorAttachm
           index={index}
           onTogglePlayback={togglePlayback}
           onOpenActions={onOpenGroupActions}
+          selectionActive={selectionActive}
+          selected={selectedAttachmentKeys.has(audioSelectionKey(item.group.groupId))}
+          onToggleSelection={onToggleAudioSelection}
         />
       );
     }
@@ -477,6 +581,9 @@ export const EditorAttachments = forwardRef<AudioAttachmentHandle, EditorAttachm
         index={index}
         onOpen={onOpenFile}
         onOpenActions={onOpenFileActions}
+        selectionActive={selectionActive}
+        selected={selectedAttachmentKeys.has(fileSelectionKey(item.file))}
+        onToggleSelection={onToggleFileSelection}
       />
     );
   }, [
@@ -484,6 +591,8 @@ export const EditorAttachments = forwardRef<AudioAttachmentHandle, EditorAttachm
     onOpenFile,
     onOpenFileActions,
     onOpenGroupActions,
+    onToggleAudioSelection,
+    onToggleFileSelection,
     playbackDurationMillis,
     playbackPositionMillis,
     playingGroupId,
@@ -491,14 +600,21 @@ export const EditorAttachments = forwardRef<AudioAttachmentHandle, EditorAttachm
     recordingGroupId,
     recordingPaused,
     recordingSeconds,
+    selectedAttachmentKeys,
+    selectionActive,
     togglePlayback,
   ]);
 
   const renderSectionHeader = useCallback(({ section }: { section: AttachmentSection }) => (
-    <AppText variant="headline" style={{ marginTop: ui.space.lg, marginBottom: ui.space.sm }}>
-      {section.title}
-    </AppText>
-  ), []);
+    <View style={{ marginTop: ui.space.lg, marginBottom: ui.space.sm }}>
+      <AppText variant="headline">{section.title}</AppText>
+      {!selectionActive ? (
+        <AppText variant="caption" color={colors.textSecondary}>
+          {t('editor.selectAttachmentsHint')}
+        </AppText>
+      ) : null}
+    </View>
+  ), [colors.textSecondary, selectionActive, t]);
 
   return (
     <SectionList<AttachmentRow, AttachmentSection>

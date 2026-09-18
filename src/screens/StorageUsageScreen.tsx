@@ -10,6 +10,7 @@ import { AppText } from '../components/AppText';
 import { IconButton } from '../components/IconButton';
 import { LanguageToggleButton } from '../components/LanguageToggleButton';
 import { ProgressFill } from '../components/ProgressFill';
+import { PressableScale } from '../components/PressableScale';
 import { ScreenContainer } from '../components/ScreenContainer';
 import { TOP_BAR_HEIGHT, TopBar } from '../components/TopBar';
 import { getStorageSnapshot, type StorageSnapshot } from '../database/schema';
@@ -201,6 +202,7 @@ export const StorageUsageScreen = () => {
   const insets = useSafeAreaInsets();
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isClearingCache, setIsClearingCache] = useState(false);
   const [storage, setStorage] = useState<StorageViewModel>({
     noteCount: 0,
     notesBytes: 0,
@@ -231,6 +233,39 @@ export const StorageUsageScreen = () => {
       void refreshStorage();
     }, [refreshStorage])
   );
+
+  const clearCache = useCallback(async () => {
+    const cacheDirectory = FileSystem.cacheDirectory;
+    if (!cacheDirectory || isClearingCache) {
+      return;
+    }
+
+    try {
+      setIsClearingCache(true);
+      const entries = await FileSystem.readDirectoryAsync(cacheDirectory);
+      await Promise.all(
+        entries.map((entry) =>
+          FileSystem.deleteAsync(
+            cacheDirectory.endsWith('/') ? `${cacheDirectory}${entry}` : `${cacheDirectory}/${entry}`,
+            { idempotent: true },
+          )
+        )
+      );
+      await refreshStorage();
+    } catch (error) {
+      console.warn('Failed to clear cache:', error);
+      Alert.alert(t('common.error'), t('storage.clearCacheError'));
+    } finally {
+      setIsClearingCache(false);
+    }
+  }, [isClearingCache, refreshStorage, t]);
+
+  const confirmClearCache = () => {
+    Alert.alert(t('storage.clearCacheTitle'), t('storage.clearCacheBody'), [
+      { text: t('common.cancel'), style: 'cancel' },
+      { text: t('storage.clearCache'), style: 'destructive', onPress: () => void clearCache() },
+    ]);
+  };
 
   const rows = useMemo(
     () =>
@@ -331,6 +366,29 @@ export const StorageUsageScreen = () => {
             );
           })}
         </View>
+
+        <PressableScale
+          onPress={confirmClearCache}
+          disabled={isClearingCache}
+          accessibilityRole="button"
+          accessibilityLabel={t('storage.clearCache')}
+          style={{
+            marginTop: ui.space.lg,
+            minHeight: 52,
+            borderRadius: ui.radius.lg,
+            backgroundColor: colors.surface,
+            paddingHorizontal: ui.space.lg,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: ui.space.md,
+            opacity: isClearingCache ? 0.5 : 1,
+          }}
+        >
+          <MaterialCommunityIcons name="delete-sweep-outline" size={22} color={colors.error} />
+          <AppText variant="headline" color={colors.error}>
+            {t(isClearingCache ? 'storage.clearingCache' : 'storage.clearCache')}
+          </AppText>
+        </PressableScale>
       </ScrollView>
 
       <TopBar onBack={() => navigation.goBack()}>

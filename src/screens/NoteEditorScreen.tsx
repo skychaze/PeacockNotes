@@ -13,6 +13,7 @@ import {
   Alert,
   Image,
   Modal,
+  NativeModules,
   Platform,
   ScrollView,
   TextInput,
@@ -28,7 +29,13 @@ import { ActionSheet } from '../components/ActionSheet';
 import type { ActionSheetRow } from '../components/ActionSheet';
 import { AppText, getFontFamily } from '../components/AppText';
 import { BottomSheet } from '../components/BottomSheet';
-import { EditorAttachments, type AudioAttachmentHandle, type AudioGroup } from '../components/EditorAttachments';
+import {
+  audioSelectionKey,
+  EditorAttachments,
+  fileSelectionKey,
+  type AudioAttachmentHandle,
+  type AudioGroup,
+} from '../components/EditorAttachments';
 import { EditorRecordingBar } from '../components/EditorRecordingBar';
 import { GlassSurface } from '../components/GlassSurface';
 import { IconButton } from '../components/IconButton';
@@ -77,6 +84,7 @@ type EditorSheet =
   | 'fileActions'
   | 'rename'
   | 'sharePicker'
+  | 'attachmentPicker'
   | 'details';
 
 const ensureAudioFolder = async () => {
@@ -110,6 +118,50 @@ const ensureFileFolder = async () => {
 const createAudioGroupId = () => `audio_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 const FLAG_GRANT_READ_URI_PERMISSION = 1;
+
+type ShareableAttachment = {
+  uri: string;
+  mimeType: string;
+};
+
+type AttachmentShareNativeModule = {
+  shareMultiple: (
+    uris: readonly string[],
+    mimeTypes: readonly string[],
+    mimeType: string,
+    dialogTitle: string,
+  ) => Promise<void>;
+};
+
+const attachmentShareNativeModule = NativeModules.AttachmentShare as AttachmentShareNativeModule | undefined;
+
+const prepareAudioForSharing = async (audio: NoteAudioDraft): Promise<ShareableAttachment> => {
+  const extension = getBestAudioExtension(null, audio.displayName, audio.uri);
+  const preferredExtension = getPreferredShareExtension(extension);
+  let uri = audio.uri;
+
+  if (!isShareFriendlyAudioExtension(extension) || extension !== preferredExtension) {
+    const cacheDirectory = FileSystem.cacheDirectory;
+    if (!cacheDirectory) {
+      throw new Error('Cache directory is unavailable');
+    }
+    uri = `${cacheDirectory}audio-share-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}.${preferredExtension}`;
+    await FileSystem.copyAsync({ from: audio.uri, to: uri });
+  }
+
+  return { uri, mimeType: getMimeTypeForAudioExtension(preferredExtension) };
+};
+
+const commonShareMimeType = (mimeTypes: readonly string[]): string => {
+  const uniqueTypes = new Set(mimeTypes);
+  if (uniqueTypes.size === 1) {
+    return mimeTypes[0] ?? '*/*';
+  }
+  const topLevelTypes = new Set(mimeTypes.map((mimeType) => mimeType.split('/')[0]));
+  return topLevelTypes.size === 1 ? `${[...topLevelTypes][0]}/*` : '*/*';
+};
 
 const barShadow: ViewStyle = {
   shadowColor: '#000000',
@@ -149,6 +201,7 @@ export const NoteEditorScreen = () => {
   const [detailsTargetGroupId, setDetailsTargetGroupId] = useState<string | null>(null);
   const [isReadingContent, setIsReadingContent] = useState(false);
   const [attachmentSuggestionsDismissed, setAttachmentSuggestionsDismissed] = useState(false);
+  const [selectedAttachmentKeys, setSelectedAttachmentKeys] = useState<Set<string>>(() => new Set());
 
   const recordingRef = useRef<Audio.Recording | null>(null);
   const isFinalizingRecordingRef = useRef(false);
@@ -164,6 +217,21 @@ export const NoteEditorScreen = () => {
   const createDefaultAudioName = (order: number) => t('editor.audioDefaultName', { index: order });
 
   const closeSheet = () => setActiveSheet('none');
+
+  const toggleSelectedAttachment = useCallback((key: string) => {
+    if (recordingRef.current) {
+      return;
+    }
+    setSelectedAttachmentKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1004,30 +1072,139 @@ export const NoteEditorScreen = () => {
         return;
       }
 
-      const extension = getBestAudioExtension(null, audio.displayName, audio.uri);
-      const preferredExtension = getPreferredShareExtension(extension);
+      const shareable = await prepareAudioForSharing(audio);
 
-      let shareUri = audio.uri;
-      if (!isShareFriendlyAudioExtension(extension) || extension !== preferredExtension) {
-        const cacheDirectory = FileSystem.cacheDirectory;
-        if (!cacheDirectory) {
-          throw new Error('Cache directory is unavailable');
-        }
-        const normalizedPath = `${cacheDirectory}audio-share-${Date.now()}-${Math.random()
-          .toString(36)
-          .slice(2, 8)}.${preferredExtension}`;
-        await FileSystem.copyAsync({ from: audio.uri, to: normalizedPath });
-        shareUri = normalizedPath;
-      }
-
-      await Sharing.shareAsync(shareUri, {
+      await Sharing.shareAsync(shareable.uri, {
         dialogTitle: audio.displayName,
-        mimeType: getMimeTypeForAudioExtension(preferredExtension),
+        mimeType: shareable.mimeType,
       });
       closeSheet();
     } catch (error) {
       console.warn('Failed to share audio:', error);
       Alert.alert(t('common.error'), t('editor.shareAudioError'));
+    }
+  };
+
+  const selectedAudioGroupIds = useMemo(
+    () => new Set(
+      audioGroups
+        .filter((group) => selectedAttachmentKeys.has(audioSelectionKey(group.groupId)))
+        .map((group) => group.groupId)
+    ),
+    [audioGroups, selectedAttachmentKeys]
+  );
+
+  const selectedFiles = useMemo(
+    () => files.filter((file) => selectedAttachmentKeys.has(fileSelectionKey(file))),
+    [files, selectedAttachmentKeys]
+  );
+
+  const deleteSelectedAttachments = () => {
+    const selectedCount = selectedAudioGroupIds.size + selectedFiles.length;
+    if (selectedCount === 0) {
+      return;
+    }
+
+    Alert.alert(
+      t('editor.deleteSelectedTitle'),
+      t('editor.deleteSelectedBody', { count: selectedCount }),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('common.delete'),
+          style: 'destructive',
+          onPress: () => {
+            const selectedFileKeys = new Set(selectedFiles.map(fileSelectionKey));
+            const selectedAudioKeys = new Set(
+              audioGroups
+                .filter((group) => selectedAudioGroupIds.has(group.groupId))
+                .flatMap((group) => group.segments)
+                .map((audio) => audio.portableId ?? audio.uri)
+            );
+            const persistedUris = new Set([
+              ...initialDraftRef.current.audios.map((audio) => audio.uri),
+              ...initialDraftRef.current.files.map((file) => file.uri),
+            ]);
+            const sessionUris = [
+              ...audios
+                .filter((audio) => selectedAudioKeys.has(audio.portableId ?? audio.uri) && !persistedUris.has(audio.uri))
+                .map((audio) => audio.uri),
+              ...selectedFiles
+                .filter((file) => !persistedUris.has(file.uri))
+                .map((file) => file.uri),
+            ];
+
+            if (sessionUris.length > 0) {
+              void deleteUnreferencedMediaFiles(sessionUris);
+            }
+            setAudios((current) => current.filter((audio) => !selectedAudioKeys.has(audio.portableId ?? audio.uri)));
+            setFiles((current) => current.filter((file) => !selectedFileKeys.has(fileSelectionKey(file))));
+            setContent((current) => rewriteAttachmentReferences(current, (reference) => {
+              const resolved = resolveAttachment(reference, attachmentCatalog);
+              if (resolved?.kind === 'audio' && selectedAudioGroupIds.has(resolved.groupId)) {
+                return resolved.displayName;
+              }
+              if (resolved?.kind === 'file' && selectedFileKeys.has(fileSelectionKey(resolved.file))) {
+                return resolved.displayName;
+              }
+              return undefined;
+            }));
+            setSelectedAttachmentKeys(new Set());
+          },
+        },
+      ]
+    );
+  };
+
+  const shareSelectedAttachments = async () => {
+    try {
+      const selectedAudioSegments = audioGroups
+        .filter((group) => selectedAudioGroupIds.has(group.groupId))
+        .flatMap((group) => group.segments);
+      const attachmentCount = selectedAudioSegments.length + selectedFiles.length;
+      if (attachmentCount === 0) {
+        return;
+      }
+
+      if (attachmentCount === 1) {
+        if (selectedAudioSegments[0]) {
+          await shareSpecificAudio(selectedAudioSegments[0]);
+        } else if (selectedFiles[0]) {
+          await shareSpecificFile(selectedFiles[0]);
+        }
+        setSelectedAttachmentKeys(new Set());
+        return;
+      }
+
+      if (Platform.OS !== 'android') {
+        Alert.alert(t('editor.shareUnavailableTitle'), t('editor.shareUnavailableBody'));
+        return;
+      }
+
+      const shareableAudios = await Promise.all(selectedAudioSegments.map(prepareAudioForSharing));
+      const shareableFiles = selectedFiles.map<ShareableAttachment>((file) => ({
+        uri: file.uri,
+        mimeType: file.mimeType,
+      }));
+      const shareableAttachments = [...shareableAudios, ...shareableFiles];
+      const contentUris = await Promise.all(
+        shareableAttachments.map((attachment) => FileSystem.getContentUriAsync(attachment.uri))
+      );
+      const mimeTypes = shareableAttachments.map((attachment) => attachment.mimeType);
+
+      if (!attachmentShareNativeModule) {
+        throw new Error('Attachment sharing is unavailable');
+      }
+      await attachmentShareNativeModule.shareMultiple(
+        contentUris,
+        [...new Set(mimeTypes)],
+        commonShareMimeType(mimeTypes),
+        t('editor.shareSelected'),
+      );
+      setSelectedAttachmentKeys(new Set());
+    } catch (error) {
+      console.warn('Failed to share selected attachments:', error);
+      Alert.alert(t('common.error'), t('editor.shareSelectedError'));
     }
   };
 
@@ -1134,6 +1311,19 @@ export const NoteEditorScreen = () => {
     },
   ];
 
+  const attachmentRows: ActionSheetRow[] = [
+    {
+      icon: 'music-note-plus',
+      label: t('editor.audioImport'),
+      onPress: () => void importAudio(),
+    },
+    {
+      icon: 'file-plus-outline',
+      label: t('editor.fileImport'),
+      onPress: () => void importFile(),
+    },
+  ];
+
   if (isLoading) {
     return (
       <ScreenContainer>
@@ -1171,6 +1361,10 @@ export const NoteEditorScreen = () => {
         onOpenGroupActions={openGroupActions}
         onOpenFile={openFile}
         onOpenFileActions={openFileActions}
+        selectionActive={selectedAttachmentKeys.size > 0}
+        selectedAttachmentKeys={selectedAttachmentKeys}
+        onToggleAudioSelection={(groupId) => toggleSelectedAttachment(audioSelectionKey(groupId))}
+        onToggleFileSelection={(file) => toggleSelectedAttachment(fileSelectionKey(file))}
         header={
           <>
             <TextInput
@@ -1278,7 +1472,40 @@ export const NoteEditorScreen = () => {
           keyboardAwareBottomStyle,
         ]}
       >
-        {recording ? (
+        {selectedAttachmentKeys.size > 0 ? (
+          <View style={[barShadow, { flex: 1 }]}>
+            <GlassSurface
+              radius={ui.radius.pill}
+              contentStyle={{
+                height: TOP_BAR_HEIGHT,
+                flexDirection: 'row',
+                alignItems: 'center',
+                paddingHorizontal: ui.space.md,
+                gap: ui.space.sm,
+              }}
+            >
+              <AppText variant="headline" numberOfLines={1} style={{ flex: 1 }}>
+                {t('editor.selectedAttachments', { count: selectedAttachmentKeys.size })}
+              </AppText>
+              <IconButton
+                icon="share-variant"
+                onPress={() => void shareSelectedAttachments()}
+                accessibilityLabel={t('editor.shareSelected')}
+              />
+              <IconButton
+                icon="trash-can-outline"
+                danger
+                onPress={deleteSelectedAttachments}
+                accessibilityLabel={t('editor.deleteSelected')}
+              />
+              <IconButton
+                icon="close"
+                onPress={() => setSelectedAttachmentKeys(new Set())}
+                accessibilityLabel={t('common.cancel')}
+              />
+            </GlassSurface>
+          </View>
+        ) : recording ? (
           <EditorRecordingBar
             recording={recording}
             isPaused={isRecordingPaused}
@@ -1298,12 +1525,6 @@ export const NoteEditorScreen = () => {
                   padding: ui.space.sm,
                 }}
               >
-                <IconButton
-                  icon="plus"
-                  square
-                  onPress={() => void importAudio()}
-                  accessibilityLabel={t('editor.audioImport')}
-                />
                 <PressableScale
                   onPress={() => void startRecording()}
                   accessibilityRole="button"
@@ -1321,8 +1542,8 @@ export const NoteEditorScreen = () => {
                 </PressableScale>
                 <IconButton
                   icon="paperclip"
-                  onPress={() => void importFile()}
-                  accessibilityLabel={t('editor.fileImport')}
+                  onPress={() => setActiveSheet('attachmentPicker')}
+                  accessibilityLabel={t('editor.addAttachment')}
                 />
               </GlassSurface>
             </View>
@@ -1433,6 +1654,15 @@ export const NoteEditorScreen = () => {
 
       {activeSheet === 'overflow' ? (
         <ActionSheet visible onClose={closeSheet} rows={overflowRows} />
+      ) : null}
+
+      {activeSheet === 'attachmentPicker' ? (
+        <ActionSheet
+          visible
+          onClose={closeSheet}
+          title={t('editor.addAttachmentTitle')}
+          rows={attachmentRows}
+        />
       ) : null}
 
       {activeSheet === 'groupActions' ? (
