@@ -1412,19 +1412,7 @@ export const NoteEditorScreen = () => {
             )}
           </>
         }
-        footer={
-          Platform.OS === 'android' ? (
-            <AppText
-              variant="caption"
-              color={colors.textSecondary}
-              style={{ marginTop: ui.space.sm }}
-            >
-              {t('editor.shareHint')}
-            </AppText>
-          ) : (
-            <View />
-          )
-        }
+        footer={<View />}
         contentContainerStyle={{
           paddingHorizontal: ui.space.lg,
           paddingTop: insets.top + ui.space.sm + TOP_BAR_HEIGHT + ui.space.md,
