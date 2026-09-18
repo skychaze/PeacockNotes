@@ -20,6 +20,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import type { ViewStyle } from 'react-native';
+import Animated from 'react-native-reanimated';
 import { useMentions } from 'react-native-controlled-mentions';
 import type { TriggersConfig } from 'react-native-controlled-mentions';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -1264,7 +1265,7 @@ export const NoteEditorScreen = () => {
         />
       </TopBar>
 
-      <View
+      <Animated.View
         style={[
           {
             position: 'absolute',
@@ -1356,7 +1357,7 @@ export const NoteEditorScreen = () => {
             </View>
           </>
         )}
-      </View>
+      </Animated.View>
 
       <BottomSheet
         visible={attachmentSuggestionsVisible}

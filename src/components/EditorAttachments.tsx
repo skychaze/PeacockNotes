@@ -386,6 +386,11 @@ export const EditorAttachments = forwardRef<AudioAttachmentHandle, EditorAttachm
         return;
       }
 
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+      });
+
       playbackQueueRef.current = { segments, nextIndex: 0, startedAtMillis: 0 };
       setIsPlaying(true);
       setPlayingGroupId(groupId);
