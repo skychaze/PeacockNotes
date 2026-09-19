@@ -124,6 +124,24 @@ type ShareableAttachment = {
   mimeType: string;
 };
 
+type DownloadableAttachment = {
+  uri: string;
+  displayName: string;
+  mimeType: string;
+};
+
+type AttachmentDownloadNativeModule = {
+  saveMultiple: (
+    uris: readonly string[],
+    fileNames: readonly string[],
+    mimeTypes: readonly string[],
+  ) => Promise<{
+    savedCount: number;
+    failedCount: number;
+    cancelled: boolean;
+  }>;
+};
+
 type AttachmentShareNativeModule = {
   shareMultiple: (
     uris: readonly string[],
@@ -134,6 +152,7 @@ type AttachmentShareNativeModule = {
 };
 
 const attachmentShareNativeModule = NativeModules.AttachmentShare as AttachmentShareNativeModule | undefined;
+const attachmentDownloadNativeModule = NativeModules.AttachmentDownload as AttachmentDownloadNativeModule | undefined;
 
 const prepareAudioForSharing = async (audio: NoteAudioDraft): Promise<ShareableAttachment> => {
   const extension = getBestAudioExtension(null, audio.displayName, audio.uri);
@@ -202,6 +221,9 @@ export const NoteEditorScreen = () => {
   const [isReadingContent, setIsReadingContent] = useState(false);
   const [attachmentSuggestionsDismissed, setAttachmentSuggestionsDismissed] = useState(false);
   const [selectedAttachmentKeys, setSelectedAttachmentKeys] = useState<Set<string>>(() => new Set());
+  const [savedRevision, setSavedRevision] = useState(0);
+  const [hasPersistedDraft, setHasPersistedDraft] = useState(Boolean(route.params.noteId));
+  const [isDownloading, setIsDownloading] = useState(false);
 
   const recordingRef = useRef<Audio.Recording | null>(null);
   const isFinalizingRecordingRef = useRef(false);
@@ -275,6 +297,8 @@ export const NoteEditorScreen = () => {
           audios: loadedAudios.map((audio) => ({ ...audio })),
           files: loadedFiles.map((file) => ({ ...file })),
         };
+        setHasPersistedDraft(true);
+        setSavedRevision((revision) => revision + 1);
       } catch (error) {
         console.warn('Failed to load note:', error);
         if (!cancelled) {
@@ -297,6 +321,8 @@ export const NoteEditorScreen = () => {
     initialUpdatedAtRef.current = undefined;
     if (!noteId) {
       initialDraftRef.current = { title: '', content: '', audios: [], files: [] };
+      setHasPersistedDraft(false);
+      setSavedRevision((revision) => revision + 1);
     }
   }, [noteId]);
 
@@ -316,8 +342,6 @@ export const NoteEditorScreen = () => {
       }).catch(() => undefined);
     };
   }, []);
-
-  const saveDisabled = useMemo(() => !title.trim() || isSaving, [title, isSaving]);
 
   const audioGroups = useMemo<AudioGroup[]>(() => {
     const map = new Map<string, AudioGroup>();
@@ -422,7 +446,7 @@ export const NoteEditorScreen = () => {
 
   const hasUnsavedChanges = useMemo(() => {
     const initial = initialDraftRef.current;
-    if (title !== initial.title || content !== initial.content) {
+    if (title.trim() !== initial.title || content !== initial.content) {
       return true;
     }
 
@@ -452,7 +476,10 @@ export const NoteEditorScreen = () => {
         audio.groupId !== initial.audios[index]?.groupId ||
         Number(audio.segmentIndex ?? 1) !== Number(initial.audios[index]?.segmentIndex ?? 1)
     );
-  }, [audios, content, files, title]);
+  }, [audios, content, files, savedRevision, title]);
+
+  const isEditNotSaved = !hasPersistedDraft || hasUnsavedChanges || Boolean(recording);
+  const saveDisabled = !title.trim() || isSaving || !isEditNotSaved;
 
   const persistDraft = async (draft: NoteDraft, errorMessage: string): Promise<boolean> => {
     try {
@@ -473,6 +500,8 @@ export const NoteEditorScreen = () => {
         audios: draft.audios.map((audio) => ({ ...audio })),
         files: draft.files.map((file) => ({ ...file })),
       };
+      setHasPersistedDraft(true);
+      setSavedRevision((revision) => revision + 1);
       return true;
     } catch (error) {
       console.warn('Failed to persist note:', error);
@@ -617,31 +646,34 @@ export const NoteEditorScreen = () => {
   };
 
   const importFile = async () => {
+    const copiedUris: string[] = [];
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: ['image/*', 'application/pdf'],
+        multiple: true,
+        copyToCacheDirectory: true,
       });
-      if (result.canceled) {
+      if (result.canceled || result.assets.length === 0) {
         return;
       }
 
-      const asset = result.assets[0];
       const directory = await ensureFileFolder();
-      const extension = getFileExtension(null, asset.name, asset.uri);
-      const targetPath = `${directory}/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${extension}`;
-      await FileSystem.copyAsync({ from: asset.uri, to: targetPath });
-
-      const mimeType = getFileMimeType(extension);
-      setFiles((prev) => [
-        ...prev,
-        {
+      const importedFiles: NoteFileDraft[] = [];
+      for (const [index, asset] of result.assets.entries()) {
+        const extension = getFileExtension(asset.mimeType, asset.name, asset.uri);
+        const targetPath = `${directory}/${Date.now()}_${index}_${Math.random().toString(36).slice(2, 8)}.${extension}`;
+        await FileSystem.copyAsync({ from: asset.uri, to: targetPath });
+        copiedUris.push(targetPath);
+        importedFiles.push({
           portableId: createDraftPortableId(),
           uri: targetPath,
-          displayName: asset.name?.trim() || `File ${prev.length + 1}`,
-          mimeType,
-        },
-      ]);
+          displayName: asset.name?.trim() || `File ${files.length + index + 1}`,
+          mimeType: asset.mimeType?.split(';')[0]?.trim() || getFileMimeType(extension),
+        });
+      }
+      setFiles((prev) => [...prev, ...importedFiles]);
     } catch (error) {
+      await Promise.all(copiedUris.map((uri) => FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined)));
       console.warn('Failed to import file:', error);
       Alert.alert(t('common.error'), t('editor.fileImportError'));
     }
@@ -1208,6 +1240,106 @@ export const NoteEditorScreen = () => {
     }
   };
 
+  const attachmentCount = audioGroups.length + files.length;
+
+  const sanitizeDownloadName = (value: string) => value
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim() || t('editor.attachmentKindFile');
+
+  const stripFileExtension = (value: string) => value.replace(/\.[a-z0-9]{2,8}$/i, '');
+
+  const buildUniqueDownloadNames = (items: DownloadableAttachment[]): DownloadableAttachment[] => {
+    const usedNames = new Set<string>();
+    return items.map((item) => {
+      const extension = getFileExtension(item.mimeType, item.displayName, item.uri);
+      const rawName = sanitizeDownloadName(item.displayName);
+      const baseName = stripFileExtension(rawName) || t('editor.attachmentKindFile');
+      const hasExtension = /\.[a-z0-9]{2,8}$/i.test(rawName);
+      const originalName = hasExtension ? rawName : `${rawName}.${extension}`;
+      let name = originalName;
+      let duplicateIndex = 2;
+      while (usedNames.has(name.toLowerCase())) {
+        name = `${baseName} (${duplicateIndex})${hasExtension ? rawName.slice(baseName.length) : `.${extension}`}`;
+        duplicateIndex += 1;
+      }
+      usedNames.add(name.toLowerCase());
+      return { ...item, displayName: name };
+    });
+  };
+
+  const audioGroupDownloadItems = (group: AudioGroup): DownloadableAttachment[] => {
+    const baseName = stripFileExtension(group.displayName.trim()) || t('editor.audioDefaultName', { index: 1 });
+    return group.segments.map((segment, index) => {
+      const extension = getBestAudioExtension(null, segment.displayName, segment.uri);
+      const segmentSuffix = group.segments.length > 1 ? ` ${index + 1}` : '';
+      return {
+        uri: segment.uri,
+        displayName: `${baseName}${segmentSuffix}.${extension}`,
+        mimeType: getMimeTypeForAudioExtension(extension),
+      };
+    });
+  };
+
+  const allDownloadItems = useMemo(
+    () => buildUniqueDownloadNames([
+      ...audioGroups.flatMap(audioGroupDownloadItems),
+      ...files.map((file) => ({
+        uri: file.uri,
+        displayName: file.displayName,
+        mimeType: file.mimeType,
+      })),
+    ]),
+    [audioGroups, files, language, t],
+  );
+
+  const downloadAttachments = useCallback(async (items: DownloadableAttachment[], logicalCount: number) => {
+    if (items.length === 0 || isDownloading) return;
+    if (Platform.OS !== 'android' || !attachmentDownloadNativeModule) {
+      Alert.alert(t('common.error'), t('editor.downloadUnavailable'));
+      return;
+    }
+
+    try {
+      setIsDownloading(true);
+      const prepared = buildUniqueDownloadNames(items);
+      const result = await attachmentDownloadNativeModule.saveMultiple(
+        prepared.map((item) => item.uri),
+        prepared.map((item) => item.displayName),
+        prepared.map((item) => item.mimeType),
+      );
+      if (result.cancelled) return;
+      if (result.failedCount > 0) {
+        Alert.alert(
+          t('common.error'),
+          t('editor.downloadPartialError', { saved: result.savedCount, failed: result.failedCount }),
+        );
+        return;
+      }
+      Alert.alert(t('editor.downloadSuccess', { count: logicalCount }));
+    } catch (error) {
+      console.warn('Failed to download attachments:', error);
+      Alert.alert(t('common.error'), t('editor.downloadError'));
+    } finally {
+      setIsDownloading(false);
+    }
+  }, [isDownloading, t]);
+
+  const downloadAllAttachments = () => void downloadAttachments(allDownloadItems, attachmentCount);
+
+  const downloadSelectedAttachments = () => {
+    const selectedGroups = audioGroups.filter((group) => selectedAudioGroupIds.has(group.groupId));
+    const selectedItems = buildUniqueDownloadNames([
+      ...selectedGroups.flatMap(audioGroupDownloadItems),
+      ...selectedFiles.map((file) => ({
+        uri: file.uri,
+        displayName: file.displayName,
+        mimeType: file.mimeType,
+      })),
+    ]);
+    void downloadAttachments(selectedItems, selectedGroups.length + selectedFiles.length);
+  };
+
   const onContentSizeChange = (height: number) => {
     const minHeight = 230;
     setContentInputHeight(Math.max(minHeight, Math.ceil(height)));
@@ -1253,6 +1385,19 @@ export const NoteEditorScreen = () => {
           onPress: () => setActiveSheet('sharePicker'),
         },
         {
+          icon: 'download',
+          label: t('editor.downloadAudio'),
+          onPress: () => {
+            const group = audioGroups.find((item) => item.groupId === actionsGroupId);
+            if (group) void downloadAttachments(audioGroupDownloadItems(group), 1);
+          },
+        },
+        ...(attachmentCount > 1 ? [{
+          icon: 'download-multiple' as const,
+          label: t('editor.downloadAll', { count: attachmentCount }),
+          onPress: downloadAllAttachments,
+        }] : []),
+        {
           icon: 'trash-can-outline',
           label: t('common.delete'),
           destructive: true,
@@ -1279,6 +1424,20 @@ export const NoteEditorScreen = () => {
           onPress: () => void shareSpecificFile(actionsFile),
         },
         {
+          icon: 'download',
+          label: t('editor.downloadFile'),
+          onPress: () => void downloadAttachments([{
+            uri: actionsFile.uri,
+            displayName: actionsFile.displayName,
+            mimeType: actionsFile.mimeType,
+          }], 1),
+        },
+        ...(attachmentCount > 1 ? [{
+          icon: 'download-multiple' as const,
+          label: t('editor.downloadAll', { count: attachmentCount }),
+          onPress: downloadAllAttachments,
+        }] : []),
+        {
           icon: 'trash-can-outline',
           label: t('editor.remove'),
           destructive: true,
@@ -1300,6 +1459,11 @@ export const NoteEditorScreen = () => {
       label: t('editor.shareText'),
       onPress: () => void shareText(),
     },
+    ...(attachmentCount > 1 ? [{
+      icon: 'download-multiple' as const,
+      label: t('editor.downloadAll', { count: attachmentCount }),
+      onPress: downloadAllAttachments,
+    }] : []),
     {
       icon: 'music-note',
       label: t('editor.shareAudio'),
@@ -1439,6 +1603,14 @@ export const NoteEditorScreen = () => {
           accessibilityLabel={t(isReadingContent ? 'editor.editMode' : 'editor.readMode')}
           onPress={() => setIsReadingContent((prev) => !prev)}
         />
+        <AppText
+          variant="caption"
+          color={isEditNotSaved ? colors.primary : colors.textSecondary}
+          numberOfLines={1}
+          style={{ maxWidth: 88, textAlign: 'center' }}
+        >
+          {t(isEditNotSaved ? 'editor.editNotSaved' : 'editor.editSaved')}
+        </AppText>
         <IconButton
           icon="content-save-outline"
           disabled={saveDisabled}
@@ -1479,6 +1651,12 @@ export const NoteEditorScreen = () => {
                 icon="share-variant"
                 onPress={() => void shareSelectedAttachments()}
                 accessibilityLabel={t('editor.shareSelected')}
+              />
+              <IconButton
+                icon="download-multiple"
+                disabled={isDownloading}
+                onPress={downloadSelectedAttachments}
+                accessibilityLabel={t('editor.downloadSelected', { count: selectedAttachmentKeys.size })}
               />
               <IconButton
                 icon="trash-can-outline"
