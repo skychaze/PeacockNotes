@@ -2,12 +2,14 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import Constants from 'expo-constants';
-import { useCallback, useMemo, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { GestureResponderEvent } from 'react-native';
 import {
   Alert,
   BackHandler,
   FlatList,
+  ScrollView,
   StyleSheet,
   TextInput,
   View,
@@ -16,8 +18,6 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeIn } from 'react-native-reanimated';
-import { ActionSheet } from '../components/ActionSheet';
-import type { ActionSheetRow } from '../components/ActionSheet';
 import { AppText, getFontFamily } from '../components/AppText';
 import { AppUpdateIndicator } from '../components/AppUpdateIndicator';
 import { BottomSheet } from '../components/BottomSheet';
@@ -54,16 +54,18 @@ import { formatBackupDate } from '../utils/backupDate';
 
 type Navigation = NativeStackNavigationProp<RootStackParamList, 'Folders'>;
 
-type ActiveSheet = 'none' | 'sort' | 'menu' | 'create' | 'rename' | 'backupInfo';
+type ActiveSheet = 'none' | 'menu' | 'create' | 'rename' | 'backupInfo';
+type FolderViewMode = 'grid' | 'list';
 
 const SORT_FIELDS: SortField[] = ['custom', 'name', 'createdAt'];
+const FOLDER_VIEW_MODE_KEY = '@peacock-notes/folder-view-mode';
 
 export const FoldersScreen = () => {
   const navigation = useNavigation<Navigation>();
   const { colors, isDark, toggleTheme } = useAppColors();
   const { motionEnabled } = useQuality();
   const { t, language } = useLanguage();
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const entrance = useEntrance();
   const cardWidth = (windowWidth - ui.space.lg * 2 - ui.space.md) / 2;
@@ -82,6 +84,7 @@ export const FoldersScreen = () => {
   const [sortField, setSortField] = useState<SortField>('custom');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [isReorderMode, setIsReorderMode] = useState(false);
+  const [viewMode, setViewMode] = useState<FolderViewMode>('grid');
 
   const fabBottom = Math.max(insets.bottom + 12, 22);
   const listBottomPadding = Math.max(insets.bottom + 104, 126);
@@ -94,26 +97,53 @@ export const FoldersScreen = () => {
   const isSelecting = selectedFolderIds.size > 0;
   const openAppUpdate = () => navigation.navigate('AppUpdate');
 
-  const menuRows: ActionSheetRow[] = useMemo(
+  const menuRows = useMemo<Array<{
+    icon: keyof typeof MaterialCommunityIcons.glyphMap;
+    label: string;
+    onPress: () => void;
+  }>>(
     () => [
       {
         icon: 'harddisk',
         label: t('drawer.storage'),
-        onPress: () => navigation.navigate('StorageUsage'),
+        onPress: () => {
+          closeSheet();
+          navigation.navigate('StorageUsage');
+        },
       },
       {
         icon: 'backup-restore',
         label: t('drawer.backupRestore'),
-        onPress: () => navigation.navigate('Backup'),
+        onPress: () => {
+          closeSheet();
+          navigation.navigate('Backup');
+        },
       },
       {
         icon: 'cellphone-arrow-down',
         label: t('drawer.updates'),
-        onPress: () => navigation.navigate('AppUpdate'),
+        onPress: () => {
+          closeSheet();
+          navigation.navigate('AppUpdate');
+        },
       },
     ],
-    [navigation, t]
+    [closeSheet, navigation, t]
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    void AsyncStorage.getItem(FOLDER_VIEW_MODE_KEY).then((storedMode) => {
+      if (cancelled || (storedMode !== 'grid' && storedMode !== 'list')) return;
+      setViewMode(storedMode);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const changeViewMode = (nextMode: FolderViewMode) => {
+    setViewMode(nextMode);
+    void AsyncStorage.setItem(FOLDER_VIEW_MODE_KEY, nextMode);
+  };
 
   const refreshFolders = useCallback(async () => {
     try {
@@ -140,6 +170,7 @@ export const FoldersScreen = () => {
     setAppUpdate(getAppUpdateSnapshot());
     return subscribeAppUpdate(setAppUpdate);
   }, []));
+  useFocusEffect(useCallback(() => () => setActiveSheet('none'), []));
 
   const openBackupInfo = async () => {
     setBackupDiscovery(getBackupDiscoverySnapshot());
@@ -296,10 +327,11 @@ export const FoldersScreen = () => {
     <ScreenContainer>
       <View style={{ flex: 1, paddingHorizontal: ui.space.lg }}>
         <FlatList
+          key={viewMode}
           data={folders}
           keyExtractor={(item) => String(item.id)}
-          numColumns={2}
-          columnWrapperStyle={{ gap: ui.space.md }}
+          numColumns={viewMode === 'grid' ? 2 : 1}
+          columnWrapperStyle={viewMode === 'grid' ? { gap: ui.space.md } : undefined}
           contentContainerStyle={{
             paddingTop: insets.top + ui.space.sm + TOP_BAR_HEIGHT + ui.space.md,
             paddingBottom: listBottomPadding,
@@ -335,25 +367,34 @@ export const FoldersScreen = () => {
             return (
               <Animated.View
                 entering={entrance(index)}
-                style={{ width: cardWidth }}
+                style={{ width: viewMode === 'grid' ? cardWidth : '100%' }}
               >
                 <PressableScale
                   accessibilityState={{ selected: selectedFolderIds.has(item.id) }}
-                  onPress={() => isSelecting ? toggleFolder(item.id) :
+                  onPress={() => {
+                    if (isSelecting) {
+                      toggleFolder(item.id);
+                      return;
+                    }
+                    closeSheet();
                     navigation.navigate('NotesList', {
                       folderId: item.id,
                       folderName: item.name,
-                    })
-                  }
+                    });
+                  }}
                   onLongPress={() => toggleFolder(item.id)}
                   style={{ flex: 1 }}
                 >
-                  <GlassSurface
-                    radius={ui.radius.lg}
-                    fallbackColor={tint}
-                    style={{ flex: 1 }}
-                    contentStyle={{ padding: ui.space.lg, gap: ui.space.sm, flex: 1 }}
-                  >
+                    <GlassSurface
+                      radius={ui.radius.lg}
+                      fallbackColor={tint}
+                      style={{ flex: 1 }}
+                      contentStyle={{
+                        padding: viewMode === 'list' ? ui.space.md : ui.space.lg,
+                        gap: ui.space.sm,
+                        flex: 1,
+                      }}
+                    >
                     <View
                       pointerEvents="none"
                       style={[
@@ -368,38 +409,71 @@ export const FoldersScreen = () => {
                       end={{ x: 0, y: 1 }}
                       style={StyleSheet.absoluteFillObject}
                     />
-                    <View
-                      style={{
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                      }}
-                    >
-                      <MaterialCommunityIcons name="folder" size={24} color={ink} />
-                      {selectedFolderIds.has(item.id) ? <MaterialCommunityIcons name="checkbox-marked-circle" size={24} color={colors.primary} /> : null}
-                      {isReorderModeActive ? (
-                        <View style={{ flexDirection: 'row', gap: ui.space.xs }}>
-                          <IconButton
-                            icon="arrow-up-bold"
-                            size={18}
-                            disabled={index === 0}
-                            onPress={stopAnd(() => void onMoveFolder(item.id, 'up'))}
-                          />
-                          <IconButton
-                            icon="arrow-down-bold"
-                            size={18}
-                            disabled={index === folders.length - 1}
-                            onPress={stopAnd(() => void onMoveFolder(item.id, 'down'))}
-                          />
+                    {viewMode === 'list' ? (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: ui.space.md }}>
+                        <MaterialCommunityIcons name="folder" size={24} color={ink} />
+                        <View style={{ flex: 1, gap: ui.space.xs }}>
+                          <AppText variant="headline" numberOfLines={1}>
+                            {item.name}
+                          </AppText>
+                          <AppText variant="caption" color={ink} style={{ opacity: 0.8 }}>
+                            {t('folder.notesCount', { count: item.noteCount })}
+                          </AppText>
                         </View>
-                      ) : null}
-                    </View>
-                    <AppText variant="headline" numberOfLines={2}>
-                      {item.name}
-                    </AppText>
-                    <AppText variant="caption" color={ink} style={{ opacity: 0.8 }}>
-                      {t('folder.notesCount', { count: item.noteCount })}
-                    </AppText>
+                        {selectedFolderIds.has(item.id) ? <MaterialCommunityIcons name="checkbox-marked-circle" size={24} color={colors.primary} /> : null}
+                        {isReorderModeActive ? (
+                          <View style={{ flexDirection: 'row', gap: ui.space.xs }}>
+                            <IconButton
+                              icon="arrow-up-bold"
+                              size={18}
+                              disabled={index === 0}
+                              onPress={stopAnd(() => void onMoveFolder(item.id, 'up'))}
+                            />
+                            <IconButton
+                              icon="arrow-down-bold"
+                              size={18}
+                              disabled={index === folders.length - 1}
+                              onPress={stopAnd(() => void onMoveFolder(item.id, 'down'))}
+                            />
+                          </View>
+                        ) : null}
+                      </View>
+                    ) : (
+                      <>
+                        <View
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                          }}
+                        >
+                          <MaterialCommunityIcons name="folder" size={24} color={ink} />
+                          {selectedFolderIds.has(item.id) ? <MaterialCommunityIcons name="checkbox-marked-circle" size={24} color={colors.primary} /> : null}
+                          {isReorderModeActive ? (
+                            <View style={{ flexDirection: 'row', gap: ui.space.xs }}>
+                              <IconButton
+                                icon="arrow-up-bold"
+                                size={18}
+                                disabled={index === 0}
+                                onPress={stopAnd(() => void onMoveFolder(item.id, 'up'))}
+                              />
+                              <IconButton
+                                icon="arrow-down-bold"
+                                size={18}
+                                disabled={index === folders.length - 1}
+                                onPress={stopAnd(() => void onMoveFolder(item.id, 'down'))}
+                              />
+                            </View>
+                          ) : null}
+                        </View>
+                        <AppText variant="headline" numberOfLines={2}>
+                          {item.name}
+                        </AppText>
+                        <AppText variant="caption" color={ink} style={{ opacity: 0.8 }}>
+                          {t('folder.notesCount', { count: item.noteCount })}
+                        </AppText>
+                      </>
+                    )}
                   </GlassSurface>
                 </PressableScale>
               </Animated.View>
@@ -452,20 +526,22 @@ export const FoldersScreen = () => {
           <LanguageToggleButton />
           <IconButton icon={isDark ? 'weather-sunny' : 'weather-night'} accessibilityLabel={isDark ? t('theme.useLight') : t('theme.useDark')} accessibilityState={{ checked: isDark }} onPress={toggleTheme} />
           <IconButton icon="information-outline" accessibilityLabel={t('home.backupInfo')} onPress={() => void openBackupInfo()} />
-          <IconButton icon="sort-variant" accessibilityLabel={t('sort.title')} onPress={() => setActiveSheet('sort')} />
           <IconButton icon="dots-vertical" accessibilityLabel={t('drawer.quickMenu')} onPress={() => setActiveSheet('menu')} />
         </>}
       </TopBar>
 
       {!isSelecting ? <FAB icon="folder-plus" bottom={fabBottom} onPress={() => setActiveSheet('create')} /> : null}
 
-      <BottomSheet
-        visible={activeSheet === 'sort'}
-        onClose={closeSheet}
-        title={t('sort.title')}
-      >
-        <View style={{ paddingHorizontal: ui.space.lg, gap: ui.space.md }}>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: ui.space.sm }}>
+      <BottomSheet visible={activeSheet === 'menu'} onClose={closeSheet} title={t('drawer.quickMenu')}>
+        <ScrollView
+          style={{ height: Math.min(windowHeight * 0.56, 500) }}
+          contentContainerStyle={{ gap: ui.space.md, paddingBottom: ui.space.md }}
+          showsVerticalScrollIndicator={false}
+        >
+          <AppText variant="headline" style={{ paddingHorizontal: ui.space.lg }}>
+            {t('sort.title')}
+          </AppText>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: ui.space.sm, paddingHorizontal: ui.space.lg }}>
             {SORT_FIELDS.map((field) => (
               <Chip
                 key={field}
@@ -477,7 +553,7 @@ export const FoldersScreen = () => {
           </View>
 
           {sortField !== 'custom' ? (
-            <View style={{ flexDirection: 'row', gap: ui.space.sm }}>
+            <View style={{ flexDirection: 'row', gap: ui.space.sm, paddingHorizontal: ui.space.lg }}>
               <Chip
                 label={t('sort.asc')}
                 selected={sortDirection === 'asc'}
@@ -490,7 +566,7 @@ export const FoldersScreen = () => {
               />
             </View>
           ) : (
-            <View style={{ gap: ui.space.sm }}>
+            <View style={{ gap: ui.space.sm, paddingHorizontal: ui.space.lg }}>
               <Chip
                 label={t('sort.reorder')}
                 selected={isReorderMode}
@@ -503,15 +579,44 @@ export const FoldersScreen = () => {
               ) : null}
             </View>
           )}
-        </View>
-      </BottomSheet>
 
-      <ActionSheet
-        visible={activeSheet === 'menu'}
-        onClose={closeSheet}
-        title={t('drawer.quickMenu')}
-        rows={menuRows}
-      />
+          <AppText variant="headline" style={{ paddingHorizontal: ui.space.lg, marginTop: ui.space.sm }}>
+            {t('folder.viewTitle')}
+          </AppText>
+          <View style={{ flexDirection: 'row', gap: ui.space.sm, paddingHorizontal: ui.space.lg }}>
+            <Chip
+              label={t('folder.viewGrid')}
+              selected={viewMode === 'grid'}
+              onPress={() => changeViewMode('grid')}
+            />
+            <Chip
+              label={t('folder.viewList')}
+              selected={viewMode === 'list'}
+              onPress={() => changeViewMode('list')}
+            />
+          </View>
+
+          <View style={{ borderTopWidth: 1, borderTopColor: colors.border, paddingTop: ui.space.sm }}>
+            {menuRows.map((row) => (
+              <PressableScale
+                key={row.label}
+                onPress={row.onPress}
+                android_ripple={{ color: colors.surfaceVariant }}
+                style={{
+                  height: 52,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: ui.space.md,
+                  paddingHorizontal: ui.space.lg,
+                }}
+              >
+                <MaterialCommunityIcons name={row.icon} size={22} color={colors.textSecondary} />
+                <AppText variant="headline">{row.label}</AppText>
+              </PressableScale>
+            ))}
+          </View>
+        </ScrollView>
+      </BottomSheet>
 
       <BottomSheet visible={activeSheet === 'backupInfo'} onClose={closeSheet} title={t('home.backupInfo')}>
         <View style={{ paddingHorizontal: ui.space.lg }}>
