@@ -2,13 +2,13 @@
   "expo": {
     "name": "Peacock Notes",
     "slug": "Note_app",
-    "version": "1.1.10",
+    "version": "1.1.11",
     "scheme": "peacocknotes",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
-    "runtimeVersion": "1.1.10",
+    "runtimeVersion": "1.1.11",
     "updates": {
       "url": "https://u.expo.dev/7d13650a-3749-415c-bd06-664c7d47e2e0",
       "checkAutomatically": "ON_LOAD",
@@ -47,7 +47,7 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "versionCode": 22,
+      "versionCode": 23,
       "package": "com.roy.peacocknotes"
     },
     "plugins": [
