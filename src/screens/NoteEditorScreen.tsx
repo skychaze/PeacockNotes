@@ -232,6 +232,7 @@ export const NoteEditorScreen = () => {
   const skipUnsavedWarningRef = useRef(false);
   const isAutoSavingRef = useRef(false);
   const persistenceInFlightRef = useRef(false);
+  const pendingPersistenceRef = useRef<Promise<void>>(Promise.resolve());
   const persistedNoteIdRef = useRef<number | undefined>(route.params.noteId);
   const initialUpdatedAtRef = useRef<string | undefined>(undefined);
 
@@ -513,12 +514,14 @@ export const NoteEditorScreen = () => {
   };
 
   const withPersistenceLock = async (work: () => Promise<boolean>): Promise<boolean> => {
-    if (persistenceInFlightRef.current) return false;
     persistenceInFlightRef.current = true;
+    const pending = pendingPersistenceRef.current.then(work);
+    const settled = pending.then(() => undefined, () => undefined);
+    pendingPersistenceRef.current = settled;
     try {
-      return await work();
+      return await pending;
     } finally {
-      persistenceInFlightRef.current = false;
+      if (pendingPersistenceRef.current === settled) persistenceInFlightRef.current = false;
     }
   };
 
@@ -567,7 +570,9 @@ export const NoteEditorScreen = () => {
     if (isAutoSavingRef.current) return;
     isAutoSavingRef.current = true;
     try {
-      const didSave = !shouldAutoSaveBeforeHome(hasUnsavedChanges, recording !== null) || await autoSaveBeforeExit();
+      const needsSave = shouldAutoSaveBeforeHome(hasUnsavedChanges, recording !== null) ||
+        persistenceInFlightRef.current;
+      const didSave = !needsSave || await autoSaveBeforeExit();
       if (!didSave) return;
       skipUnsavedWarningRef.current = true;
       navigation.reset({ index: 0, routes: [{ name: 'Folders' }] });
@@ -587,12 +592,7 @@ export const NoteEditorScreen = () => {
         return;
       }
 
-      if (persistenceInFlightRef.current) {
-        event.preventDefault();
-        return;
-      }
-
-      if (!hasUnsavedChanges && !recordingRef.current) return;
+      if (!hasUnsavedChanges && !recordingRef.current && !persistenceInFlightRef.current) return;
 
       event.preventDefault();
 
@@ -1534,6 +1534,8 @@ export const NoteEditorScreen = () => {
             <TextInput
               value={title}
               onChangeText={setTitle}
+              multiline
+              textAlignVertical="top"
               placeholder={t('editor.titlePlaceholder')}
               placeholderTextColor={colors.textSecondary}
               style={{

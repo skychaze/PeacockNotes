@@ -14,7 +14,7 @@ import androidx.work.WorkerParameters
 class AutomaticBackupWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
   companion object {
     private const val CHANNEL_ID = "automatic_backup"
-    private const val NOTIFICATION_ID = 3201
+    private const val NOTIFICATION_ID = 3202
   }
 
   override suspend fun doWork(): Result {
