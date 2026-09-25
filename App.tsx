@@ -32,7 +32,7 @@ import { recoverInterruptedFullReplacement } from './src/services/archive';
 import { installAutomaticBackupCatchUp } from './src/services/automaticBackup';
 import { checkForAppUpdate } from './src/services/appUpdate';
 import { initializeBackupDiscovery } from './src/services/backupDiscovery';
-import { finishBackupNotification } from './src/services/backupFolder';
+import { finishBackupNotificationIfIdle } from './src/services/backupFolder';
 import { resumePendingBackupOperation } from './src/services/backupBackground';
 import { ThemeProvider, useTheme } from './src/theme/ThemeContext';
 
@@ -90,12 +90,14 @@ const AppNavigator = () => {
       }
       try {
         const operation = await resumePendingBackupOperation();
-        if (!cancelled && operation && Platform.OS === 'android') {
-          finishBackupNotification(operation.state === 'succeeded');
+        if (!cancelled && Platform.OS === 'android') {
+          await finishBackupNotificationIfIdle(operation?.state === 'succeeded');
         }
       } catch (error: unknown) {
         console.warn('Pending backup recovery failed:', error);
-        if (!cancelled && Platform.OS === 'android') finishBackupNotification(false);
+        if (!cancelled && Platform.OS === 'android') {
+          await finishBackupNotificationIfIdle(false);
+        }
       }
       if (!cancelled) uninstallAutomaticCatchUp = installAutomaticBackupCatchUp();
     };
