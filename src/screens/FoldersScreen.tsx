@@ -484,7 +484,12 @@ export const FoldersScreen = () => {
 
       <TopBar leading={appVersion ? (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: ui.space.sm }}>
-          <View style={{ gap: ui.space.xs }}>
+          <PressableScale
+            onPress={openAppUpdate}
+            accessibilityRole="button"
+            accessibilityLabel={`${t('header.updates')}, v${appVersion}`}
+            style={{ gap: ui.space.xs }}
+          >
             <AppText variant="caption" color={colors.textSecondary} style={{ opacity: 0.7 }}>
               v{appVersion}
             </AppText>
@@ -506,7 +511,7 @@ export const FoldersScreen = () => {
                 </View>
               </Animated.View>
             ) : null}
-          </View>
+          </PressableScale>
           {showUpdateIndicator ? (
             <AppUpdateIndicator
               phase={appUpdate.phase}
