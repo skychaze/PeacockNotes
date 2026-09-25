@@ -40,11 +40,22 @@ export type AppUpdateSnapshot = Readonly<{
   installed: InstalledAppVersion | null;
   release: ReleasedApk | null;
   progress: number;
+  waitingFor: 'wifi' | 'network' | null;
   error: AppUpdateError | null;
 }>;
 
 type AppUpdaterNativeModule = {
   canRequestPackageInstalls?: () => Promise<boolean>;
+  startDownload?: (url: string, fileName: string, versionCode: number, sizeBytes: number) => Promise<NativeDownloadStatus>;
+  getDownloadStatus?: () => Promise<NativeDownloadStatus>;
+};
+
+type NativeDownloadStatus = {
+  state: 'missing' | 'downloading' | 'paused' | 'ready' | 'failed';
+  versionCode?: number;
+  progress?: number;
+  reason?: 'wifi' | 'network';
+  uri?: string;
 };
 
 const nativeAppUpdater = NativeModules.AppUpdater as AppUpdaterNativeModule | undefined;
@@ -54,6 +65,7 @@ let snapshot: AppUpdateSnapshot = {
   installed: parseInstalledVersion(Constants.expoConfig),
   release: null,
   progress: 0,
+  waitingFor: null,
   error: null,
 };
 let inFlightCheck: Promise<AppUpdateSnapshot> | null = null;
@@ -61,6 +73,7 @@ let inFlightDownload: Promise<AppUpdateSnapshot> | null = null;
 let downloadedFileUri: string | null = null;
 let awaitingInstallPermission = false;
 let installInFlight = false;
+let downloadPoll: ReturnType<typeof setInterval> | null = null;
 const listeners = new Set<(next: AppUpdateSnapshot) => void>();
 
 const setSnapshot = (partial: Partial<AppUpdateSnapshot>) => {
@@ -119,6 +132,45 @@ const findDownloadedApk = async (release: ReleasedApk): Promise<string | null> =
   }
 };
 
+const stopDownloadPoll = () => {
+  if (downloadPoll) clearInterval(downloadPoll);
+  downloadPoll = null;
+};
+
+const startDownloadPoll = (release: ReleasedApk) => {
+  if (downloadPoll) return;
+  downloadPoll = setInterval(() => {
+    if (AppState.currentState === 'active') void refreshDownload(release).catch(() => undefined);
+  }, 1_000);
+};
+
+const refreshDownload = async (release: ReleasedApk): Promise<boolean> => {
+  const status = await nativeAppUpdater?.getDownloadStatus?.();
+  if (!status || status.versionCode !== release.versionCode) return false;
+  if (status.state === 'ready' && status.uri) {
+    downloadedFileUri = status.uri;
+    setSnapshot({ phase: 'ready', progress: 1, waitingFor: null, error: null });
+    stopDownloadPoll();
+    return true;
+  }
+  if (status.state === 'failed') {
+    setSnapshot({ phase: 'available', progress: 0, waitingFor: null, error: 'download' });
+    stopDownloadPoll();
+    return true;
+  }
+  if (status.state === 'downloading' || status.state === 'paused') {
+    setSnapshot({
+      phase: 'downloading',
+      progress: status.progress ?? 0,
+      waitingFor: status.state === 'paused' ? status.reason ?? 'network' : null,
+      error: null,
+    });
+    startDownloadPoll(release);
+    return true;
+  }
+  return false;
+};
+
 const fetchLatestRelease = async (): Promise<ReleasedApk | null> => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), RELEASE_REQUEST_TIMEOUT_MS);
@@ -148,6 +200,7 @@ export const checkForAppUpdate = (): Promise<AppUpdateSnapshot> => {
     return inFlightDownload;
   }
   const installed = parseInstalledVersion(Constants.expoConfig);
+  void nativeAppUpdater?.getDownloadStatus?.().catch(() => undefined);
   if (!installed) {
     setSnapshot({ phase: 'idle', installed: null });
     return Promise.resolve(snapshot);
@@ -161,21 +214,27 @@ export const checkForAppUpdate = (): Promise<AppUpdateSnapshot> => {
       const available = release !== null && isUpdateAvailable(installed, release);
       await pruneCachedApks(available ? downloadFileName(release) : null);
       if (!available) {
+        stopDownloadPoll();
         downloadedFileUri = null;
-        setSnapshot({ phase: 'current', installed, release: null, progress: 0, error: null });
+        setSnapshot({ phase: 'current', installed, release: null, progress: 0, waitingFor: null, error: null });
         return;
       }
+      if (knownRelease && knownRelease.versionCode !== release.versionCode) stopDownloadPoll();
       downloadedFileUri = await findDownloadedApk(release);
       if (downloadedFileUri) {
-        setSnapshot({ phase: 'ready', installed, release, progress: 1, error: null });
+        setSnapshot({ phase: 'ready', installed, release, progress: 1, waitingFor: null, error: null });
         return;
       }
-      setSnapshot({ phase: 'available', installed, release, progress: 0, error: null });
+      if (await refreshDownload(release).catch(() => false)) {
+        setSnapshot({ installed, release });
+        return;
+      }
+      setSnapshot({ phase: 'available', installed, release, progress: 0, waitingFor: null, error: null });
     })
     .catch(() => {
       if (verifiedFileUri && knownRelease) {
         downloadedFileUri = verifiedFileUri;
-        setSnapshot({ phase: 'ready', installed, release: knownRelease, progress: 1, error: 'check' });
+        setSnapshot({ phase: 'ready', installed, release: knownRelease, progress: 1, waitingFor: null, error: 'check' });
         return;
       }
       setSnapshot({ phase: 'error', installed, error: 'check' });
@@ -187,50 +246,29 @@ export const checkForAppUpdate = (): Promise<AppUpdateSnapshot> => {
   return inFlightCheck;
 };
 
-/**
- * Downloads the advertised APK into the cache directory and verifies its size.
- * Interrupted or unverified downloads are deleted and never become installable.
- */
 export const downloadAppUpdate = (): Promise<AppUpdateSnapshot> => {
   if (inFlightDownload) {
     return inFlightDownload;
   }
   const release = snapshot.release;
-  if (snapshot.phase !== 'available' || !release || !FileSystem.cacheDirectory) {
+  if (snapshot.phase !== 'available' || !release) {
+    return Promise.resolve(snapshot);
+  }
+  if (!nativeAppUpdater?.startDownload) {
+    setSnapshot({ error: 'download' });
     return Promise.resolve(snapshot);
   }
 
-  const fileUri = `${FileSystem.cacheDirectory}${downloadFileName(release)}`;
-  setSnapshot({ phase: 'downloading', progress: 0, error: null });
-  inFlightDownload = FileSystem.createDownloadResumable(
-    release.downloadUrl,
-    fileUri,
-    {},
-    (progress) => {
-      const total = progress.totalBytesExpectedToWrite;
-      setSnapshot({ progress: total > 0 ? progress.totalBytesWritten / total : 0 });
-    }
+  setSnapshot({ phase: 'downloading', progress: 0, waitingFor: null, error: null });
+  inFlightDownload = nativeAppUpdater.startDownload(
+    release.downloadUrl, downloadFileName(release), release.versionCode, release.sizeBytes
   )
-    .downloadAsync()
-    .then(async (result) => {
-      if (!result || result.status !== 200) {
-        throw new Error(`download failed with status ${result?.status ?? 'none'}`);
-      }
-      const info = await FileSystem.getInfoAsync(fileUri);
-      const size = info.exists && !info.isDirectory ? Number(info.size ?? 0) : 0;
-      if (size !== release.sizeBytes) {
-        throw new Error(`download size mismatch: ${size} != ${release.sizeBytes}`);
-      }
-      downloadedFileUri = fileUri;
-      setSnapshot({ phase: 'ready', progress: 1, error: null });
+    .then(async () => {
+      startDownloadPoll(release);
+      await refreshDownload(release);
     })
-    .catch(async () => {
-      try {
-        await FileSystem.deleteAsync(fileUri, { idempotent: true });
-      } catch {
-        // The partial file is unusable either way.
-      }
-      setSnapshot({ phase: 'available', progress: 0, error: 'download' });
+    .catch(() => {
+      setSnapshot({ phase: 'available', progress: 0, waitingFor: null, error: 'download' });
     })
     .then(() => {
       inFlightDownload = null;
@@ -271,7 +309,9 @@ export const installAppUpdate = async (): Promise<void> => {
       return;
     }
 
-    const contentUri = await FileSystem.getContentUriAsync(downloadedFileUri);
+    const contentUri = downloadedFileUri.startsWith('content:')
+      ? downloadedFileUri
+      : await FileSystem.getContentUriAsync(downloadedFileUri);
     await IntentLauncher.startActivityAsync(APK_VIEW_ACTION, {
       data: contentUri,
       type: APK_MIME_TYPE,
@@ -283,6 +323,9 @@ export const installAppUpdate = async (): Promise<void> => {
 };
 
 AppState.addEventListener('change', (state) => {
+  if (state === 'active' && snapshot.phase === 'downloading' && snapshot.release) {
+    void refreshDownload(snapshot.release).catch(() => undefined);
+  }
   if (state !== 'active' || !awaitingInstallPermission) {
     return;
   }

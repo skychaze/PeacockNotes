@@ -52,10 +52,14 @@ const describeUpdate = (update: AppUpdateSnapshot, t: Translate): UpdatePresenta
     case 'downloading':
       return {
         icon: 'download-circle-outline',
-        status: t('update.downloading', {
-          version: update.release?.versionName ?? '',
-          percent: Math.round(update.progress * 100),
-        }),
+        status: update.waitingFor === 'wifi'
+          ? t('update.waitingForWifi')
+          : update.waitingFor === 'network'
+            ? t('update.waitingForNetwork')
+            : t('update.downloading', {
+                version: update.release?.versionName ?? '',
+                percent: Math.round(update.progress * 100),
+              }),
         action: null,
         busy: true,
       };
@@ -79,7 +83,10 @@ export const AppUpdateScreen = () => {
     useCallback(() => {
       setUpdate(getAppUpdateSnapshot());
       const unsubscribe = subscribeAppUpdate(setUpdate);
-      void checkForAppUpdate();
+      const phase = getAppUpdateSnapshot().phase;
+      if (phase === 'idle' || phase === 'current' || phase === 'error') {
+        void checkForAppUpdate();
+      }
       return unsubscribe;
     }, [])
   );
