@@ -183,6 +183,7 @@ type NativeArchiveModule = {
   deleteArchives(request: Readonly<{ uris: readonly string[] }>): Promise<Readonly<{ deletedCount: number }>>;
   applyManagedRetention(request: Partial<BackupProgressOwner>): Promise<ManagedRetentionResult>;
   previewImport(request: Readonly<{ archiveUri: string } & Partial<BackupProgressOwner>>): Promise<ImportPreview>;
+  pruneImportSessions(request: Readonly<{ importSessionId?: string }>): Promise<void>;
   releaseImportSession(request: Readonly<{ importSessionId: string }>): Promise<void>;
   commitSelectiveImport(request: CommitSelectiveImportRequest): Promise<ImportResult>;
   commitFullReplacement(request: FullReplacementRequest): Promise<FullReplacementResult>;
@@ -254,3 +255,6 @@ export const releaseArchiveImportSession = (importSessionId?: string): Promise<v
   importSessionId
     ? moduleOrThrow().releaseImportSession({ importSessionId })
     : Promise.resolve();
+
+export const pruneArchiveImportSessions = (importSessionId?: string): Promise<void> =>
+  moduleOrThrow().pruneImportSessions({ importSessionId });

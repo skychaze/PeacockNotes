@@ -215,6 +215,17 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   }
 
   @ReactMethod
+  fun pruneImportSessions(request: ReadableMap, promise: Promise) = executor.execute {
+    val retainedId = request.optionalString("importSessionId")
+    runCatching {
+      context.cacheDir.listFiles()?.filter { it.isDirectory && it.name.startsWith("archive-session-") }?.forEach { directory ->
+        val id = directory.name.removePrefix("archive-session-")
+        if (id != retainedId && id !in importSessions) directory.deleteRecursively()
+      }
+    }.onSuccess { promise.resolve(null) }.onFailure { promise.reject(errorCode(it), it.message, it) }
+  }
+
+  @ReactMethod
   fun releaseImportSession(request: ReadableMap, promise: Promise) = executor.execute {
     runCatching { releaseSession(request.optionalString("importSessionId")) }
       .onSuccess { promise.resolve(null) }
@@ -739,7 +750,9 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       val summary = if (archive.isFile) validate(request, localArchive = archive)
       else validate(request, retainedArchive = archive)
       val extracted = validationWork.listFiles()!!.single { it.isDirectory }
-      File(extracted, DATABASE_PATH).copyTo(File(directory, "content.sqlite"), overwrite = true)
+      val database = File(directory, DATABASE_PATH)
+      database.parentFile?.mkdirs()
+      File(extracted, DATABASE_PATH).copyTo(database, overwrite = true)
       val inventory = parseInventory(JSONObject(File(extracted, MANIFEST_PATH).readText()), Limits.from(null))
         .mapValues { (_, digest) -> ArchiveValidationDigest(digest.hex, digest.bytes) }
       archive.setReadOnly()
@@ -767,11 +780,10 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
 
   private fun extractImportEntries(session: ImportSession, work: File, paths: Set<String>): File {
     val extracted = File(work, "selected").apply { mkdirs() }
-    val required = paths + if (File(extracted, DATABASE_PATH).isFile) emptySet() else setOf(DATABASE_PATH)
-    val bytes = required.sumOf { path -> session.inventory[path]?.bytes ?: fail("MISSING_MEDIA", "Selected entry is absent: $path") }
+    val bytes = paths.sumOf { path -> session.inventory[path]?.bytes ?: fail("MISSING_MEDIA", "Selected entry is absent: $path") }
     ensureSpace(work, bytes)
-    progress.startStep("import", "verify_files", bytes, required.size)
-    extractVerifiedArchiveEntries(session.archive, extracted, session.inventory, required, progress::addBytes, progress::addItem)
+    progress.startStep("import", "verify_files", bytes, paths.size)
+    extractVerifiedArchiveEntries(session.archive, extracted, session.inventory, paths, progress::addBytes, progress::addItem)
     return extracted
   }
 
@@ -797,7 +809,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     val verified = session ?: createImportSession(archiveUri)
     try {
       val summary = verified.summary
-      val db = SQLiteDatabase.openDatabase(File(verified.directory, "content.sqlite").path, null, SQLiteDatabase.OPEN_READONLY)
+      val db = SQLiteDatabase.openDatabase(File(verified.directory, DATABASE_PATH).path, null, SQLiteDatabase.OPEN_READONLY)
       val folders = JSONArray()
       val notes = JSONArray()
       try {
@@ -867,7 +879,6 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   }
 
   private fun commitImport(request: ReadableMap): com.facebook.react.bridge.WritableMap {
-    val archiveUri = requiredString(request, "archiveUri")
     val expectedHash = requiredString(request, "archiveSha256")
     val databaseFile = fileFromUri(requiredString(request, "databaseUri"))
     val mediaRoot = fileFromUri(requiredString(request, "mediaDirectoryUri"))
@@ -881,8 +892,16 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       val verified = importSession(request)
       session = verified
       val summary = verified.summary
-      val databaseStaging = extractImportEntries(verified, work, emptySet())
-      val source = SQLiteDatabase.openDatabase(File(databaseStaging, DATABASE_PATH).path, null, SQLiteDatabase.OPEN_READONLY)
+      val sourceFile = File(verified.directory, DATABASE_PATH)
+      if (!sourceFile.isFile) {
+        ensureSpace(work, verified.inventory.getValue(DATABASE_PATH).bytes)
+        extractVerifiedArchiveEntries(verified.archive, verified.directory, verified.inventory, setOf(DATABASE_PATH))
+      }
+      val databaseDigest = verified.inventory.getValue(DATABASE_PATH)
+      if (FileInputStream(sourceFile).use(::sha256) != Digest(databaseDigest.sha256, databaseDigest.bytes)) {
+        fail("STAGING_VERIFICATION_FAILED", "Retained import database differs from the verified archive")
+      }
+      val source = SQLiteDatabase.openDatabase(sourceFile.path, null, SQLiteDatabase.OPEN_READONLY)
       val live = SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READWRITE)
       val createdMedia = mutableSetOf<File>()
       var mediaCommitted = false
@@ -893,23 +912,50 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         // relations cannot introduce another orphaned row.
         live.execSQL("PRAGMA foreign_keys=ON")
         val available = mutableSetOf<String>()
-        source.rawQuery("SELECT portableId FROM Notes", null).use { while (it.moveToNext()) available.add(it.getString(0)) }
+        var selectedDatabaseBytes = 64L * 1024
+        val requiredFolders = mutableSetOf<String>()
+        source.rawQuery("SELECT portableId,folderPortableId,length(CAST(title AS BLOB)),length(CAST(content AS BLOB)) FROM Notes", null).use { cursor ->
+          while (cursor.moveToNext()) {
+            val id = cursor.getString(0)
+            available.add(id)
+            if (id in selected) {
+              requiredFolders.add(cursor.getString(1))
+              selectedDatabaseBytes += 64L * 1024 + (cursor.getLong(2) + cursor.getLong(3)) * 4
+            }
+          }
+        }
+        val countedFolders = mutableSetOf<String>()
+        val parentColumn = if (hasColumn(source, "Folders", "parentPortableId")) "parentPortableId" else "NULL"
+        requiredFolders.forEach { folderId ->
+          var id: String? = folderId
+          while (true) {
+            val currentId = id ?: break
+            if (!countedFolders.add(currentId)) break
+            source.rawQuery("SELECT $parentColumn,name FROM Folders WHERE portableId=?", arrayOf(currentId)).use { cursor ->
+              if (!cursor.moveToFirst()) fail("BROKEN_REFERENCE", "Required folder is missing")
+              selectedDatabaseBytes += 4096 + cursor.getString(1).toByteArray(Charsets.UTF_8).size.toLong() * 4
+              id = cursor.getString(0)
+            }
+          }
+        }
         if (!available.containsAll(selected)) fail("INVALID_SELECTION", "The selection contains a note absent from the archive")
 
         if (!mediaRoot.exists() && !mediaRoot.mkdirs()) fail("STAGING_UNAVAILABLE", "Cannot create media directory")
         val selectedMedia = linkedMapOf<String, MutableSet<String>>()
         listOf("NoteAudios", "NoteFiles").forEach { table ->
           val paths = selectedMedia.getOrPut(table) { mutableSetOf() }
-          selected.forEach { noteId ->
-            source.rawQuery("SELECT mediaPath FROM $table WHERE notePortableId=?", arrayOf(noteId)).use { cursor ->
-              while (cursor.moveToNext()) paths.add(cursor.getString(0))
+          source.rawQuery("SELECT * FROM $table", null).use { cursor ->
+            val noteColumn = cursor.getColumnIndexOrThrow("notePortableId")
+            val pathColumn = cursor.getColumnIndexOrThrow("mediaPath")
+            while (cursor.moveToNext()) if (cursor.getString(noteColumn) in selected) {
+              paths.add(cursor.getString(pathColumn))
+              selectedDatabaseBytes += 4096 + (0 until cursor.columnCount).sumOf { (cursor.getString(it) ?: "").toByteArray(Charsets.UTF_8).size.toLong() } * 4
             }
           }
         }
         val inventory = verified.inventory
         val mediaBytes = selectedMedia.values.sumOf { paths -> paths.sumOf { inventory.getValue(it).bytes } }
-        val databaseBytes = inventory.getValue(DATABASE_PATH).bytes
-        ensureSpace(mediaRoot, mediaBytes * 2 + databaseBytes * 2)
+        ensureSpace(mediaRoot, mediaBytes * 2 + selectedDatabaseBytes)
         val extracted = extractImportEntries(verified, work, selectedMedia.values.flatten().toSet())
         progress.startStep("import", "restore_notes")
         val restrictions = MediaRestrictions(emptySet(), emptySet())
@@ -917,28 +963,27 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         val mediaUris = mutableMapOf<String, String>()
         listOf("NoteAudios", "NoteFiles").forEach { table ->
           selectedMedia.getValue(table).forEach { path ->
-              val staged = File(extracted, path)
-              val hash = path.substringAfterLast('/')
-              val kind = if (table == "NoteAudios") "audio" else "files"
-              val addressedTarget = File(File(mediaRoot, kind), hash)
-              addressedTarget.parentFile?.mkdirs()
-              val addressedDigest = if (addressedTarget.exists()) runCatching { FileInputStream(addressedTarget).use(::sha256) }.getOrNull() else null
-              val target = if (addressedTarget.exists() && addressedDigest?.hex != hash) {
-                val keyHash = MessageDigest.getInstance("SHA-256").digest(operationKey.toByteArray()).joinToString("") { "%02x".format(it) }.take(12)
-                File(addressedTarget.parentFile, "$hash.recovered-$keyHash")
-              } else addressedTarget
-              if (!target.exists()) {
-                createdMedia.add(target)
-                copyFileVerified(staged, target, "STAGING_VERIFICATION_FAILED")
-              }
-              val expected = inventory.getValue(path)
-              if (FileInputStream(target).use(::sha256) != Digest(expected.sha256, expected.bytes)) {
-                fail("STAGING_VERIFICATION_FAILED", "Imported media differs from the selected archive")
-              }
-              mediaUris[mediaKey(table, path)] = Uri.fromFile(target).toString()
+            val staged = File(extracted, path)
+            val hash = path.substringAfterLast('/')
+            val kind = if (table == "NoteAudios") "audio" else "files"
+            val addressedTarget = File(File(mediaRoot, kind), hash)
+            addressedTarget.parentFile?.mkdirs()
+            val addressedDigest = if (addressedTarget.exists()) runCatching { FileInputStream(addressedTarget).use(::sha256) }.getOrNull() else null
+            val target = if (addressedTarget.exists() && addressedDigest?.hex != hash) {
+              val keyHash = MessageDigest.getInstance("SHA-256").digest(operationKey.toByteArray()).joinToString("") { "%02x".format(it) }.take(12)
+              File(addressedTarget.parentFile, "$hash.recovered-$keyHash")
+            } else addressedTarget
+            if (!target.exists()) {
+              createdMedia.add(target)
+              copyFileVerified(staged, target, "STAGING_VERIFICATION_FAILED")
+            }
+            val expected = inventory.getValue(path)
+            if (FileInputStream(target).use(::sha256) != Digest(expected.sha256, expected.bytes)) {
+              fail("STAGING_VERIFICATION_FAILED", "Imported media differs from the selected archive")
+            }
+            mediaUris[mediaKey(table, path)] = Uri.fromFile(target).toString()
           }
         }
-
         val archiveCreatedAt = summary.getString("createdAt") ?: fail("MALFORMED_MANIFEST", "Archive creation time is missing")
         var imported = 0; var recovered = 0; var skipped = 0; var repaired = 0
         live.beginTransaction()
