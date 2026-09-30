@@ -21,6 +21,7 @@ class AutomaticBackupWorker(context: Context, parameters: WorkerParameters) : Co
     )
     if (!preferences.getBoolean(AutomaticBackupModule.ENABLED, false)) return Result.success()
 
+    if (BackupProgressStore.hasManualOperation(applicationContext)) return Result.retry()
     setForeground(createForegroundInfo())
     return try {
       AutomaticBackupTaskService.start(applicationContext).await()

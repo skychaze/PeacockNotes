@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import { backupDatabaseAsync, deleteDatabaseAsync, openDatabaseAsync } from 'expo-sqlite';
+import type { BackupNotificationOwner } from '../backup/notificationOwner';
 import type { BackupOperationHandler } from '../backup';
 import { getDb } from '../database/schema';
 import {
@@ -341,11 +342,11 @@ export const resumePendingExportOperation = async () => {
   return coordinator.resume(['export', 'automatic_backup', 'managed_retention']);
 };
 
-export const runManagedRetention = async (): Promise<ManagedRetentionState> => {
+export const runManagedRetention = async (notificationOwner: BackupNotificationOwner = 'manual'): Promise<ManagedRetentionState> => {
   console.info('[BR-RETENTION] started');
   await coordinator.resume(['export', 'automatic_backup', 'managed_retention']);
   managedRetentionHandler.result = null;
-  const operation = await coordinator.start(operationId(), 'managed_retention', '{"version":1}');
+  const operation = await coordinator.start(operationId(), 'managed_retention', JSON.stringify({ version: 1, notificationOwner }));
   const result = managedRetentionHandler.result as ManagedRetentionResult | null;
   const updatedAt = new Date().toISOString();
   if (operation.state === 'succeeded' && result) {
@@ -381,7 +382,7 @@ export const runAutomaticExport = async (): Promise<VerifiedBackup> => {
   // automatic backup into a failed/stuck operation when Drive metadata or a
   // later scan is temporarily unavailable.
   try {
-    await runManagedRetention();
+    await runManagedRetention('automatic');
   } catch (error) {
     console.warn('[BR-AUTO] retention after verified export failed:', error);
   }

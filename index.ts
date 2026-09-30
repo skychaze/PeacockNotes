@@ -3,7 +3,7 @@ import { AppRegistry } from 'react-native';
 
 import App from './App';
 import { initDb } from './src/database/schema';
-import { attemptAutomaticBackup } from './src/services/automaticBackup';
+import { attemptAutomaticBackup, finishAutomaticBackupForegroundService } from './src/services/automaticBackup';
 import { finishBackupNotificationIfIdle } from './src/services/backupFolder';
 import { resumePendingBackupOperation } from './src/services/backupBackground';
 
@@ -15,13 +15,15 @@ registerRootComponent(App);
 AppRegistry.registerHeadlessTask('PeacockNotesAutomaticBackup', () => async () => {
   try {
     await initDb();
-    await resumePendingBackupOperation();
+    await resumePendingBackupOperation('automatic');
     await attemptAutomaticBackup();
   } catch (error) {
     // Headless tasks must settle even when startup/database recovery fails;
     // WorkManager can schedule the next policy attempt instead of receiving
     // an unhandled rejection from the JS task.
     console.warn('Automatic backup headless task failed:', error);
+  } finally {
+    finishAutomaticBackupForegroundService();
   }
 });
 

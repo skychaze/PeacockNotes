@@ -8,6 +8,7 @@ import {
   shouldRetryAutomaticBackup,
   type AutomaticBackupIntervalHours,
 } from '../backup/automaticPolicy';
+import { backupOperationStore } from './backupOperations';
 import { getContentRevision } from '../database/schema';
 import { runAutomaticExport, type VerifiedBackup } from './backupExport';
 import { getBackupFolderState } from './backupFolder';
@@ -36,6 +37,7 @@ export type AutomaticBackupState = Readonly<{
 type AutomaticBackupNativeModule = {
   getState(): Promise<AutomaticBackupNativeState>;
   startForegroundService(): Promise<void>;
+  finishForegroundService(): void;
   setEnabled(enabled: boolean, intervalHours: AutomaticBackupIntervalHours): Promise<AutomaticBackupNativeState>;
   setInterval(intervalHours: AutomaticBackupIntervalHours): Promise<AutomaticBackupNativeState>;
   setStatus(phase: AutomaticBackupPhase, attempt: number, errorCode: string | null): Promise<void>;
@@ -90,6 +92,8 @@ const normalizeAutomaticBackupState = (state: AutomaticBackupNativeState): Autom
     ? state.intervalHours
     : DEFAULT_AUTOMATIC_BACKUP_INTERVAL_HOURS,
 });
+
+export const finishAutomaticBackupForegroundService = () => requireModule().finishForegroundService();
 
 export const startAutomaticBackupForegroundService = () => requireModule().startForegroundService();
 
@@ -163,36 +167,44 @@ const runAutomaticBackupAttempt = async (): Promise<AutomaticBackupState> => {
     return getAutomaticBackupState();
   }
 
+  if (await backupOperationStore.getActive()) {
+    await native.setStatus('retrying', 0, 'BACKUP_OPERATION_BUSY');
+    return getAutomaticBackupState();
+  }
   await native.startForegroundService();
 
-  for (let attempt = 1; attempt <= MAX_AUTOMATIC_BACKUP_ATTEMPTS; attempt += 1) {
-    state = normalizeAutomaticBackupState(await native.getState());
-    if (!state.enabled || driveAuthorizationInProgress) return state;
-    await native.setStatus('running', attempt, null);
-    try {
-      await runAutomaticExport();
-      await native.setStatus('verified', 0, null);
-      return getAutomaticBackupState();
-    } catch (error: unknown) {
-      const code = errorCode(error);
-      if (code === 'BACKUP_OPERATION_BUSY') {
-        // A manual import/export (or another automatic worker) owns the
-        // single durable slot. Do not report this as a permanent provider
-        // failure and do not start a second job; leave a recoverable status
-        // for the next lifecycle/WorkManager attempt.
+  try {
+    for (let attempt = 1; attempt <= MAX_AUTOMATIC_BACKUP_ATTEMPTS; attempt += 1) {
+      state = normalizeAutomaticBackupState(await native.getState());
+      if (!state.enabled || driveAuthorizationInProgress) return state;
+      await native.setStatus('running', attempt, null);
+      try {
+        await runAutomaticExport();
+        await native.setStatus('verified', 0, null);
+        return getAutomaticBackupState();
+      } catch (error: unknown) {
+        const code = errorCode(error);
+        if (code === 'BACKUP_OPERATION_BUSY') {
+          // A manual import/export (or another automatic worker) owns the
+          // single durable slot. Do not report this as a permanent provider
+          // failure and do not start a second job; leave a recoverable status
+          // for the next lifecycle/WorkManager attempt.
+          await native.setStatus('retrying', attempt, code);
+          return getAutomaticBackupState();
+        }
+        const willRetry = shouldRetryAutomaticBackup(code, attempt);
+        if (!willRetry) {
+          await native.setStatus(failurePhase(code), attempt, code);
+          return getAutomaticBackupState();
+        }
         await native.setStatus('retrying', attempt, code);
-        return getAutomaticBackupState();
+        await delay(RETRY_DELAYS_MS[attempt - 1]);
       }
-      const willRetry = shouldRetryAutomaticBackup(code, attempt);
-      if (!willRetry) {
-        await native.setStatus(failurePhase(code), attempt, code);
-        return getAutomaticBackupState();
-      }
-      await native.setStatus('retrying', attempt, code);
-      await delay(RETRY_DELAYS_MS[attempt - 1]);
     }
+    return getAutomaticBackupState();
+  } finally {
+    native.finishForegroundService();
   }
-  return getAutomaticBackupState();
 };
 
 export const attemptAutomaticBackup = (): Promise<AutomaticBackupState> => {

@@ -195,6 +195,19 @@ object BackupProgressStore {
     if (notificationTarget?.context === owner) notificationTarget = null
   }
 
+  @Synchronized
+  fun hasManualOperation(context: Context): Boolean {
+    val current = registry.snapshot()
+    if (current?.state == "running") return notificationTarget?.notificationId == ManualBackupForegroundService.NOTIFICATION_ID
+    val raw = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).getString(ACTIVE, null) ?: return false
+    return runCatching {
+      val json = JSONObject(raw)
+      val id = json.optInt("notificationId", 0)
+      id == ManualBackupForegroundService.NOTIFICATION_ID ||
+        (id == 0 && json.optString("operationKind") in setOf("export", "import", "managed_retention"))
+    }.getOrDefault(false)
+  }
+
   private fun persist(snapshot: BackupProgressSnapshot?) {
     val reactContext = context ?: return
     val preferences = reactContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
@@ -205,6 +218,7 @@ object BackupProgressStore {
     preferences.edit().putString(ACTIVE, JSONObject().apply {
       put("operationId", snapshot.operationId)
       put("operationKind", snapshot.operationKind)
+      put("notificationId", notificationTarget?.notificationId ?: 0)
       put("phase", snapshot.phase)
       put("step", snapshot.step)
       put("updatedAt", snapshot.updatedAt)
@@ -250,12 +264,8 @@ object BackupProgressStore {
     }
     if (snapshot.state != "running") {
       manager.notify(target.notificationId, BackupNotifications.builder(target.context, target.channelId)
-        .setSmallIcon(android.R.drawable.stat_sys_upload)
-        .setContentTitle("Peacock Notes backup")
         .setContentText("Finishing backup")
         .setProgress(0, 0, true)
-        .setOngoing(true)
-        .setOnlyAlertOnce(true)
         .build())
       return
     }

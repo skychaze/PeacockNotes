@@ -1,6 +1,7 @@
 package com.roy.peacocknotes
 
 import android.content.Context
+import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
@@ -77,6 +78,11 @@ class AutomaticBackupModule(private val context: ReactApplicationContext) : Reac
     runCatching { AutomaticBackupTaskService.start(context) }
       .onSuccess { promise.resolve(null) }
       .onFailure { promise.reject("FOREGROUND_START_FAILED", it.message, it) }
+  }
+
+  @ReactMethod
+  fun finishForegroundService() {
+    context.stopService(Intent(context, AutomaticBackupTaskService::class.java))
   }
 
   @ReactMethod

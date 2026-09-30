@@ -28,6 +28,7 @@ class ManualBackupTaskService : HeadlessJsTaskService() {
   }
 
   override fun onDestroy() {
+    stopForeground(STOP_FOREGROUND_DETACH)
     BackupProgressStore.clearNotificationTarget(this)
     super.onDestroy()
   }
@@ -44,8 +45,4 @@ class ManualBackupTaskService : HeadlessJsTaskService() {
     true,
   )
 
-  override fun onHeadlessJsTaskFinish(taskId: Int) {
-    stopForeground(STOP_FOREGROUND_DETACH)
-    super.onHeadlessJsTaskFinish(taskId)
-  }
 }
