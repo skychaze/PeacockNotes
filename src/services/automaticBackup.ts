@@ -10,7 +10,7 @@ import {
 } from '../backup/automaticPolicy';
 import { getContentRevision } from '../database/schema';
 import { runAutomaticExport, type VerifiedBackup } from './backupExport';
-import { getBackupFolderState, startBackupForegroundService, releaseBackupForegroundService } from './backupFolder';
+import { getBackupFolderState } from './backupFolder';
 
 export type AutomaticBackupPhase =
   | 'disabled'
@@ -35,6 +35,7 @@ export type AutomaticBackupState = Readonly<{
 
 type AutomaticBackupNativeModule = {
   getState(): Promise<AutomaticBackupNativeState>;
+  startForegroundService(): Promise<void>;
   setEnabled(enabled: boolean, intervalHours: AutomaticBackupIntervalHours): Promise<AutomaticBackupNativeState>;
   setInterval(intervalHours: AutomaticBackupIntervalHours): Promise<AutomaticBackupNativeState>;
   setStatus(phase: AutomaticBackupPhase, attempt: number, errorCode: string | null): Promise<void>;
@@ -89,6 +90,8 @@ const normalizeAutomaticBackupState = (state: AutomaticBackupNativeState): Autom
     ? state.intervalHours
     : DEFAULT_AUTOMATIC_BACKUP_INTERVAL_HOURS,
 });
+
+export const startAutomaticBackupForegroundService = () => requireModule().startForegroundService();
 
 export const getAutomaticBackupState = async () => normalizeAutomaticBackupState(await requireModule().getState());
 export const setAutomaticBackupEnabled = async (
@@ -160,18 +163,14 @@ const runAutomaticBackupAttempt = async (): Promise<AutomaticBackupState> => {
     return getAutomaticBackupState();
   }
 
+  await native.startForegroundService();
+
   for (let attempt = 1; attempt <= MAX_AUTOMATIC_BACKUP_ATTEMPTS; attempt += 1) {
     state = normalizeAutomaticBackupState(await native.getState());
     if (!state.enabled || driveAuthorizationInProgress) return state;
     await native.setStatus('running', attempt, null);
     try {
-      const foreground = AppState.currentState === 'active';
-      if (foreground) await startBackupForegroundService();
-      try {
-        await runAutomaticExport();
-      } finally {
-        if (foreground) await releaseBackupForegroundService(true);
-      }
+      await runAutomaticExport();
       await native.setStatus('verified', 0, null);
       return getAutomaticBackupState();
     } catch (error: unknown) {

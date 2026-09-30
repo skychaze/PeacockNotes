@@ -1,12 +1,9 @@
 package com.roy.peacocknotes
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
-import androidx.core.app.NotificationCompat
 import com.facebook.react.HeadlessJsTaskService
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.jstasks.HeadlessJsTaskConfig
@@ -14,21 +11,9 @@ import com.facebook.react.jstasks.HeadlessJsTaskConfig
 class ManualBackupTaskService : HeadlessJsTaskService() {
   override fun onCreate() {
     super.onCreate()
-    val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      manager.createNotificationChannel(NotificationChannel(
-        ManualBackupForegroundService.CHANNEL_ID,
-        "Backup progress",
-        NotificationManager.IMPORTANCE_LOW,
-      ))
-    }
-    val notification = NotificationCompat.Builder(this, ManualBackupForegroundService.CHANNEL_ID)
-      .setSmallIcon(android.R.drawable.stat_sys_upload)
-      .setContentTitle("Peacock Notes backup")
+    val notification = BackupNotifications.builder(this, ManualBackupForegroundService.CHANNEL_ID)
       .setContentText("Resuming backup")
       .setProgress(100, 0, true)
-      .setOngoing(true)
-      .setOnlyAlertOnce(true)
       .build()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
       startForeground(
@@ -43,7 +28,7 @@ class ManualBackupTaskService : HeadlessJsTaskService() {
   }
 
   override fun onDestroy() {
-    BackupProgressStore.clearNotificationTarget(ManualBackupForegroundService.NOTIFICATION_ID)
+    BackupProgressStore.clearNotificationTarget(this)
     super.onDestroy()
   }
 
@@ -60,8 +45,7 @@ class ManualBackupTaskService : HeadlessJsTaskService() {
   )
 
   override fun onHeadlessJsTaskFinish(taskId: Int) {
+    stopForeground(STOP_FOREGROUND_DETACH)
     super.onHeadlessJsTaskFinish(taskId)
-    stopForeground(true)
-    stopSelf()
   }
 }

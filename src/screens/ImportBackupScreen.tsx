@@ -14,7 +14,7 @@ import { PrimaryButton } from '../components/PrimaryButton';
 import { ScreenContainer } from '../components/ScreenContainer';
 import { TOP_BAR_HEIGHT, TopBar } from '../components/TopBar';
 import { useLanguage } from '../i18n/LanguageContext';
-import type { BackupCollectionArchive, FullReplacementResult, ImportPreview, ImportResult } from '../services/archive';
+import { releaseArchiveImportSession, type BackupCollectionArchive, type FullReplacementResult, type ImportPreview, type ImportResult } from '../services/archive';
 import { getActiveBackupOperation } from '../services/backupBackground';
 import { getBackupDiscoverySnapshot, initializeBackupDiscovery, refreshBackupDiscovery, subscribeBackupDiscovery } from '../services/backupDiscovery';
 import { releaseBackupForegroundService, startBackupForegroundService } from '../services/backupFolder';
@@ -60,8 +60,22 @@ export const ImportBackupScreen = () => {
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
   const operationInFlightRef = useRef(false);
+  const previewRef = useRef<ImportPreview | null>(null);
+  const releasePreview = (value: ImportPreview | null) => {
+    void releaseArchiveImportSession(value?.importSessionId).catch((releaseError: unknown) => {
+      console.warn('Failed to release import archive:', releaseError);
+    });
+  };
+  const discardPreview = () => {
+    releasePreview(previewRef.current);
+    previewRef.current = null;
+    setPreview(null);
+  };
 
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  useEffect(() => () => {
+    mountedRef.current = false;
+    if (!operationInFlightRef.current) releasePreview(previewRef.current);
+  }, []);
   useEffect(() => subscribeBackupDiscovery(setDiscovery), []);
   useFocusEffect(useCallback(() => {
     let active = true;
@@ -133,7 +147,12 @@ export const ImportBackupScreen = () => {
           finishBackupProgress(owner);
         }
       });
-      if (!mountedRef.current) return;
+      if (!mountedRef.current) {
+        releasePreview(loaded);
+        return;
+      }
+      releasePreview(previewRef.current);
+      previewRef.current = loaded;
       setPreview(loaded);
       setSelectedNoteIds(new Set(loaded.notes.map((note) => note.portableId)));
       setExpandedFolderIds(new Set());
@@ -174,6 +193,7 @@ export const ImportBackupScreen = () => {
     });
   };
 
+  const selectionDisabled = state !== 'idle';
   const tree = preview ? buildArchiveTree(resolvePreviewFolders(preview), preview.notes) : [];
   const renderFolder = (folder: ArchiveTreeFolder, depth = 0): ReactNode => {
     const expanded = expandedFolderIds.has(folder.portableId);
@@ -188,8 +208,9 @@ export const ImportBackupScreen = () => {
           </PressableScale>
           <PressableScale
             accessibilityRole="checkbox"
-            accessibilityState={{ checked: checkState === 'indeterminate' ? 'mixed' : checkState === 'checked', disabled: checkState === 'disabled' }}
-            disabled={checkState === 'disabled'}
+            accessibilityState={{ checked: checkState === 'indeterminate' ? 'mixed' : checkState === 'checked', disabled: selectionDisabled || checkState === 'disabled' }}
+            accessibilityLabel={folder.name}
+            disabled={selectionDisabled || checkState === 'disabled'}
             onPress={() => toggleFolder(folder)}
             style={{ padding: ui.space.xs }}
           >
@@ -206,7 +227,7 @@ export const ImportBackupScreen = () => {
             {folder.notes.map((note) => {
               const selected = selectedNoteIds.has(note.portableId);
               return (
-                <PressableScale key={note.portableId} accessibilityRole="checkbox" accessibilityState={{ checked: selected }} onPress={() => toggleSelectedNote(note.portableId)} style={{ marginLeft: ui.space.lg, paddingVertical: ui.space.sm, borderTopWidth: 1, borderTopColor: colors.border, gap: ui.space.xs }}>
+                <PressableScale key={note.portableId} accessibilityRole="checkbox" accessibilityLabel={note.title} accessibilityState={{ checked: selected, disabled: selectionDisabled }} disabled={selectionDisabled} onPress={() => toggleSelectedNote(note.portableId)} style={{ marginLeft: ui.space.lg, paddingVertical: ui.space.sm, borderTopWidth: 1, borderTopColor: colors.border, gap: ui.space.xs }}>
                   <View style={{ flexDirection: 'row', gap: ui.space.sm, alignItems: 'center' }}>
                     <MaterialCommunityIcons name={selected ? 'checkbox-marked' : 'checkbox-blank-outline'} size={24} color={selected ? colors.primary : colors.textSecondary} />
                     <View style={{ flex: 1 }}>
@@ -226,7 +247,7 @@ export const ImportBackupScreen = () => {
   };
 
   const commit = async (all: boolean) => {
-    if (!preview || (!all && selectedNoteIds.size === 0) || state !== 'idle') return;
+    if (!preview || selectedNoteIds.size === 0 || state !== 'idle') return;
     setState('committing');
     setError(null);
     try {
@@ -235,7 +256,7 @@ export const ImportBackupScreen = () => {
         : importSelectedNotes(preview, [...selectedNoteIds], t('backup.import.recoveredCopySuffix')));
       if (mountedRef.current) {
         setResult(imported);
-        setPreview(null);
+        discardPreview();
       }
     } catch (commitError) {
       console.warn('Failed to import backup:', commitError);
@@ -259,7 +280,7 @@ export const ImportBackupScreen = () => {
             const replacement = await runForegroundOperation(() => importAllNotesByReplacement(preview));
             if (mountedRef.current) {
               setResult(replacement);
-              setPreview(null);
+              discardPreview();
             }
           } catch (replacementError) {
             console.warn('Failed to replace content from backup:', replacementError);
@@ -312,11 +333,19 @@ export const ImportBackupScreen = () => {
               </View>
               {state === 'committing' ? <ActivityIndicator color={colors.primary} /> : null}
             </View>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: ui.space.sm }}>
+              <PressableScale accessibilityRole="button" accessibilityLabel={t('backup.import.deselectAll')} accessibilityState={{ disabled: selectionDisabled }} disabled={selectionDisabled} onPress={() => setSelectedNoteIds(new Set())} style={{ padding: ui.space.sm }}>
+                <AppText variant="headline" color={colors.primary}>{t('backup.import.deselectAll')}</AppText>
+              </PressableScale>
+              <PressableScale accessibilityRole="button" accessibilityLabel={t('backup.import.selectAll')} accessibilityState={{ disabled: selectionDisabled }} disabled={selectionDisabled} onPress={() => setSelectedNoteIds(new Set(preview.notes.map((note) => note.portableId)))} style={{ padding: ui.space.sm }}>
+                <AppText variant="headline" color={colors.primary}>{t('backup.import.selectAll')}</AppText>
+              </PressableScale>
+            </View>
             {tree.map((folder) => renderFolder(folder))}
             <PrimaryButton disabled={selectedNoteIds.size === 0 || state !== 'idle'} onPress={() => void commit(false)}>
               {state === 'committing' ? t('backup.import.committing') : t('backup.import.selected', { count: selectedNoteIds.size })}
             </PrimaryButton>
-            <PressableScale accessibilityRole="button" disabled={state !== 'idle'} onPress={() => void commit(true)} style={{ alignSelf: 'center', padding: ui.space.sm }}>
+            <PressableScale accessibilityRole="button" disabled={selectedNoteIds.size === 0 || state !== 'idle'} onPress={() => void commit(true)} style={{ alignSelf: 'center', padding: ui.space.sm }}>
               <AppText variant="headline" color={colors.primary}>{t('backup.import.all', { count: preview.notes.length })}</AppText>
             </PressableScale>
             <View style={{ gap: ui.space.sm, borderTopWidth: 1, borderTopColor: colors.error, paddingTop: ui.space.lg }}>
@@ -353,7 +382,7 @@ export const ImportBackupScreen = () => {
           </Card>
         )}
       </ScrollView>
-      <TopBar onBack={() => preview ? setPreview(null) : navigation.goBack()}>
+      <TopBar onBack={() => { if (state === 'idle') preview ? discardPreview() : navigation.goBack(); }}>
         <LanguageToggleButton />
       </TopBar>
     </ScreenContainer>

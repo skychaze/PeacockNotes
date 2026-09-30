@@ -82,6 +82,27 @@ fun validateArchiveEntry(
   return ArchiveValidationDigest(actual, total)
 }
 
+fun extractVerifiedArchiveEntries(
+  archive: File,
+  destination: File,
+  inventory: Map<String, ArchiveValidationDigest>,
+  selectedPaths: Set<String>,
+  onBytes: ((Long) -> Unit)? = null,
+  onItem: (() -> Unit)? = null,
+) {
+  val zip = ZipFile(archive)
+  selectedPaths.forEach { path ->
+    val expected = inventory[path] ?: throw ArchiveValidationException("MISSING_MEDIA", "Selected entry is absent: $path")
+    val header = zip.getFileHeader(path) ?: throw ArchiveValidationException("MISSING_MEDIA", "Selected entry is absent: $path")
+    val target = File(destination, path)
+    target.parentFile?.mkdirs()
+    zip.getInputStream(header).use { input -> FileOutputStream(target).use { output ->
+      validateArchiveEntry(input, expected.sha256, expected.bytes, ArchiveValidationMode.STAGE, output, onBytes)
+    } }
+    onItem?.invoke()
+  }
+}
+
 class ArchiveModule(private val context: ReactApplicationContext) : ReactContextBaseJavaModule(context) {
   companion object {
     private const val FORMAT_VERSION = 1
@@ -111,6 +132,17 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
 
   private val executor = Executors.newSingleThreadExecutor()
   private var progress = BackupProgressReporter(null, null)
+  private data class ImportSession(
+    val id: String,
+    val archiveUri: String,
+    val directory: File,
+    val archive: File,
+    val summary: com.facebook.react.bridge.WritableMap,
+    val inventory: Map<String, ArchiveValidationDigest>,
+    val length: Long,
+    val modifiedAt: Long,
+  )
+  private val importSessions = mutableMapOf<String, ImportSession>()
 
   private fun <T> withProgress(request: ReadableMap, work: () -> T): T {
     progress = progressReporter(request)
@@ -183,8 +215,15 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
   }
 
   @ReactMethod
+  fun releaseImportSession(request: ReadableMap, promise: Promise) = executor.execute {
+    runCatching { releaseSession(request.optionalString("importSessionId")) }
+      .onSuccess { promise.resolve(null) }
+      .onFailure { promise.reject(errorCode(it), it.message, it) }
+  }
+
+  @ReactMethod
   fun commitSelectiveImport(request: ReadableMap, promise: Promise) = executor.execute {
-    runCatching { withProgress(request) { commitImport(request) } }
+    runCatching { withProgress(request) { try { commitImport(request) } finally { releaseSession(request.optionalString("importSessionId")) } } }
       .onSuccess(promise::resolve)
       .onFailure {
         Log.e("BackupRuntime", "[DEBUG-BR-IMPORT] commit failed code=${errorCode(it)} message=${it.message}", it)
@@ -194,7 +233,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
 
   @ReactMethod
   fun commitFullReplacement(request: ReadableMap, promise: Promise) = executor.execute {
-    runCatching { withProgress(request) { commitReplacement(request) } }
+    runCatching { withProgress(request) { try { commitReplacement(request) } finally { releaseSession(request.optionalString("importSessionId")) } } }
       .onSuccess(promise::resolve)
       .onFailure { promise.reject(errorCode(it), it.message, it) }
   }
@@ -584,19 +623,21 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     }
   }
 
-  private fun validate(request: ReadableMap): com.facebook.react.bridge.WritableMap {
+  private fun validate(request: ReadableMap, retainedArchive: File? = null, localArchive: File? = null): com.facebook.react.bridge.WritableMap {
     val archiveUri = requiredString(request, "archiveUri")
     val limits = Limits.from(request.getMap("limits"))
     val work = request.optionalString("stagingDirectoryUri")?.let(::fileFromUri)
       ?: newWorkDirectory("validate")
     val ownsWork = !request.hasKey("stagingDirectoryUri") || request.isNull("stagingDirectoryUri")
     if (!work.exists() && !work.mkdirs()) fail("STAGING_UNAVAILABLE", "Cannot create staging directory")
-    val archive = File(work, "incoming-${UUID.randomUUID()}.pnbak")
+    val archive = localArchive ?: retainedArchive ?: File(work, "incoming-${UUID.randomUUID()}.pnbak")
     val extracted = File(work, "validated-${UUID.randomUUID()}")
     try {
       val sourceSize = sourceSize(archiveUri)
       progress.startStep("verify", "read_archive", sourceSize)
-      val archiveDigest = materializeDigest(archiveUri, archive, limits.maxArchiveBytes)
+      val archiveDigest = if (localArchive == null) materializeDigest(archiveUri, archive, limits.maxArchiveBytes)
+      else FileInputStream(archive).use(::sha256)
+      if (archiveDigest.bytes > limits.maxArchiveBytes) fail("ARCHIVE_LIMIT_EXCEEDED", "Archive exceeds its allowed size")
       val zip = try { ZipFile(archive) } catch (error: Exception) {
         fail("MALFORMED_ARCHIVE", "Archive cannot be opened", error)
       }
@@ -659,40 +700,79 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
       File(extracted, MANIFEST_PATH).writeText(manifest.toString(), Charsets.UTF_8)
       return summary(manifest, archiveDigest, expanded)
     } finally {
-      archive.delete()
+      if (retainedArchive == null && localArchive == null) archive.delete()
       if (ownsWork) work.deleteRecursively()
     }
   }
 
   private fun preview(request: ReadableMap): com.facebook.react.bridge.WritableMap {
     val archiveUri = requiredString(request, "archiveUri")
-    cachedPreview(archiveUri)?.let { cached ->
-      try {
-        return previewMap(cached)
-      } catch (error: Exception) {
-        Log.w("BackupRuntime", "Cached archive preview was invalid; rebuilding it", error)
-      }
+    val session = createImportSession(archiveUri)
+    try {
+      val preview = buildPreview(archiveUri, session)
+      cachePreview(archiveUri, preview)
+      return previewMap(preview).apply { putString("importSessionId", session.id) }
+    } catch (error: Exception) {
+      releaseSession(session.id)
+      throw error
     }
-    val preview = buildPreview(archiveUri)
-    cachePreview(archiveUri, preview)
-    return previewMap(preview)
   }
 
-  private fun cachedPreview(archiveUri: String): JSONObject? {
-    val archiveId = DriveClient.idFromUri(archiveUri) ?: return null
-    val folderUri = context.getSharedPreferences(FOLDER_PREFERENCES, android.app.Activity.MODE_PRIVATE)
-      .getString(FOLDER_URI, null) ?: return null
-    val folderId = DriveClient.idFromUri(folderUri) ?: return null
-    val cached = loadScanCache(folderId)[archiveId] ?: return null
-    if (cached.optString("uri") != archiveUri || cached.optString("state") != "valid") return null
-    val preview = cached.optJSONObject("preview") ?: return null
-    if (preview.optString("archiveUri") != archiveUri) return null
-    val archiveHash = preview.optString("archiveSha256")
-    if (!Regex("^[a-f0-9]{64}$").matches(archiveHash)) return null
-    if (cached.optString("archiveSha256") != archiveHash) return null
-    if (preview.optString("createdAt").isBlank()) return null
-    if (preview.optJSONArray("folders") == null || preview.optJSONArray("notes") == null) return null
-    return preview
+  private fun releaseSession(id: String?) {
+    if (id == null) return
+    requireUuid(id)
+    importSessions.remove(id)
+    File(context.cacheDir, "archive-session-$id").deleteRecursively()
+  }
+
+  private fun createImportSession(archiveUri: String, id: String = UUID.randomUUID().toString()): ImportSession {
+    val directory = File(context.cacheDir, "archive-session-$id").apply { mkdirs() }
+    val archive = File(directory, "incoming.pnbak")
+    val validationWork = newWorkDirectory("session-verify")
+    try {
+      val request = Arguments.createMap().apply {
+        putString("archiveUri", archiveUri)
+        putString("mode", "verify_only")
+        putString("stagingDirectoryUri", Uri.fromFile(validationWork).toString())
+      }
+      archive.setWritable(true)
+      val summary = if (archive.isFile) validate(request, localArchive = archive)
+      else validate(request, retainedArchive = archive)
+      val extracted = validationWork.listFiles()!!.single { it.isDirectory }
+      File(extracted, DATABASE_PATH).copyTo(File(directory, "content.sqlite"), overwrite = true)
+      val inventory = parseInventory(JSONObject(File(extracted, MANIFEST_PATH).readText()), Limits.from(null))
+        .mapValues { (_, digest) -> ArchiveValidationDigest(digest.hex, digest.bytes) }
+      archive.setReadOnly()
+      return ImportSession(id, archiveUri, directory, archive, summary, inventory, archive.length(), archive.lastModified())
+        .also { importSessions[id] = it }
+    } catch (error: Exception) {
+      directory.deleteRecursively()
+      throw error
+    } finally { validationWork.deleteRecursively() }
+  }
+
+  private fun importSession(request: ReadableMap): ImportSession {
+    val uri = requiredString(request, "archiveUri")
+    val id = request.optionalString("importSessionId")?.let(::requireUuid) ?: UUID.randomUUID().toString()
+    val retained = importSessions[id]?.takeIf {
+      it.archiveUri == uri && it.archive.isFile && it.archive.length() == it.length && it.archive.lastModified() == it.modifiedAt
+    }
+    val session = retained ?: createImportSession(uri, id)
+    if (session.summary.getString("archiveSha256") != requiredString(request, "archiveSha256")) {
+      releaseSession(id)
+      fail("ARCHIVE_CHANGED", "The selected archive changed after preview")
+    }
+    return session
+  }
+
+  private fun extractImportEntries(session: ImportSession, work: File, paths: Set<String>): File {
+    val extracted = File(work, "selected").apply { mkdirs() }
+    val required = paths + if (File(extracted, DATABASE_PATH).isFile) emptySet() else setOf(DATABASE_PATH)
+    val bytes = required.sumOf { path -> session.inventory[path]?.bytes ?: fail("MISSING_MEDIA", "Selected entry is absent: $path") }
+    ensureSpace(work, bytes)
+    progress.startStep("import", "verify_files", bytes, required.size)
+    extractVerifiedArchiveEntries(session.archive, extracted, session.inventory, required, progress::addBytes, progress::addItem)
+    return extracted
   }
 
   private fun cachePreview(archiveUri: String, preview: JSONObject) {
@@ -713,18 +793,11 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     saveScanCache(folderId, cached.values.toList())
   }
 
-  private fun buildPreview(archiveUri: String): JSONObject {
-    val work = newWorkDirectory("preview")
+  private fun buildPreview(archiveUri: String, session: ImportSession? = null): JSONObject {
+    val verified = session ?: createImportSession(archiveUri)
     try {
-      val validationRequest = Arguments.createMap().apply {
-        putString("archiveUri", archiveUri)
-        putString("mode", "verify_only")
-        putString("stagingDirectoryUri", Uri.fromFile(work).toString())
-      }
-      val summary = validate(validationRequest)
-      val extracted = work.listFiles()?.singleOrNull { it.isDirectory && it.name.startsWith("validated-") }
-        ?: fail("STAGING_UNAVAILABLE", "Validated import staging is missing")
-      val db = SQLiteDatabase.openDatabase(File(extracted, DATABASE_PATH).path, null, SQLiteDatabase.OPEN_READONLY)
+      val summary = verified.summary
+      val db = SQLiteDatabase.openDatabase(File(verified.directory, "content.sqlite").path, null, SQLiteDatabase.OPEN_READONLY)
       val folders = JSONArray()
       val notes = JSONArray()
       try {
@@ -754,7 +827,7 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         put("archiveUri", archiveUri); put("archiveSha256", summary.getString("archiveSha256"))
         put("createdAt", summary.getString("createdAt")); put("folders", folders); put("notes", notes)
       }
-    } finally { work.deleteRecursively() }
+    } finally { if (session == null) releaseSession(verified.id) }
   }
 
   private fun previewMap(preview: JSONObject): com.facebook.react.bridge.WritableMap {
@@ -803,16 +876,13 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     val selected = (0 until selectedArray.size()).map { requireUuid(selectedArray.getString(it) ?: fail("INVALID_REQUEST", "Invalid selected note identity")) }.toSet()
     if (selected.isEmpty()) fail("EMPTY_SELECTION", "Select at least one note")
     val work = newWorkDirectory("import")
+    var session: ImportSession? = null
     try {
-      val validationRequest = Arguments.createMap().apply {
-        putString("archiveUri", archiveUri); putString("stagingDirectoryUri", Uri.fromFile(work).toString())
-      }
-      val summary = validate(validationRequest)
-      progress.startStep("import", "restore_notes")
-      if (summary.getString("archiveSha256") != expectedHash) fail("ARCHIVE_CHANGED", "The selected archive changed after preview")
-      val extracted = work.listFiles()?.singleOrNull { it.isDirectory && it.name.startsWith("validated-") }
-        ?: fail("STAGING_UNAVAILABLE", "Validated import staging is missing")
-      val source = SQLiteDatabase.openDatabase(File(extracted, DATABASE_PATH).path, null, SQLiteDatabase.OPEN_READONLY)
+      val verified = importSession(request)
+      session = verified
+      val summary = verified.summary
+      val databaseStaging = extractImportEntries(verified, work, emptySet())
+      val source = SQLiteDatabase.openDatabase(File(databaseStaging, DATABASE_PATH).path, null, SQLiteDatabase.OPEN_READONLY)
       val live = SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READWRITE)
       val createdMedia = mutableSetOf<File>()
       var mediaCommitted = false
@@ -827,14 +897,27 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         if (!available.containsAll(selected)) fail("INVALID_SELECTION", "The selection contains a note absent from the archive")
 
         if (!mediaRoot.exists() && !mediaRoot.mkdirs()) fail("STAGING_UNAVAILABLE", "Cannot create media directory")
-        ensureSpace(mediaRoot, summary.getDouble("expandedBytes").toLong())
+        val selectedMedia = linkedMapOf<String, MutableSet<String>>()
+        listOf("NoteAudios", "NoteFiles").forEach { table ->
+          val paths = selectedMedia.getOrPut(table) { mutableSetOf() }
+          selected.forEach { noteId ->
+            source.rawQuery("SELECT mediaPath FROM $table WHERE notePortableId=?", arrayOf(noteId)).use { cursor ->
+              while (cursor.moveToNext()) paths.add(cursor.getString(0))
+            }
+          }
+        }
+        val inventory = verified.inventory
+        val mediaBytes = selectedMedia.values.sumOf { paths -> paths.sumOf { inventory.getValue(it).bytes } }
+        val databaseBytes = inventory.getValue(DATABASE_PATH).bytes
+        ensureSpace(mediaRoot, mediaBytes * 2 + databaseBytes * 2)
+        val extracted = extractImportEntries(verified, work, selectedMedia.values.flatten().toSet())
+        progress.startStep("import", "restore_notes")
         val restrictions = MediaRestrictions(emptySet(), emptySet())
 
         val mediaUris = mutableMapOf<String, String>()
         listOf("NoteAudios", "NoteFiles").forEach { table ->
-          source.rawQuery("SELECT DISTINCT mediaPath FROM $table WHERE notePortableId IN (${selected.joinToString(",") { "?" }})", selected.toTypedArray()).use { cursor ->
-            while (cursor.moveToNext()) {
-              val path = cursor.getString(0); val staged = File(extracted, path)
+          selectedMedia.getValue(table).forEach { path ->
+              val staged = File(extracted, path)
               val hash = path.substringAfterLast('/')
               val kind = if (table == "NoteAudios") "audio" else "files"
               val addressedTarget = File(File(mediaRoot, kind), hash)
@@ -848,8 +931,11 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
                 createdMedia.add(target)
                 copyFileVerified(staged, target, "STAGING_VERIFICATION_FAILED")
               }
+              val expected = inventory.getValue(path)
+              if (FileInputStream(target).use(::sha256) != Digest(expected.sha256, expected.bytes)) {
+                fail("STAGING_VERIFICATION_FAILED", "Imported media differs from the selected archive")
+              }
               mediaUris[mediaKey(table, path)] = Uri.fromFile(target).toString()
-            }
           }
         }
 
@@ -926,7 +1012,10 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
         source.close()
         live.close()
       }
-    } finally { work.deleteRecursively() }
+    } finally {
+      work.deleteRecursively()
+      session?.let { releaseSession(it.id) }
+    }
   }
 
   private fun commitReplacement(request: ReadableMap): com.facebook.react.bridge.WritableMap {
@@ -956,11 +1045,13 @@ class ArchiveModule(private val context: ReactApplicationContext) : ReactContext
     var snapshotOwnedByUndo = false
     try {
       if (!staged.mkdirs() || !snapshot.mkdirs()) fail("STAGING_UNAVAILABLE", "Cannot create replacement staging")
+      val session = importSession(request)
       val validationRequest = Arguments.createMap().apply {
         putString("archiveUri", archiveUri)
         putString("stagingDirectoryUri", Uri.fromFile(work).toString())
       }
-      val summary = validate(validationRequest)
+      val summary = try { validate(validationRequest, localArchive = session.archive) }
+      finally { releaseSession(session.id) }
       progress.startStep("import", "restore_notes")
       if (summary.getString("archiveSha256") != expectedHash) fail("ARCHIVE_CHANGED", "The selected archive changed after preview")
       val extracted = work.listFiles()?.singleOrNull { it.isDirectory && it.name.startsWith("validated-") }
