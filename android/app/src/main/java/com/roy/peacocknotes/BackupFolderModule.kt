@@ -1,7 +1,6 @@
 package com.roy.peacocknotes
 
 import android.app.Activity
-import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Intent
 import android.content.Context
@@ -10,7 +9,6 @@ import android.os.Handler
 import android.os.Looper
 import android.net.Uri
 import android.util.Log
-import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.ActivityEventListener
@@ -203,21 +201,11 @@ class BackupFolderModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun updateBackupNotification(message: String, progress: Double) {
     val manager = reactContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      manager.createNotificationChannel(NotificationChannel(
-        BACKUP_CHANNEL_ID,
-        "Backup progress",
-        NotificationManager.IMPORTANCE_LOW,
-      ))
-    }
+
     val percent = progress.toInt().coerceIn(0, 100)
-    manager.notify(BACKUP_NOTIFICATION_ID, NotificationCompat.Builder(reactContext, BACKUP_CHANNEL_ID)
-      .setSmallIcon(android.R.drawable.stat_sys_upload)
-      .setContentTitle("Peacock Notes backup")
+    manager.notify(BACKUP_NOTIFICATION_ID, BackupNotifications.builder(reactContext, BACKUP_CHANNEL_ID)
       .setContentText("$message ($percent%)")
       .setProgress(100, percent, false)
-      .setOngoing(true)
-      .setOnlyAlertOnce(true)
       .build())
   }
 

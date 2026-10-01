@@ -29,6 +29,7 @@ import {
   getArchiveImportReceiptResult,
   previewArchiveImport,
   recoverInterruptedFullReplacement,
+  releaseArchiveImportSession,
   type FullReplacementResult,
   type FullReplacementUndo,
   type FullReplacementUndoResult,
@@ -76,6 +77,7 @@ class ImportOperationHandler implements BackupOperationHandler {
         try {
           this.result = await withDatabaseSuspended(() => commitFullReplacementArchiveImport({
             archiveUri: payload.archiveUri,
+            importSessionId: payload.importSessionId,
             archiveSha256: payload.archiveSha256,
             databaseUri,
             mediaDirectoryUri,
@@ -95,6 +97,7 @@ class ImportOperationHandler implements BackupOperationHandler {
       try {
         this.result = await withDatabaseSuspended(() => commitSelectiveArchiveImport({
           archiveUri: payload.archiveUri,
+          importSessionId: payload.importSessionId,
           archiveSha256: payload.archiveSha256,
           selectedNoteIds: payload.selectedNoteIds,
           recoveredTitleSuffix: payload.recoveredTitleSuffix,
@@ -153,7 +156,10 @@ export const resumePendingImportOperation = async () => {
   const active = await store.getActive();
   if (!active || active.kind !== 'import') return null;
   importHandler.result = null;
-  return coordinator.resume(['import']);
+  const operation = await coordinator.resume(['import']);
+  const payload = parseImportPayload(active.payload);
+  if (payload.mode !== 'undo') await releaseArchiveImportSession(payload.importSessionId);
+  return operation;
 };
 
 export const browseArchiveForImport = async (): Promise<string | null> => {
@@ -168,7 +174,7 @@ export const browseArchiveForImport = async (): Promise<string | null> => {
 export const previewNewestArchive = (archiveUri: string, progress?: BackupProgressOwner): Promise<ImportPreview> =>
   previewArchiveImport(archiveUri, progress);
 
-const importNotes = async (
+const runImportNotes = async (
   payload: ImportPayload,
 ): Promise<ImportResult | FullReplacementResult | FullReplacementUndoResult> => {
   const serializedPayload = JSON.stringify(payload);
@@ -221,6 +227,14 @@ const importNotes = async (
   throw error;
 };
 
+const importNotes = async (payload: ImportPayload) => {
+  try {
+    return await runImportNotes(payload);
+  } finally {
+    if (payload.mode !== 'undo') await releaseArchiveImportSession(payload.importSessionId);
+  }
+};
+
 const requireNonDestructiveResult = (result: ImportResult | FullReplacementResult | FullReplacementUndoResult): ImportResult => {
   if (!('importedCount' in result)) throw new Error('IMPORT_RESULT_MISSING');
   return result;
@@ -232,17 +246,17 @@ export const importSelectedNotes = async (
   recoveredTitleSuffix?: string,
 ): Promise<ImportResult> =>
   requireNonDestructiveResult(await importNotes(createArchiveImportPayload(
-    'selective', preview.archiveUri, preview.archiveSha256, selectedNoteIds, recoveredTitleSuffix,
+    'selective', preview.archiveUri, preview.archiveSha256, selectedNoteIds, recoveredTitleSuffix, preview.importSessionId,
   )));
 
 export const importAllNotesAdditively = async (preview: ImportPreview, recoveredTitleSuffix?: string): Promise<ImportResult> =>
   requireNonDestructiveResult(await importNotes(createArchiveImportPayload(
-    'additive', preview.archiveUri, preview.archiveSha256, preview.notes.map((note) => note.portableId), recoveredTitleSuffix,
+    'additive', preview.archiveUri, preview.archiveSha256, preview.notes.map((note) => note.portableId), recoveredTitleSuffix, preview.importSessionId,
   )));
 
 export const importAllNotesByReplacement = async (preview: ImportPreview): Promise<FullReplacementResult> => {
   const result = await importNotes(createArchiveImportPayload(
-    'replacement', preview.archiveUri, preview.archiveSha256, [],
+    'replacement', preview.archiveUri, preview.archiveSha256, [], undefined, preview.importSessionId,
   ));
   if (!('restoredNoteCount' in result)) throw new Error('FULL_REPLACEMENT_RESULT_MISSING');
   return result;

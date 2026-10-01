@@ -39,7 +39,16 @@ export function testRecoveredTitleSuffixSurvivesRetries() {
   assert(parsed.mode !== 'undo' && parsed.recoveredTitleSuffix === ' (রিকভার্ড কপি)', 'recovered title suffix was not persisted');
 }
 
+export function testSessionIdentitySurvivesRecovery() {
+  const payload = createArchiveImportPayload('selective', 'gdrive://archive', 'hash', ['note'], undefined, 'session-123');
+  const parsed = parseImportPayload(JSON.stringify(payload));
+  assert(parsed.mode !== 'undo' && parsed.importSessionId === 'session-123', 'recovery lost the retained archive session');
+  const legacy = parseImportPayload(JSON.stringify(createArchiveImportPayload('additive', 'file://archive', 'hash', ['note'])));
+  assert(legacy.mode !== 'undo' && legacy.importSessionId === undefined, 'legacy import unexpectedly claimed a verified session');
+}
+
 export function runImportPayloadTests() {
+  testSessionIdentitySurvivesRecovery();
   testUndoPayloadUsesSnapshotId();
   testLegacyUndoPayloadCanStillRecover();
   testRecoveredTitleSuffixSurvivesRetries();

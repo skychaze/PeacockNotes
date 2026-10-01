@@ -1,37 +1,43 @@
 package com.roy.peacocknotes
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
-import androidx.core.app.NotificationCompat
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.HeadlessJsTaskService
 import com.facebook.react.jstasks.HeadlessJsTaskConfig
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
 
 class AutomaticBackupTaskService : HeadlessJsTaskService() {
   companion object {
     private const val CHANNEL_ID = "automatic_backup"
     private const val NOTIFICATION_ID = 3202
+    private var completion: CompletableDeferred<Unit>? = null
+
+    @Synchronized
+    fun start(context: Context): Deferred<Unit> {
+      completion?.let { return it }
+      val pending = CompletableDeferred<Unit>()
+      completion = pending
+      try {
+        ContextCompat.startForegroundService(context, Intent(context, AutomaticBackupTaskService::class.java))
+      } catch (error: Exception) {
+        completion = null
+        pending.completeExceptionally(error)
+        throw error
+      }
+      return pending
+    }
   }
 
   override fun onCreate() {
     super.onCreate()
-    val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      manager.createNotificationChannel(NotificationChannel(
-        CHANNEL_ID,
-        "Automatic backup",
-        NotificationManager.IMPORTANCE_LOW,
-      ))
-    }
-    val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-      .setSmallIcon(android.R.drawable.stat_sys_upload)
-      .setContentTitle("Peacock Notes")
+    synchronized(Companion) { if (completion == null) completion = CompletableDeferred() }
+    val notification = BackupNotifications.builder(this, CHANNEL_ID)
       .setContentText("Automatic backup is continuing")
-      .setOngoing(true)
       .build()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
       startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
@@ -42,7 +48,12 @@ class AutomaticBackupTaskService : HeadlessJsTaskService() {
   }
 
   override fun onDestroy() {
-    BackupProgressStore.clearNotificationTarget(NOTIFICATION_ID)
+    BackupProgressStore.clearNotificationTarget(this)
+    stopForeground(STOP_FOREGROUND_REMOVE)
+    synchronized(Companion) {
+      completion?.complete(Unit)
+      completion = null
+    }
     super.onDestroy()
   }
 
@@ -58,9 +69,4 @@ class AutomaticBackupTaskService : HeadlessJsTaskService() {
     true,
   )
 
-  override fun onHeadlessJsTaskFinish(taskId: Int) {
-    super.onHeadlessJsTaskFinish(taskId)
-    stopForeground(true)
-    stopSelf()
-  }
 }

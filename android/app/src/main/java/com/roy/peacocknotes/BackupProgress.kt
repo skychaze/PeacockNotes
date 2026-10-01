@@ -1,16 +1,13 @@
 package com.roy.peacocknotes
 
-import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
-import androidx.core.app.NotificationCompat
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import org.json.JSONObject
-import java.util.concurrent.ConcurrentHashMap
 
 data class BackupProgressSnapshot(
   val operationId: String,
@@ -155,7 +152,7 @@ object BackupProgressStore {
 
   val registry = BackupProgressRegistry()
   private var context: ReactApplicationContext? = null
-  private val notificationTargets = ConcurrentHashMap<Int, NotificationTarget>()
+  private var notificationTarget: NotificationTarget? = null
   private var unsubscribe: (() -> Unit)? = null
 
   @Synchronized
@@ -165,7 +162,7 @@ object BackupProgressStore {
     context = reactContext
     unsubscribe = registry.subscribe { snapshot ->
       persist(snapshot)
-      notificationTargets.values.forEach { target -> runCatching { notify(target, snapshot) } }
+      notificationTarget?.let { target -> runCatching { notify(target, snapshot) } }
       val payload = snapshot?.toWritableMap()
       reactContext.runOnJSQueueThread {
         if (!reactContext.hasActiveReactInstance()) return@runOnJSQueueThread
@@ -186,14 +183,29 @@ object BackupProgressStore {
   fun snapshot(operationId: String? = null): BackupProgressSnapshot? = registry.snapshot(operationId)
 
 
+  @Synchronized
   fun setNotificationTarget(context: Context, channelId: String, notificationId: Int) {
-    val target = NotificationTarget(context.applicationContext, channelId, notificationId)
-    notificationTargets[notificationId] = target
+    val target = NotificationTarget(context, channelId, notificationId)
+    notificationTarget = target
     registry.snapshot()?.let { notify(target, it) }
   }
 
-  fun clearNotificationTarget(notificationId: Int) {
-    notificationTargets.remove(notificationId)
+  @Synchronized
+  fun clearNotificationTarget(owner: Context) {
+    if (notificationTarget?.context === owner) notificationTarget = null
+  }
+
+  @Synchronized
+  fun hasManualOperation(context: Context): Boolean {
+    val current = registry.snapshot()
+    if (current?.state == "running") return notificationTarget?.notificationId == ManualBackupForegroundService.NOTIFICATION_ID
+    val raw = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE).getString(ACTIVE, null) ?: return false
+    return runCatching {
+      val json = JSONObject(raw)
+      val id = json.optInt("notificationId", 0)
+      id == ManualBackupForegroundService.NOTIFICATION_ID ||
+        (id == 0 && json.optString("operationKind") in setOf("export", "import", "managed_retention"))
+    }.getOrDefault(false)
   }
 
   private fun persist(snapshot: BackupProgressSnapshot?) {
@@ -206,6 +218,7 @@ object BackupProgressStore {
     preferences.edit().putString(ACTIVE, JSONObject().apply {
       put("operationId", snapshot.operationId)
       put("operationKind", snapshot.operationKind)
+      put("notificationId", notificationTarget?.notificationId ?: 0)
       put("phase", snapshot.phase)
       put("step", snapshot.step)
       put("updatedAt", snapshot.updatedAt)
@@ -236,9 +249,7 @@ object BackupProgressStore {
 
   private fun notify(target: NotificationTarget, snapshot: BackupProgressSnapshot?) {
     val manager = target.context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      manager.createNotificationChannel(NotificationChannel(target.channelId, "Backup progress", NotificationManager.IMPORTANCE_LOW))
-    }
+
     if (snapshot == null) {
       return
     }
@@ -252,13 +263,9 @@ object BackupProgressStore {
       else -> 0
     }
     if (snapshot.state != "running") {
-      manager.notify(target.notificationId, NotificationCompat.Builder(target.context, target.channelId)
-        .setSmallIcon(android.R.drawable.stat_sys_upload)
-        .setContentTitle("Peacock Notes backup")
+      manager.notify(target.notificationId, BackupNotifications.builder(target.context, target.channelId)
         .setContentText("Finishing backup")
         .setProgress(0, 0, true)
-        .setOngoing(true)
-        .setOnlyAlertOnce(true)
         .build())
       return
     }
@@ -269,13 +276,9 @@ object BackupProgressStore {
     } else {
       "Working"
     }
-    manager.notify(target.notificationId, NotificationCompat.Builder(target.context, target.channelId)
-      .setSmallIcon(android.R.drawable.stat_sys_upload)
-      .setContentTitle("Peacock Notes backup")
+    manager.notify(target.notificationId, BackupNotifications.builder(target.context, target.channelId)
       .setContentText("${snapshot.step.replace('_', ' ').replaceFirstChar { it.uppercase() }} · $detail")
       .setProgress(if (knownProgress) 100 else 0, percent, !knownProgress)
-      .setOngoing(true)
-      .setOnlyAlertOnce(true)
       .build())
   }
 

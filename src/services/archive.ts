@@ -116,6 +116,7 @@ export type ArchivedFolderPreview = Readonly<{
 
 export type ImportPreview = Readonly<{
   archiveUri: string;
+  importSessionId?: string;
   archiveSha256: string;
   createdAt: string;
   folders: readonly ArchivedFolderPreview[];
@@ -124,6 +125,7 @@ export type ImportPreview = Readonly<{
 
 export type CommitSelectiveImportRequest = Readonly<{
   archiveUri: string;
+  importSessionId?: string;
   archiveSha256: string;
   databaseUri: string;
   mediaDirectoryUri: string;
@@ -149,6 +151,7 @@ export type ImportResult = Readonly<{
 
 export type FullReplacementRequest = Readonly<{
   archiveUri: string;
+  importSessionId?: string;
   archiveSha256: string;
   databaseUri: string;
   mediaDirectoryUri: string;
@@ -180,6 +183,8 @@ type NativeArchiveModule = {
   deleteArchives(request: Readonly<{ uris: readonly string[] }>): Promise<Readonly<{ deletedCount: number }>>;
   applyManagedRetention(request: Partial<BackupProgressOwner>): Promise<ManagedRetentionResult>;
   previewImport(request: Readonly<{ archiveUri: string } & Partial<BackupProgressOwner>>): Promise<ImportPreview>;
+  pruneImportSessions(request: Readonly<{ importSessionId?: string }>): Promise<void>;
+  releaseImportSession(request: Readonly<{ importSessionId: string }>): Promise<void>;
   commitSelectiveImport(request: CommitSelectiveImportRequest): Promise<ImportResult>;
   commitFullReplacement(request: FullReplacementRequest): Promise<FullReplacementResult>;
   recoverFullReplacement(): Promise<Readonly<{ rolledBack: boolean }>>;
@@ -245,3 +250,11 @@ export const getArchiveImportReceiptResult = (
   operationKey: string,
 ): Promise<ImportResult | FullReplacementResult | null> =>
   moduleOrThrow().getImportReceiptResult({ databaseUri, operationKey });
+
+export const releaseArchiveImportSession = (importSessionId?: string): Promise<void> =>
+  importSessionId
+    ? moduleOrThrow().releaseImportSession({ importSessionId })
+    : Promise.resolve();
+
+export const pruneArchiveImportSessions = (importSessionId?: string): Promise<void> =>
+  moduleOrThrow().pruneImportSessions({ importSessionId });
