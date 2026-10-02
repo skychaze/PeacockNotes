@@ -18,10 +18,15 @@ const TRANSIENT_EXPORT_CODES = new Set([
   'PROVIDER_SCAN_FAILED',
   'PROVIDER_WRITE_FAILED',
   'SOURCE_UNAVAILABLE',
+  'DRIVE_UNAVAILABLE',
+  'DRIVE_RATE_LIMITED',
+  'DRIVE_UPLOAD_FAILED',
 ]);
 
+export const isTransientBackupError = (code: string): boolean => TRANSIENT_EXPORT_CODES.has(code);
+
 export const shouldRetryAutomaticBackup = (code: string, completedAttempts: number): boolean =>
-  TRANSIENT_EXPORT_CODES.has(code) && completedAttempts < MAX_AUTOMATIC_BACKUP_ATTEMPTS;
+  isTransientBackupError(code) && completedAttempts < MAX_AUTOMATIC_BACKUP_ATTEMPTS;
 
 export type AutomaticBackupDueInput = Readonly<{
   currentRevision: number;

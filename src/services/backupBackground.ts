@@ -3,7 +3,7 @@ import { parseImportPayload } from '../backup/importPayload';
 import { pruneArchiveImportSessions } from './archive';
 import type { BackupOperation } from '../backup';
 import { backupOperationStore as store } from './backupOperations';
-import { resumePendingExportOperation } from './backupExport';
+import { getRecoverableExportOperation, resumePendingExportOperation } from './backupExport';
 import { startAutomaticBackupForegroundService } from './automaticBackup';
 import { startBackupForegroundService, releaseBackupForegroundService } from './backupFolder';
 import { resumePendingImportOperation } from './backupImport';
@@ -24,7 +24,7 @@ export const resumePendingBackupOperation = (owner?: BackupNotificationOwner): P
     ? resumeInFlight.then(() => resumePendingBackupOperation(owner))
     : resumeInFlight;
   resumeInFlight = (async () => {
-    const active = await store.getActive();
+    const active = await store.getActive() ?? await getRecoverableExportOperation();
     const payload = active?.kind === 'import' ? parseImportPayload(active.payload) : null;
     await pruneArchiveImportSessions(payload && payload.mode !== 'undo' ? payload.importSessionId : undefined);
     if (!active || (owner && backupNotificationOwner(active) !== owner)) return null;

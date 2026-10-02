@@ -28,7 +28,11 @@ import kotlin.math.min
 class DriveException(val code: String, override val message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /** Drive v3 client for Peacock Notes' app-owned collection (drive.file scope). */
-class DriveClient(private val context: Context, private val accessToken: (() -> String)? = null) {
+class DriveClient(
+  private val context: Context,
+  private val connectionFactory: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection },
+  private val accessToken: (() -> String)? = null,
+) {
   data class Item(val id: String, val name: String, val size: Long?, val modifiedTime: Long?)
 
   private data class UploadResult(val status: Int, val body: String, val nextOffset: Long?)
@@ -39,7 +43,7 @@ class DriveClient(private val context: Context, private val accessToken: (() -> 
     private const val CONNECT_TIMEOUT_MILLIS = 15_000
     private const val READ_TIMEOUT_MILLIS = 60_000
     private const val UPLOAD_CHUNK_BYTES = 256 * 1024
-    private const val MAX_UPLOAD_RETRIES = 3
+    private const val MAX_UPLOAD_RETRIES = 5
     private const val RESUME_INCOMPLETE = 308
 
     fun uri(id: String) = "gdrive://$id"
@@ -185,65 +189,91 @@ class DriveClient(private val context: Context, private val accessToken: (() -> 
     }
   }
 
-  fun uploadResumable(parent: String, name: String, file: File, mime: String, onProgress: (Long) -> Unit = {}): Item {
+  fun uploadResumable(
+    parent: String,
+    name: String,
+    file: File,
+    mime: String,
+    onProgress: (Long) -> Unit = {},
+    onWaiting: (Boolean) -> Unit = {},
+  ): Item {
     val totalBytes = file.length()
-    Log.i("BackupRuntime", "[DEBUG-BR-DRIVE] upload_start name=$name bytes=$totalBytes")
-    val session = startUploadSession(parent, name, totalBytes, mime)
+    val saved = DriveUploadSession(file, parent, name)
+    var session = saved.read()
+    var needsStatus = session != null
     var offset = 0L
     var retries = 0
+    var expiredSessions = 0
 
-    while (offset < totalBytes || totalBytes == 0L) {
-      val length = if (totalBytes == 0L) 0 else min(UPLOAD_CHUNK_BYTES.toLong(), totalBytes - offset).toInt()
-      val end = if (length == 0) -1L else offset + length - 1
-      val result = sendChunk(session, file, offset, length, totalBytes, mime)
-      Log.i("BackupRuntime", "[DEBUG-BR-DRIVE] upload_chunk offset=$offset length=$length status=${result.status}")
+    while (true) {
+      try {
+        val activeSession = session ?: startUploadSession(parent, name, totalBytes, mime).also {
+          saved.write(it)
+          session = it
+        }
+        val checkingStatus = needsStatus
+        val length = min(UPLOAD_CHUNK_BYTES.toLong(), totalBytes - offset).toInt()
+        val result = if (checkingStatus) queryUploadOffset(activeSession, totalBytes, mime)
+          else sendChunk(activeSession, file, offset, length, totalBytes, mime)
 
-      when {
-        result.status in 200..299 -> {
-          // The 2xx resumable response is the upload commit boundary. Do not
-          // issue a second metadata GET here: that request can fail or wait for
-          // Drive's eventual-consistency window even though the file is already
-          // safely stored. The requested upload fields contain enough metadata
-          // for the caller to verify the byte count, with a local-size fallback
-          // for responses that omit `size`.
+        if (result.status in 200..299) {
           val committed = parseUpload(result.body, name, totalBytes)
-          Log.i("BackupRuntime", "[DEBUG-BR-DRIVE] upload_committed id=${committed.id} bytes=${committed.size}")
+          onWaiting(false)
           onProgress(totalBytes)
           return committed
         }
-        result.status == RESUME_INCOMPLETE -> {
-          if (totalBytes == 0L) {
-            throw DriveException("DRIVE_UPLOAD_FAILED", "Google Drive did not complete the empty archive upload.")
-          }
-          val next = result.nextOffset ?: (offset + length)
-          if (next < offset || next > totalBytes) {
-            throw DriveException("DRIVE_UPLOAD_FAILED", "Google Drive returned an invalid upload offset.")
-          }
-          offset = next
-          onProgress(offset)
-          retries = 0
-        }
-        result.status == 429 || result.status >= 500 -> {
-          if (retries >= MAX_UPLOAD_RETRIES) {
-            throw driveError(result.status, result.body)
-          }
-          retries += 1
-          val status = queryUploadOffset(session, totalBytes, mime)
-          if (status.status in 200..299) {
-            val committed = parseUpload(status.body, name, totalBytes)
-            Log.i("BackupRuntime", "[DEBUG-BR-DRIVE] upload_committed_after_retry id=${committed.id} bytes=${committed.size}")
+
+        if (result.status == HttpURLConnection.HTTP_NOT_FOUND) {
+          val committed = list(parent).firstOrNull { it.name == name && it.size == totalBytes }
+          if (committed != null) {
+            onWaiting(false)
             onProgress(totalBytes)
             return committed
           }
-          if (status.status != RESUME_INCOMPLETE) throw driveError(status.status, status.body)
-          offset = status.nextOffset ?: offset
-          onProgress(offset)
+          expiredSessions += 1
+          if (expiredSessions > 1) {
+            throw DriveException("DRIVE_UPLOAD_FAILED", "Google Drive repeatedly expired the upload session.")
+          }
+          saved.clear()
+          session = null
+          offset = 0L
+          needsStatus = false
+          continue
         }
-        else -> throw driveError(result.status, result.body)
+
+        if (result.status == RESUME_INCOMPLETE) {
+          val next = result.nextOffset ?: 0L
+          if (next < 0 || next > totalBytes) {
+            throw DriveException("DRIVE_UPLOAD_FAILED", "Google Drive returned an invalid upload offset.")
+          }
+          if (!checkingStatus && next <= offset) {
+            throw DriveException("DRIVE_UNAVAILABLE", "Google Drive has not acknowledged the upload chunk.")
+          }
+          if (next == totalBytes) {
+            throw DriveException("DRIVE_UNAVAILABLE", "Google Drive has not confirmed the completed upload.")
+          }
+          if (next > offset) retries = 0
+          offset = next
+          needsStatus = false
+          onWaiting(false)
+          onProgress(offset)
+          continue
+        }
+
+        throw driveError(result.status, result.body)
+      } catch (error: Exception) {
+        val transient = error is IOException || (error is DriveException &&
+          error.code in setOf("DRIVE_UNAVAILABLE", "DRIVE_RATE_LIMITED"))
+        if (!transient) throw error
+        if (retries >= MAX_UPLOAD_RETRIES) {
+          throw DriveException("DRIVE_UNAVAILABLE", "The upload is saved and can resume when the connection returns.", error)
+        }
+        needsStatus = session != null
+        onWaiting(true)
+        Thread.sleep(1_000L shl retries)
+        retries += 1
       }
     }
-
-    throw DriveException("DRIVE_UPLOAD_FAILED", "Google Drive did not complete the archive upload.")
   }
 
   private fun startUploadSession(parent: String, name: String, totalBytes: Long, mime: String): String {
@@ -433,7 +463,7 @@ class DriveClient(private val context: Context, private val accessToken: (() -> 
   }
 
   private fun openConnection(method: String, url: String, headers: Map<String, String> = emptyMap()): HttpURLConnection =
-    (URL(url).openConnection() as HttpURLConnection).apply {
+    connectionFactory(URL(url)).apply {
       requestMethod = method
       connectTimeout = CONNECT_TIMEOUT_MILLIS
       readTimeout = READ_TIMEOUT_MILLIS
