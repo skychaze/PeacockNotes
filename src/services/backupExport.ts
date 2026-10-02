@@ -2,7 +2,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import { backupDatabaseAsync, deleteDatabaseAsync, openDatabaseAsync } from 'expo-sqlite';
 import type { BackupNotificationOwner } from '../backup/notificationOwner';
-import type { BackupOperationHandler } from '../backup';
+import { createBackupOperationStepKey, type BackupOperationHandler, type BackupOperationKind } from '../backup';
+import { isTransientBackupError } from '../backup/automaticPolicy';
 import { getDb } from '../database/schema';
 import {
   backupOperationCoordinator as coordinator,
@@ -57,11 +58,18 @@ type Capture = Readonly<{
 const safeTimestamp = (value: string) => value.replace(/[:.]/g, '-');
 const safeIdentity = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '-');
 const operationId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const exportStep = 'export_and_verify';
+const exportDirectory = (key: string) => {
+  if (!FileSystem.documentDirectory) throw new Error('STAGING_UNAVAILABLE');
+  return `${FileSystem.documentDirectory}backup-export-${encodeURIComponent(key)}/`;
+};
+const exportErrorCode = (error: unknown) => typeof error === 'object' && error !== null && 'code' in error
+  ? String(error.code)
+  : error instanceof Error ? error.message : 'EXPORT_FAILED';
 
-const captureContent = async (directoryUri: string, progress?: BackupProgressOwner): Promise<Capture> =>
+const captureContent = async (directoryUri: string, databaseName: string, progress?: BackupProgressOwner): Promise<Capture> =>
   withMediaDeletionPaused(async () => {
     const db = await getDb();
-    const databaseName = `${operationId()}.db`;
     const snapshot = await openDatabaseAsync(databaseName, { useNewConnection: true });
     try {
       // SQLite's online backup creates a consistent snapshot without holding an
@@ -105,15 +113,16 @@ const executeExport = async (
   onProgress: (progress: ExportProgress) => void = () => {},
   identity?: Readonly<{ key: string; createdAt: string; operationId: string; operationKind: string }>,
 ): Promise<VerifiedBackup> => {
-  const root = FileSystem.cacheDirectory;
-  if (!root) throw new Error('STAGING_UNAVAILABLE');
-  const work = `${root}backup-export-${operationId()}/`;
+  const work = exportDirectory(identity?.key ?? operationId());
   const archiveUri = `${work}staged.pnbak`;
   const createdAt = identity?.createdAt ?? new Date().toISOString();
   const identitySuffix = identity ? `-${safeIdentity(identity.key)}` : '';
   const name = `peacock-notes-${safeTimestamp(createdAt)}${identitySuffix}.pnbak`;
   await FileSystem.makeDirectoryAsync(work, { intermediates: true });
-  let capture: Capture | null = null;
+  const databaseName = `backup-export-${safeIdentity(identity?.key ?? operationId())}.db`;
+  let captured = false;
+  let stagedArchiveReady = false;
+  let preserveStaging = false;
   const progress = identity ? {
     operationId: identity.operationId,
     operationKind: identity.operationKind,
@@ -121,19 +130,31 @@ const executeExport = async (
   try {
     if (progress) await beginBackupProgress({ ...progress, phase: 'capture', step: 'capture' });
     console.info(`[BR-EXPORT] started name=${name}`);
-    onProgress('capturing');
-    capture = await captureContent(work, progress ?? undefined);
-    onProgress('building');
-    const staged = await createArchive({
-      databaseUri: capture.databaseUri,
-      destinationUri: archiveUri,
-      media: capture.media,
-      contentRevision: capture.revision,
-      createdAt,
-      ...progress,
-    });
+    let staged: ArchiveSummary;
+    if ((await FileSystem.getInfoAsync(archiveUri)).exists) {
+      staged = await validateArchive({ archiveUri, mode: 'verify_only', ...progress });
+    } else {
+      await FileSystem.deleteAsync(work, { idempotent: true });
+      await FileSystem.makeDirectoryAsync(work, { intermediates: true });
+      onProgress('capturing');
+      captured = true;
+      const capture = await captureContent(work, databaseName, progress ?? undefined);
+      onProgress('building');
+      const buildingUri = `${work}building.pnbak`;
+      staged = await createArchive({
+        databaseUri: capture.databaseUri,
+        destinationUri: buildingUri,
+        media: capture.media,
+        contentRevision: capture.revision,
+        createdAt,
+        ...progress,
+      });
+      await FileSystem.moveAsync({ from: buildingUri, to: archiveUri });
+    }
+    stagedArchiveReady = true;
     onProgress('publishing');
     const folder = await getBackupFolderState();
+    if (folder.status === 'unavailable') throw new Error('DRIVE_UNAVAILABLE');
     if (folder.status !== 'connected' || !folder.uri) throw new Error('FOLDER_NOT_CONNECTED');
     const published: PublishedBackup = await publishBackupArchive({
       stagedUri: archiveUri,
@@ -148,32 +169,35 @@ const executeExport = async (
       name: published.name,
       uri: published.uri,
       folderUri: folder.uri,
-      createdAt,
+      createdAt: staged.createdAt,
       bytes: staged.archiveBytes,
-      contentRevision: capture.revision,
+      contentRevision: staged.contentRevision,
     } satisfies VerifiedBackup;
     await AsyncStorage.setItem('backup.lastVerified', JSON.stringify(verified));
     if (progress) finishBackupProgress({ ...progress, state: 'succeeded' });
     console.info(`[BR-EXPORT] verified uri=${verified.uri} bytes=${verified.bytes}`);
     return verified;
   } catch (error) {
+    preserveStaging = stagedArchiveReady && isTransientBackupError(exportErrorCode(error));
     if (progress) finishBackupProgress({ ...progress, state: 'failed' });
     console.warn('[BR-EXPORT] failed after remote publication may have occurred:', error);
     throw error;
   } finally {
-    if (capture) await deleteDatabaseAsync(capture.databaseName);
-    await FileSystem.deleteAsync(work, { idempotent: true });
+    if (captured) await deleteDatabaseAsync(databaseName).catch((error: unknown) => {
+      console.warn('Failed to remove the export database snapshot:', error);
+    });
+    if (!preserveStaging) await FileSystem.deleteAsync(work, { idempotent: true }).catch((error: unknown) => {
+      console.warn('Failed to remove export staging:', error);
+    });
   }
 };
 
 class ExportOperationHandler implements BackupOperationHandler {
-  constructor(private readonly retryTransientFailures = false) {}
-
   progress: ((progress: ExportProgress) => void) | null = null;
   verified: VerifiedBackup | null = null;
 
   async nextStep(operation: Parameters<BackupOperationHandler['nextStep']>[0]) {
-    return operation.checkpoint ? null : { name: 'export_and_verify' };
+    return operation.checkpoint ? null : { name: exportStep };
   }
 
   async runStep({ operation, idempotencyKey }: Parameters<BackupOperationHandler['runStep']>[0]) {
@@ -186,19 +210,23 @@ class ExportOperationHandler implements BackupOperationHandler {
       });
       return { outcome: 'committed', checkpoint: 'verified', done: true } as const;
     } catch (error: unknown) {
-      const code = typeof error === 'object' && error !== null && 'code' in error
-        ? String(error.code)
-        : error instanceof Error ? error.message : 'EXPORT_FAILED';
+      const code = exportErrorCode(error);
       const message = error instanceof Error ? error.message : 'Backup export failed.';
-      const transient = code === 'BACKUP_OFFLINE';
-      return this.retryTransientFailures && transient
-        ? { outcome: 'retry', code, message } as const
-        : { outcome: 'failed', code, message } as const;
+      return { outcome: 'failed', code, message } as const;
     }
   }
 
   async recoverInterruptedStep({ operation, idempotencyKey }: Parameters<BackupOperationHandler['recoverInterruptedStep']>[0]) {
     try {
+      if ((await FileSystem.getInfoAsync(`${exportDirectory(idempotencyKey)}staged.pnbak`)).exists) {
+        this.verified = await executeExport(this.progress ?? undefined, {
+          key: idempotencyKey,
+          createdAt: operation.createdAt,
+          operationId: operation.id,
+          operationKind: operation.kind,
+        });
+        return { outcome: 'committed', checkpoint: 'verified', done: true } as const;
+      }
       const expectedName = `peacock-notes-${safeTimestamp(operation.createdAt)}-${safeIdentity(idempotencyKey)}.pnbak`;
       // Recovery is the exceptional path where every candidate must be
       // trusted. Normal screen discovery uses the lightweight cached scan.
@@ -234,7 +262,7 @@ class ExportOperationHandler implements BackupOperationHandler {
 }
 
 const exportHandler = new ExportOperationHandler();
-const automaticExportHandler = new ExportOperationHandler(true);
+const automaticExportHandler = new ExportOperationHandler();
 class ManagedRetentionHandler implements BackupOperationHandler {
   result: ManagedRetentionResult | null = null;
 
@@ -330,16 +358,29 @@ export const clearLastVerifiedBackupIfDeleted = async (deletedUris: readonly str
   }
 };
 
+export const getRecoverableExportOperation = async (kind?: Extract<BackupOperationKind, 'export' | 'automatic_backup'>) => {
+  const operation = kind
+    ? await operationStore.getLatestByKindAndPayload(kind, '{"version":1}')
+    : await operationStore.getLatest();
+  if (!operation || (operation.kind !== 'export' && operation.kind !== 'automatic_backup')) return null;
+  if (operation.state !== 'interrupted' &&
+    !(operation.state === 'failed' && isTransientBackupError(operation.errorCode ?? ''))) return null;
+  const key = createBackupOperationStepKey(operation.id, operation.checkpoint, exportStep);
+  return (await FileSystem.getInfoAsync(`${exportDirectory(key)}staged.pnbak`)).exists ? operation : null;
+};
+
 export const resumePendingExportOperation = async () => {
   const active = await operationStore.getActive();
-  if (!active || (active.kind !== 'export' && active.kind !== 'automatic_backup' && active.kind !== 'managed_retention')) {
+  if (active && active.kind !== 'export' && active.kind !== 'automatic_backup' && active.kind !== 'managed_retention') {
     return null;
   }
   exportHandler.progress = null;
   exportHandler.verified = null;
   automaticExportHandler.verified = null;
   managedRetentionHandler.result = null;
-  return coordinator.resume(['export', 'automatic_backup', 'managed_retention']);
+  if (active) return coordinator.resume(['export', 'automatic_backup', 'managed_retention']);
+  const recoverable = await getRecoverableExportOperation();
+  return recoverable ? coordinator.retry(recoverable.id) : null;
 };
 
 export const runManagedRetention = async (notificationOwner: BackupNotificationOwner = 'manual'): Promise<ManagedRetentionState> => {
@@ -370,7 +411,10 @@ export const runManagedRetention = async (notificationOwner: BackupNotificationO
 export const runAutomaticExport = async (): Promise<VerifiedBackup> => {
   await coordinator.resume(['export', 'automatic_backup', 'managed_retention']);
   automaticExportHandler.verified = null;
-  const operation = await coordinator.start(operationId(), 'automatic_backup', '{"version":1}');
+  const recoverable = await getRecoverableExportOperation('automatic_backup');
+  const operation = recoverable
+    ? await coordinator.retry(recoverable.id)
+    : await coordinator.start(operationId(), 'automatic_backup', '{"version":1}');
   if (operation.state !== 'succeeded' || !automaticExportHandler.verified) {
     const error = new Error(operation.errorMessage ?? 'EXPORT_FAILED');
     Object.assign(error, { code: operation.errorCode ?? 'EXPORT_FAILED' });
@@ -402,7 +446,10 @@ export const exportBackup = async (
   exportHandler.progress = onProgress;
   exportHandler.verified = null;
   try {
-    const operation = await coordinator.start(operationId(), 'export', '{"version":1}');
+    const recoverable = await getRecoverableExportOperation('export');
+    const operation = recoverable
+      ? await coordinator.retry(recoverable.id)
+      : await coordinator.start(operationId(), 'export', '{"version":1}');
     if (operation.state !== 'succeeded' || !exportHandler.verified) {
       const error = new Error(operation.errorMessage ?? 'EXPORT_FAILED');
       Object.assign(error, { code: operation.errorCode ?? 'EXPORT_FAILED' });

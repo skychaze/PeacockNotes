@@ -82,3 +82,9 @@ assert(shouldRetryAutomaticBackup('PROVIDER_WRITE_FAILED', 1), 'a transient prov
 assert(shouldRetryAutomaticBackup('PROVIDER_WRITE_FAILED', 2), 'the final bounded retry should be allowed');
 assert(!shouldRetryAutomaticBackup('PROVIDER_WRITE_FAILED', 3), 'automatic backup exceeded its retry limit');
 assert(!shouldRetryAutomaticBackup('FOLDER_PERMISSION_REVOKED', 1), 'permission failures must wait for user action');
+
+for (const code of ['DRIVE_UNAVAILABLE', 'DRIVE_RATE_LIMITED', 'DRIVE_UPLOAD_FAILED']) {
+  assert(shouldRetryAutomaticBackup(code, 1), `${code} should allow a bounded automatic retry`);
+  assert(!shouldRetryAutomaticBackup(code, 3), `${code} must respect the retry limit`);
+}
+assert(!shouldRetryAutomaticBackup('DRIVE_AUTH_REQUIRED', 1), 'Drive authorization needs user action');

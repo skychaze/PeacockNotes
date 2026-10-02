@@ -41,7 +41,7 @@ class ManualBackupTaskService : HeadlessJsTaskService() {
   override fun getTaskConfig(intent: Intent?): HeadlessJsTaskConfig = HeadlessJsTaskConfig(
     "PeacockNotesManualBackup",
     Arguments.createMap(),
-    30 * 60 * 1000L,
+    0L,
     true,
   )
 

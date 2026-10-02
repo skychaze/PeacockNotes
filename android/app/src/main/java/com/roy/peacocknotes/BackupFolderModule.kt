@@ -154,6 +154,7 @@ class BackupFolderModule(private val reactContext: ReactApplicationContext) :
           source,
           "application/octet-stream",
           onProgress = { progress.update(bytesDone = it) },
+          onWaiting = { waiting -> progress.update(step = if (waiting) "waiting_for_connection" else "upload") },
         )
       } catch (uploadError: Throwable) {
         // A resumable PUT can commit remotely and then lose its response to a
