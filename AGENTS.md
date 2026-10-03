@@ -10,6 +10,6 @@ Merge the release PR to create a `v<version>` tag and draft GitHub release. The 
 
 Read both release workflows and `release-please-config.json` before changing release behavior. Preserve the `peacocknotes-v<version>-<versionCode>.apk` name, package identity, and signing checks because the in-app updater depends on them. Manual tag releases still require matching patch notes or an existing GitHub release.
 
-With the built-in GitHub token, enable "Allow GitHub Actions to create and approve pull requests" in repository Actions settings. Bot-created release PRs do not trigger pull-request CI automatically. Run Recovery checks manually on the release PR branch before merging, or configure the optional `RELEASE_PLEASE_TOKEN` secret with a token that can write contents and pull requests.
+With the built-in GitHub token, enable "Allow GitHub Actions to create and approve pull requests" in repository Actions settings. The Release Please workflow dispatches Recovery checks on each created or updated release PR branch. Keep its `actions: write` permission and the CI workflow dispatch trigger so checks run without a separate token.
 
 Validate release changes with actionlint, simulated Release Please version updates, `npm run typecheck`, and `npm test`. Run Android recovery checks when changing native behavior. Report any checks that could not run and the reason.
