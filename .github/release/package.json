@@ -1,0 +1,17 @@
+{
+  "name": "app-release-automation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test versioning.test.ts",
+    "release": "node run.ts"
+  },
+  "dependencies": {
+    "release-please": "17.11.2"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "@types/node": "24.10.1"
+  }
+}

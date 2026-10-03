@@ -18,7 +18,8 @@
           "path": "android/app/src/main/res/values/strings.xml",
           "xpath": "//resources/string[@name=\"expo_runtime_version\"]"
         }
-      ]
+      ],
+      "versioning": "app"
     }
   }
 }

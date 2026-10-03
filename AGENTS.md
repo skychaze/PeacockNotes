@@ -2,7 +2,7 @@
 
 ## Releases
 
-Release Please maintains the release PR from conventional commits on `main`. Use `fix:` for patch releases, `feat:` for minor releases, and `!` or `BREAKING CHANGE:` for major releases. Use these prefixes in squash merge titles too.
+Release Please maintains the release PR from conventional commits on `main`. Use `fix:` and `feat:` for patch releases. Use `!` or `BREAKING CHANGE:` for minor releases. Use `feat(major):` only for a complete new version that should bump the major number. `docs:`, `chore:`, and `ci:` changes do not trigger a release by themselves. Use these prefixes in squash merge titles too.
 
 Release Please owns `.release-please-manifest.json`, version updates, and `CHANGELOG.md`. Let the release PR update them. The Expo strategy updates `package.json`, its lockfile, and `app.json`, including Android's version code. Extra-file updaters keep the Expo runtime version and Android runtime resource in sync. Android reads its version name and code from `app.json`.
 

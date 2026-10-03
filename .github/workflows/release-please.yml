@@ -22,11 +22,22 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - uses: googleapis/release-please-action@v4
-        id: release
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
+          node-version: 24
+      - name: Install and validate release automation
+        working-directory: .github/release
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+      - name: Update release PR or create release
+        id: release
+        working-directory: .github/release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npm run release
 
       - name: Check the release PR
         if: steps.release.outputs.prs_created == 'true'

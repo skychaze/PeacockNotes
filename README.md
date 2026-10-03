@@ -20,7 +20,7 @@ Peacock Notes is still growing. Please [open an issue](../../issues/new) with bu
 
 ## Release automation
 
-Merging a pull request into `main` runs Release Please. Conventional commit titles determine the next version: `fix:` bumps the patch, `feat:` bumps the minor, and `!` or `BREAKING CHANGE:` bumps the major. Documentation and maintenance changes do not trigger a release by themselves.
+Merging a pull request into `main` runs Release Please. Conventional commit titles determine the next version: `fix:` and `feat:` bump the patch, `!` or `BREAKING CHANGE:` bumps the minor, and `feat(major):` requests a complete new version and bumps the major. Documentation and maintenance changes do not trigger a release by themselves.
 
 Release Please opens or updates a release PR with the version and generated changelog. Merge that PR to create a `v<version>` tag and draft GitHub release. The APK workflow then runs checks, builds the signed APK, verifies its identity, uploads it, and publishes the release. A failed build leaves a draft. Retry the APK workflow with the same tag after resolving the failure.
 
