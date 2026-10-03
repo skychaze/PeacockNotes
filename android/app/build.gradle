@@ -6,6 +6,7 @@ import java.util.Properties
 import java.text.SimpleDateFormat
 
 def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
+def expoConfig = new groovy.json.JsonSlurper().parse(rootProject.file('../app.json')).expo
 def keystoreProperties = new Properties()
 def keystorePropertiesFile = rootProject.file("keystore.properties")
 if (keystorePropertiesFile.exists()) {
@@ -100,8 +101,8 @@ android {
         applicationId 'com.roy.peacocknotes'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 25
-        versionName "1.1.13"
+        versionCode expoConfig.android.versionCode
+        versionName expoConfig.version
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }

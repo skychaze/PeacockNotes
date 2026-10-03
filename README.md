@@ -17,3 +17,13 @@ Peacock Notes is a simple, local-first notes app. Create a folder, write a note,
 ## Feedback
 
 Peacock Notes is still growing. Please [open an issue](../../issues/new) with bugs, feedback, or ideas for future updates. Tell us what feels easy to use and what could be simpler.
+
+## Release automation
+
+Merging a pull request into `main` runs Release Please. Conventional commit titles determine the next version: `fix:` and `feat:` bump the patch, `!` or `BREAKING CHANGE:` bumps the minor, and `feat(major):` requests a complete new version and bumps the major. Documentation and maintenance changes do not trigger a release by themselves.
+
+Release Please opens or updates a release PR with the version and generated changelog. Merge that PR to create a `v<version>` tag and draft GitHub release. The APK workflow then runs checks, builds the signed APK, verifies its identity, uploads it, and publishes the release. A failed build leaves a draft. Retry the APK workflow with the same tag after resolving the failure.
+
+The workflow uses the built-in GitHub token and dispatches CI on each created or updated release PR. Enable "Allow GitHub Actions to create and approve pull requests" in Settings > Actions > General. Release builds also run checks before publication. Existing Android signing secrets are reused.
+
+See [AGENTS.md](AGENTS.md) for version sources, APK naming, and release validation.
