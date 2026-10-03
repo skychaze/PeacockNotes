@@ -5,32 +5,54 @@ on:
     tags:
       - 'v*'
       - 'V*'
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build or retry
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-apk-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
     env:
       NODE_ENV: production
+      TAG_NAME: ${{ inputs.tag || github.ref_name }}
+      REQUESTED_TAG: ${{ inputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: npm
 
-      - name: Verify patch notes exist
+      - name: Verify release version and notes
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           VERSION="${TAG_NAME#[vV]}"
           CONFIG_VERSION=$(node -p "require('./app.json').expo.version")
           CONFIG_CODE=$(node -p "require('./app.json').expo.android.versionCode")
+          if [[ ! "$TAG_NAME" =~ ^[vV][0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Expected a version tag, got $TAG_NAME"
+            exit 1
+          fi
           if [ "$VERSION" != "$CONFIG_VERSION" ]; then
             echo "::error::Tag $TAG_NAME does not match app.json version $CONFIG_VERSION"
             exit 1
@@ -45,9 +67,9 @@ jobs:
             echo "::error::Multiple patch-note files found for version ${CONFIG_VERSION} code ${CONFIG_CODE}" >&2
             exit 1
           elif gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG_NAME already exists; re-running without patch notes" >&2
+            echo "Using existing GitHub release notes for $TAG_NAME"
           else
-            echo "::error::Missing patch notes for $TAG_NAME. Add releases/v${CONFIG_VERSION}-${CONFIG_CODE}/patch-notes.md, commit it, move the tag with 'git tag -f $TAG_NAME', and push it again."
+            echo "::error::Missing patch notes or an existing Release Please release for $TAG_NAME."
             exit 1
           fi
 
@@ -92,7 +114,6 @@ jobs:
       - name: Create release with patch notes and APK
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           CONFIG_VERSION=$(node -p "require('./app.json').expo.version")
@@ -116,7 +137,10 @@ jobs:
           BADGING=$("$AAPT2" dump badging "$APK_PATH")
           grep -Fq "package: name='com.roy.peacocknotes' versionCode='${CONFIG_CODE}' versionName='${CONFIG_VERSION}'" <<<"$BADGING"
           NOTES_FILE="releases/v${CONFIG_VERSION}-${CONFIG_CODE}/patch-notes.md"
-          if [ -f "$NOTES_FILE" ]; then
+          if [ -n "$REQUESTED_TAG" ]; then
+            gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null
+            NOTES_ARGS=(--generate-notes)
+          elif [ -f "$NOTES_FILE" ]; then
             NOTES_ARGS=(--notes-file "$NOTES_FILE")
           else
             echo "No patch notes found at $NOTES_FILE; falling back to generated notes" >&2
@@ -126,7 +150,7 @@ jobs:
             gh release upload "$TAG_NAME" "$APK_PATH#Peacock Notes APK" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
-            if [ -f "$NOTES_FILE" ]; then
+            if [ -z "$REQUESTED_TAG" ] && [ -f "$NOTES_FILE" ]; then
               gh release edit "$TAG_NAME" \
                 --repo "$GITHUB_REPOSITORY" \
                 --notes-file "$NOTES_FILE"
@@ -138,3 +162,5 @@ jobs:
               "${NOTES_ARGS[@]}" \
               --title "Peacock Notes $TAG_NAME"
           fi
+
+          gh release edit "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
