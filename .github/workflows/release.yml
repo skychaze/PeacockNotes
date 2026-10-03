@@ -58,10 +58,12 @@ jobs:
             exit 1
           fi
           mapfile -t NOTES_FILES < <(find releases -mindepth 2 -maxdepth 2 -path "releases/v${CONFIG_VERSION}-${CONFIG_CODE}/patch-notes.md" -print)
+          echo "RELEASE_NOTES_FILE=" >> "$GITHUB_ENV"
           if [ "${#NOTES_FILES[@]}" -eq 1 ]; then
             NOTES_FILE="${NOTES_FILES[0]}"
             grep -Fqx -- "- Version: ${CONFIG_VERSION}" "$NOTES_FILE"
             grep -Fqx -- "- Version code: ${CONFIG_CODE}" "$NOTES_FILE"
+            echo "RELEASE_NOTES_FILE=$NOTES_FILE" >> "$GITHUB_ENV"
             echo "Found matching patch notes at $NOTES_FILE"
           elif [ "${#NOTES_FILES[@]}" -gt 1 ]; then
             echo "::error::Multiple patch-note files found for version ${CONFIG_VERSION} code ${CONFIG_CODE}" >&2
@@ -136,24 +138,23 @@ jobs:
           fi
           BADGING=$("$AAPT2" dump badging "$APK_PATH")
           grep -Fq "package: name='com.roy.peacocknotes' versionCode='${CONFIG_CODE}' versionName='${CONFIG_VERSION}'" <<<"$BADGING"
-          NOTES_FILE="releases/v${CONFIG_VERSION}-${CONFIG_CODE}/patch-notes.md"
           if [ -n "$REQUESTED_TAG" ]; then
             gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null
             NOTES_ARGS=(--generate-notes)
-          elif [ -f "$NOTES_FILE" ]; then
-            NOTES_ARGS=(--notes-file "$NOTES_FILE")
+          elif [ -n "$RELEASE_NOTES_FILE" ]; then
+            NOTES_ARGS=(--notes-file "$RELEASE_NOTES_FILE")
           else
-            echo "No patch notes found at $NOTES_FILE; falling back to generated notes" >&2
+            echo "No checked-in patch notes found; using GitHub release notes" >&2
             NOTES_ARGS=(--generate-notes)
           fi
           if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" "$APK_PATH#Peacock Notes APK" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
-            if [ -z "$REQUESTED_TAG" ] && [ -f "$NOTES_FILE" ]; then
+            if [ -z "$REQUESTED_TAG" ] && [ -n "$RELEASE_NOTES_FILE" ]; then
               gh release edit "$TAG_NAME" \
                 --repo "$GITHUB_REPOSITORY" \
-                --notes-file "$NOTES_FILE"
+                --notes-file "$RELEASE_NOTES_FILE"
             fi
           else
             gh release create "$TAG_NAME" "$APK_PATH#Peacock Notes APK" \
